@@ -6,6 +6,8 @@ PKGS += dash35b
 
 TEST_PKGS = blacktip_dpv
 
+TEST_PKGS = blacktip_dpv
+
 all: vesc_pkg_all.rcc
 
 vesc_pkg_all.rcc: $(PKGS)
