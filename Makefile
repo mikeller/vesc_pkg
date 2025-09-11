@@ -7,6 +7,8 @@ PKGS += lib_tca9534 UnleashedCreativityLights wheelie_limiter
 
 TEST_PKGS = blacktip_dpv
 
+TEST_PKGS = blacktip_dpv
+
 all: vesc_pkg_all.rcc
 
 vesc_pkg_all.rcc: $(PKGS)
