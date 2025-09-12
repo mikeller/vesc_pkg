@@ -25,6 +25,8 @@ Item {
     property bool readSettingsDone: false
    // property bool isHorizontal: dxrtData.width > dxrtData.height
 
+    // Callback holder for delay timer
+    property var _delayCb
 
      property int gaugeSize: big.width * 0.8
      property int gaugeSize2: big.width * 0.45
@@ -690,14 +692,20 @@ Item {
     // delay timer
     Timer {
         id: timer
+        onTriggered: {
+            if (_delayCb) {
+                var callback = _delayCb
+                _delayCb = null
+                callback()
+            }
+        }
     }
     
     function delay(delayTime, cb) {
         timer.stop();
         timer.interval = delayTime;
         timer.repeat = false;
-        timer.triggered.disconnect(cb); // ignore errors if not connected
-        timer.onTriggered = cb;         // reassign handler
+        dxrtData._delayCb = cb;
         timer.start();
     }
 
