@@ -1,10 +1,20 @@
 ;****Section to set initial settings ****
 
-; User speeds, ie 1 thru 8 are only used in the GUI, this lisp code uses speeds 0-9 with 0 & 1 being the 2 revese speeds.
-; 99 is used as the "off" speed
+(if (not-eq (eeprom-read-i 127) (to-i32 1)) ; blacktip_dpv release 1.0.0
+(progn
+
+(eeprom-store-i 25 0) ; Enable Auto-Engage Smart Cruise. 1=On 0=Off
+(eeprom-store-i 26 10) ; Auto-Engage Time in seconds (5-30 seconds)
+(eeprom-store-i 27 0) ; Enable Thirds warning on from power-up. 1=On 0=Off
+(eeprom-store-i 28 0) ; Battery calculation method: 0=Voltage-based, 1=Ampere-hour based
+
 
 (if (not-eq (eeprom-read-i 127) (to-i32 150)); check to see if slot 127 in eeprom is empty (or not current rev level 1.21 = 121) indicating new firmware and defaults have not been set
 (progn
+
+; User speeds, ie 1 thru 8 are only used in the GUI, this lisp code uses speeds 0-9 with 0 & 1 being the 2 revese speeds.
+; 99 is used as the "off" speed
+
 (eeprom-store-i 0 45); Reverse Speed 2 %
 (eeprom-store-i 1 20); Untangle Speed 1 %
 (eeprom-store-i 2 30); Speed 1 %
@@ -30,22 +40,12 @@
 (eeprom-store-i 22 0) ; CudaX Flip Screens
 (eeprom-store-i 23 0) ; 2nd Screen Rotation of Display, 0-3 . Each number rotates display 90 deg.
 (eeprom-store-i 24 0) ; Trigger Click Beeps
-(eeprom-store-i 25 0) ; Enable Auto-Engage Smart Cruise. 1=On 0=Off
-(eeprom-store-i 26 10) ; Auto-Engage Time in seconds (5-30 seconds)
-(eeprom-store-i 27 0) ; Enable Thirds warning on from power-up. 1=On 0=Off
-(eeprom-store-i 127 150); writes 150 to eeprom to stop settings being loaded again
+))
+
+(eeprom-store-i 127 1) ; indicate that the defaults have been applied
 ))
 
 ;**** Program to update settings from eeprom ****
-
-(defun calculate-corrected-battery (raw-batt)
-    "Calculate corrected battery percentage from raw battery reading"
-    (+ (* 4.3867 raw-batt raw-batt raw-batt raw-batt)
-       (* -6.7072 raw-batt raw-batt raw-batt)
-       (* 2.4021 raw-batt raw-batt)
-       (* 1.3619 raw-batt)))
-
-(move-to-flash calculate-corrected-battery)
 
 (defun Update_Settings () ;Program that reads eeprom and writes to variables
    (progn
@@ -68,6 +68,7 @@
 (define Enable_Smart_Cruise_Auto_Engage (eeprom-read-i 25))
 (define Smart_Cruise_Auto_Engage_Time (eeprom-read-i 26))
 (define Enable_Thirds_Warning_Startup (eeprom-read-i 27))
+(define Battery_Calculation_Method (eeprom-read-i 28))
 
 (define Speed_Set (list
 (eeprom-read-i 0); Reverse Speed 2 %
@@ -92,16 +93,45 @@
 
 (Update_Settings) ; creates all settings variables
 
+(defun calculate-corrected-battery ()
+    ;Calculate corrected battery percentage from raw battery reading
+    (let ((raw-batt (get-batt)))
+    (+ (* 4.3867 raw-batt raw-batt raw-batt raw-batt)
+       (* -6.7072 raw-batt raw-batt raw-batt)
+       (* 2.4021 raw-batt raw-batt)
+       (* 1.3619 raw-batt))))
+
+(move-to-flash calculate-corrected-battery)
+
+(defun calculate-ah-based-battery ()
+    ;Calculate battery percentage based on ampere-hours used vs total capacity
+    (let ((total-capacity (conf-get 'si-battery-ah))
+          (used-ah (get-ah)))
+        (if (> total-capacity 0)
+            (max 0.0 (min 1.0 (- 1.0 (/ used-ah total-capacity))))
+            0.0))) ; Return 0% if no capacity configured
+
+(move-to-flash calculate-ah-based-battery)
+
+(defun get-battery-level ()
+    ;Get battery level using the configured calculation method
+    (if (= Battery_Calculation_Method 1)
+        (calculate-ah-based-battery)
+        (calculate-corrected-battery)))
+
+(move-to-flash get-battery-level)
+
+(define Thirds-Total 0)
+(define Warning-Counter 0); Count how many times the 3rds warnings have been triggered.
+
 ;**** Auto-enable thirds warning on startup if setting is enabled ****
 (if (> Enable_Thirds_Warning_Startup 0)
     (progn
         ; Wait a bit for battery reading to stabilize
         (sleep 1.0)
-        ; Calculate corrected battery % using the new function
-        (define Temp-Batt-Startup (get-batt))
-        (define Actual-Batt-Startup (calculate-corrected-battery Temp-Batt-Startup))
+        ; Calculate battery % using the configured method
         ; Set Thirds-Total to current battery level
-        (setvar 'Thirds-Total Actual-Batt-Startup)
+        (setvar 'Thirds-Total (get-battery-level))
         (setvar 'Warning-Counter 0)
     ))
 
@@ -112,16 +142,16 @@
     (if (= (bufget-u8 data 0) 255 );Handshake to trigger data send if not yet recieved.
     (progn
 
-    (define setbuf (array-create 28))  ;create a temp array to store setting
+    (define setbuf (array-create 29))  ;create a temp array to store setting
     (bufclear setbuf) ;clear the buffer
-    (looprange i 0 28
+    (looprange i 0 29
     (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
     (send-data setbuf)
     (free setbuf)
     )
 
     (progn
-    (looprange i 0 28
+    (looprange i 0 29
     (eeprom-store-i i (bufget-u8 data i))); writes settings to eeprom
     (Update_Settings); updates actuall settings in lisp
 
@@ -133,13 +163,11 @@
 ;**** Programs that setup comms with GUI ****
 
 (defun event-handler ()
-   (progn
    (loopwhile t
         (recv
             ((event-data-rx . (? data)) (My_Data_Recv_Prog data))
             (_ nil))
-            (event-handler)
-)))
+))
 
 (event-register-handler (spawn event-handler))
 
@@ -213,14 +241,11 @@
 (define Speed_Setting_Timer 0); Timer for auto-engage functionality
 (define Last_Speed_Setting 99); Track last speed setting for auto-engage
 (define Clicks 0)
-(define Thirds-Total 0)
-(define Warning-Counter 0); Count how many times the 3rds warnings have been triggered.
 
 ; Trigger_On_Time is 0.3 for Double Click Timer Settings
 ; Trigger_Off_Time is 0.5 for Double Click Timer Settings
 
 (define Actual-Batt 0)
-(define Temp-Batt 0)
 
 
  (defun SW_STATE_0 ()
@@ -228,10 +253,9 @@
     ;xxxx State "0" Off
     (loopwhile (= SW_STATE 0)
      (progn
-   ;Claculate corrected batt %, only needed when scooter is off in state 0
-   (setvar 'Temp-Batt (get-batt))
-   (setvar 'Actual-Batt (calculate-corrected-battery Temp-Batt))
-   (sleep 0.02)
+      (sleep 0.02)
+   ;Calculate corrected batt %, only needed when scooter is off in state 0
+   (setvar 'Actual-Batt (get-battery-level))
 
 
      ;Pressed
@@ -362,8 +386,8 @@
    (defun SW_STATE_2 ()
    (loopwhile (= SW_STATE 2)
    (progn
-     (timeout-reset); keeps motor running
      (sleep 0.02)
+     (timeout-reset); keeps motor running
 
      ;xxx repeat display section whilst scooter is running xxx
 
@@ -504,6 +528,7 @@
   (progn
   (loopwhile t
   (progn
+    (sleep 0.04)
     (loopwhile (!= SPEED LAST_SPEED)
     (progn
     (sleep 0.25)
