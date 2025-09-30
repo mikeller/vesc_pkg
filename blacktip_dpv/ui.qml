@@ -264,14 +264,13 @@ Item {
                     opacity: 0.0
                 }
 
+                property bool has_changes: false
 
                 ScrollView {
                     id: speedsScroll
                     anchors.fill: parent
                     clip: true
                     contentWidth: availableWidth
-
-
 
                     ColumnLayout {
                         anchors.fill: parent
@@ -280,7 +279,7 @@ Item {
                         DoubleSpinBox {
                             id: reverse_speed
                             Layout.fillWidth: true
-                            visible : enable_reverse.checked
+                            visible: enable_reverse.checked
                             decimals: 0
                             prefix: "Reverse Speed: "
                             suffix: " %"
@@ -288,13 +287,15 @@ Item {
                             realTo: 50
                             realValue: 45
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
                         }
 
                         DoubleSpinBox {
                             id: untangle_speed
                             Layout.fillWidth: true
-                            visible : enable_reverse.checked
+                            visible: enable_reverse.checked
                             decimals: 0
                             prefix: "Untangle Speed: "
                             suffix: " %"
@@ -302,7 +303,9 @@ Item {
                             realTo: 30
                             realValue: 20
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
                         }
 
 
@@ -316,13 +319,15 @@ Item {
                             realTo: 100
                             realValue: 30
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
                         }
 
                         DoubleSpinBox {
                             id: two_speed
                             Layout.fillWidth: true
-                            visible : (no_speeds.realValue > 1) ? true : false
+                            visible: (no_speeds.realValue > 1) ? true : false
                             decimals: 0
                             prefix: "Speed 2: "
                             suffix: " %"
@@ -330,13 +335,15 @@ Item {
                             realTo: 100
                             realValue: 38
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
                         }
 
                         DoubleSpinBox {
                             id: three_speed
                             Layout.fillWidth: true
-                            visible : (no_speeds.realValue > 2) ? true : false
+                            visible: (no_speeds.realValue > 2) ? true : false
                             decimals: 0
                             prefix: "Speed 3: "
                             suffix: " %"
@@ -344,13 +351,15 @@ Item {
                             realTo: 100
                             realValue: 46
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
                         }
 
                         DoubleSpinBox {
                             id: four_speed
                             Layout.fillWidth: true
-                            visible : (no_speeds.realValue > 3) ? true : false
+                            visible: (no_speeds.realValue > 3) ? true : false
                             decimals: 0
                             prefix: "Speed 4: "
                             suffix: " %"
@@ -358,13 +367,15 @@ Item {
                             realTo: 100
                             realValue: 54
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
                         }
 
                         DoubleSpinBox {
                             id: five_speed
                             Layout.fillWidth: true
-                            visible : (no_speeds.realValue > 4) ? true : false
+                            visible: (no_speeds.realValue > 4) ? true : false
                             decimals: 0
                             prefix: "Speed 5: "
                             suffix: " %"
@@ -372,13 +383,15 @@ Item {
                             realTo: 100
                             realValue: 62
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
                         }
 
                         DoubleSpinBox {
                             id: six_speed
                             Layout.fillWidth: true
-                            visible : (no_speeds.realValue > 5) ? true : false
+                            visible: (no_speeds.realValue > 5) ? true : false
                             decimals: 0
                             prefix: "Speed 6: "
                             suffix: " %"
@@ -386,13 +399,15 @@ Item {
                             realTo: 100
                             realValue: 70
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
                         }
 
                         DoubleSpinBox {
                             id: seven_speed
                             Layout.fillWidth: true
-                            visible : (no_speeds.realValue > 6) ? true : false
+                            visible: (no_speeds.realValue > 6) ? true : false
                             decimals: 0
                             prefix: "Speed 7: "
                             suffix: " %"
@@ -400,13 +415,15 @@ Item {
                             realTo: 100
                             realValue: 78
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
                         }
 
                         DoubleSpinBox {
                             id: eight_speed
                             Layout.fillWidth: true
-                            visible : (no_speeds.realValue > 7) ? true : false
+                            visible: (no_speeds.realValue > 7) ? true : false
                             decimals: 0
                             prefix: "Speed 8: "
                             suffix: " %"
@@ -414,7 +431,35 @@ Item {
                             realTo: 100
                             realValue: 100
                             realStepSize: 1.0
-                            onRealValueChanged: { write_settings()}
+                            onRealValueChanged: {
+                                has_changes = true
+                            }
+                        }
+
+                        RowLayout {
+                            spacing: 10 // Space between the buttons
+
+                            Button {
+                                Layout.fillWidth: true
+                                text: "Undo Changes"
+                                enabled: has_changes
+                                onClicked: {
+                                    read_settings()
+
+                                    has_changes = false
+                                }
+                            }
+
+                            Button {
+                                Layout.fillWidth: true
+                                text: "Save"
+                                enabled: has_changes
+                                onClicked: {
+                                    write_settings()
+
+                                    has_changes = false
+                                }
+                            }
                         }
                     }
                 }
@@ -441,7 +486,6 @@ Item {
                     DoubleSpinBox {
                         id: no_speeds
                         Layout.fillWidth: true
-                        visible : true
                         decimals: 0
                         prefix: "No. Speeds: "
                         realFrom: 1
@@ -454,7 +498,6 @@ Item {
                     DoubleSpinBox {
                         id: start_speed
                         Layout.fillWidth: true
-                        visible : true
                         decimals: 0
                         prefix: "Start Speed: "
                         realFrom: 1
@@ -467,7 +510,6 @@ Item {
                     DoubleSpinBox {
                         id: jump_speed
                         Layout.fillWidth: true
-                        visible : true
                         decimals: 0
                         prefix: "Jump Speed (3 Clicks): "
                         realFrom: 1
@@ -480,7 +522,6 @@ Item {
                     DoubleSpinBox {
                         id: ramp_rate
                         Layout.fillWidth: true
-                        visible : true
                         decimals: 0
                         prefix: "Speed Ramp Rate: "
                         realFrom: 600
@@ -496,7 +537,6 @@ Item {
                     DoubleSpinBox {
                         id: battery_ah
                         Layout.fillWidth: true
-                        visible : true
                         decimals: 1
                         prefix: "Battery capacity: "
                         realFrom: 0.5
@@ -517,14 +557,12 @@ Item {
 
                     Button {
                         Layout.fillWidth: true
-                        visible: true
                         text: "Enable Smart Cruise (5 clicks)"
                         onClicked: { smartCruiseDialog.open()}
                     }
 
                     CheckBox {
                         id: safe_start
-                        visible : true
                         Layout.fillWidth: true
                         text: "Enable Safe Start"
                         checked: false
@@ -533,7 +571,6 @@ Item {
 
                     CheckBox {
                         id: enable_beeps
-                        visible : true
                         Layout.fillWidth: true
                         text: "Enable Battery Capacity Beeps"
                         checked: false
@@ -542,7 +579,6 @@ Item {
 
                     CheckBox {
                         id: enable_tbeeps
-                        visible : true
                         Layout.fillWidth: true
                         text: "Enable Trigger Beeps"
                         checked: false
@@ -551,7 +587,6 @@ Item {
 
                     CheckBox {
                         id: enable_thirds_warning_startup
-                        visible : true
                         Layout.fillWidth: true
                         text: "Thirds warning on from power-up"
                         checked: false
@@ -560,7 +595,6 @@ Item {
 
                     CheckBox {
                         id: use_ah_battery_calculation
-                        visible : true
                         Layout.fillWidth: true
                         text: "Use ampere-hour based battery calculation"
                         checked: false
@@ -570,7 +604,6 @@ Item {
                     DoubleSpinBox {
                         id: beeps_volume
                         Layout.fillWidth: true
-                        visible : true
                         decimals: 0
                         prefix: "Beep Volume: "
                         realFrom: 1
@@ -582,7 +615,7 @@ Item {
 
                     CheckBox {
                         id: cudaX_Flip
-                        visible : (enable_bluetooth.currentIndex > 2) ? true : false
+                        visible: (enable_bluetooth.currentIndex > 2) ? true : false
                         Layout.fillWidth: true
                         text: "Flip Screens on CudaX"
                         checked: false
@@ -592,7 +625,6 @@ Item {
                     DoubleSpinBox {
                         id: display_rotation
                         Layout.fillWidth: true
-                        visible : true
                         decimals: 0
                         prefix: "Display 1 Rotation: "
                         suffix: " Deg."
@@ -606,7 +638,7 @@ Item {
                      DoubleSpinBox {
                         id: display_rotation2
                         Layout.fillWidth: true
-                        visible : (enable_bluetooth.currentIndex > 2) ? true : false
+                        visible: (enable_bluetooth.currentIndex > 2) ? true : false
                         decimals: 0
                         prefix: "Display 2 Rotation: "
                         suffix: " Deg."
@@ -620,7 +652,6 @@ Item {
                     DoubleSpinBox {
                         id: display_brightness
                         Layout.fillWidth: true
-                        visible : true
                         decimals: 0
                         prefix: "Display Brightness*: "
                         suffix: " %"
@@ -652,7 +683,6 @@ Item {
                  Button {
                         Layout.fillWidth: true
                         text: "Change Scooter Hardware Type"
-                        visible: true
                         onClicked: { hardwareDialog.open()}
                     }
 
@@ -740,6 +770,10 @@ Item {
         timer.repeat = false;
         dxrtData._delayCb = (typeof cb === "function") ? cb : null;
         timer.start();
+    }
+
+    function read_settings() {
+        readSettingsDone = false
     }
 
     // write settings
@@ -895,7 +929,7 @@ Item {
             })
         })
 
-        readSettingsDone = false
+        read_settings()
 
         console.log("Defaults Reset" )
     }
@@ -1007,7 +1041,7 @@ Item {
             })
         })
 
-        readSettingsDone = false
+        read_settings()
 
         console.log("Defaults Reset" )
     }
@@ -1068,8 +1102,6 @@ Item {
         id: commandsUpdate
         target: mCommands
 
-        property string lastFault: ""
-
         function onValuesSetupReceived(values, mask) {
 
            var soc = Math.max(0, Math.min(1, values.battery_level))
@@ -1099,12 +1131,21 @@ Item {
 
 Dialog {
         id: reverseDialog
-        standardButtons: Dialog.Ok
+        standardButtons: Dialog.Save | Dialog.Cancel
         modal: true
         focus: true
         width: big.width - 20
         closePolicy: Popup.CloseOnEscape
         title: "Untangle & Reverse"
+
+	onAccepted: {
+            write_settings()
+	}
+
+	onRejected: {
+	    read_settings()
+	}
+
 
         ScrollView {
                     id: reverseScroll
@@ -1138,11 +1179,9 @@ Dialog {
 
         CheckBox {
                         id: enable_reverse
-                        visible : true
                         Layout.fillWidth: true
                         text: "Enable Untangle & Reverse"
                         checked: false
-                        onClicked: { write_settings()}
                     }
             }
             }
@@ -1224,7 +1263,6 @@ Dialog {
 
                     ComboBox {
                         id: enable_bluetooth
-                        visible : true
                         Layout.fillWidth: true
                         currentIndex: 0
                         model:  ["Blacktip HW:60_MK5 with Bluetooth (Latest)*","Blacktip HW:60, No Bluetooth*","Blacktip HW:410, No Bluetooth*", "Cuda-X HW:60_MK5, With Bluetooth (Latest)*" , "Cuda-X HW:60, No Bluetooth*"]
@@ -1331,7 +1369,6 @@ Dialog {
 
         CheckBox {
                         id: enable_smart_cruise
-                        visible : true
                         Layout.fillWidth: true
                         text: "Enable Smart Cruise"
                         checked: false
@@ -1342,7 +1379,7 @@ Dialog {
                     DoubleSpinBox {
                         id: smart_cruise_timeout
                         Layout.fillWidth: true
-                        visible : enable_smart_cruise.checked
+                        visible: enable_smart_cruise.checked
                         decimals: 0
                         prefix: "Smart Cruise Timeout: "
                         suffix: " sec."
@@ -1355,7 +1392,7 @@ Dialog {
 
                     CheckBox {
                         id: enable_smart_cruise_auto_engage
-                        visible : enable_smart_cruise.checked
+                        visible: enable_smart_cruise.checked
                         Layout.fillWidth: true
                         text: "Enable Auto-Engage Smart Cruise"
                         checked: false
@@ -1365,7 +1402,7 @@ Dialog {
                     DoubleSpinBox {
                         id: smart_cruise_auto_engage_delay
                         Layout.fillWidth: true
-                        visible : enable_smart_cruise_auto_engage.checked
+                        visible: enable_smart_cruise_auto_engage.checked
                         decimals: 0
                         prefix: "Auto-Engage Delay: "
                         suffix: " sec."
