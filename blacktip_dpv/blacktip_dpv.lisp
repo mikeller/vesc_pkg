@@ -121,7 +121,7 @@
 
 
 (defun get-battery-level ()
-    ;Get battery level using the configured calculation method
+    ; Get battery level using the configured calculation method
     (if (= Battery_Calculation_Method 1)
         (calculate-ah-based-battery)
         (calculate-corrected-battery)))
