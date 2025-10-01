@@ -1,97 +1,98 @@
-;****Section to set initial settings ****
+; define functions
 
-(if (not-eq (eeprom-read-i 127) (to-i32 1)) ; blacktip_dpv release 1.0.0
-(progn
+(defun eeprom_set_defaults ()
+{
+    (if (not-eq (eeprom-read-i 127) (to-i32 1)) { ; Check for current version marker (blacktip_dpv release 1.0.0)
 
-(eeprom-store-i 25 0) ; Enable Auto-Engage Smart Cruise. 1=On 0=Off
-(eeprom-store-i 26 10) ; Auto-Engage Time in seconds (5-30 seconds)
-(eeprom-store-i 27 0) ; Enable Thirds warning on from power-up. 1=On 0=Off
-(eeprom-store-i 28 0) ; Battery calculation method: 0=Voltage-based, 1=Ampere-hour based
+        ; New settings added in version 1.0.0
+        (eeprom-store-i 25 0) ; Enable Auto-Engage Smart Cruise. 1=On 0=Off
+        (eeprom-store-i 26 10) ; Auto-Engage Time in seconds (5-30 seconds)
+        (eeprom-store-i 27 0) ; Enable Thirds warning on from power-up. 1=On 0=Off
+        (eeprom-store-i 28 0) ; Battery calculation method: 0=Voltage-based, 1=Ampere-hour based
 
+        (if (not-eq (eeprom-read-i 127) (to-i32 150)) { ; Check for previous version marker (Dive Xtras V1.50 'Poseidon')
 
-(if (not-eq (eeprom-read-i 127) (to-i32 150)); check to see if slot 127 in eeprom is empty (or not current rev level 1.21 = 121) indicating new firmware and defaults have not been set
-(progn
+            ; User speeds, ie 1 thru 8 are only used in the GUI, this lisp code uses speeds 0-9 with 0 & 1 being the 2 revese speeds.
+            ; 99 is used as the "off" speed
 
-; User speeds, ie 1 thru 8 are only used in the GUI, this lisp code uses speeds 0-9 with 0 & 1 being the 2 revese speeds.
-; 99 is used as the "off" speed
+            (eeprom-store-i 0 45); Reverse Speed 2 %
+            (eeprom-store-i 1 20); Untangle Speed 1 %
+            (eeprom-store-i 2 30); Speed 1 %
+            (eeprom-store-i 3 38); Speed 2 %
+            (eeprom-store-i 4 46); Speed 3 %
+            (eeprom-store-i 5 54); Speed 4 %
+            (eeprom-store-i 6 62); Speed 5 %
+            (eeprom-store-i 7 70); Speed 6 %
+            (eeprom-store-i 8 78); Speed 7 %
+            (eeprom-store-i 9 100); Speed 8 %
+            (eeprom-store-i 10 9) ; Maximum number of Speeds to use, must be greater or equal to Start_Speed (actual speed #, not user speed)
+            (eeprom-store-i 11 4) ; Speed the scooter starts in. Range 2-9, must be less or equal to the Max_Speed_No (actual speed #, not user speed)
+            (eeprom-store-i 12 7) ; Speed to jump to on triple click, (actual speed #, not user speed)
+            (eeprom-store-i 13 1) ; Turn safe start on or off 1=On 0=Off
+            (eeprom-store-i 14 0) ; Enable Reverse speed. 1=On 0=Off
+            (eeprom-store-i 15 0) ; Enable 5 click Smart Cruise. 1=On 0=Off
+            (eeprom-store-i 16 60) ; How long before Smart Cruise times out and requires reactivation in sec.
+            (eeprom-store-i 17 0) ; Rotation of Display, 0-3 . Each number rotates display 90 deg.
+            (eeprom-store-i 18 5) ; Display Brighness 0-5
+            (eeprom-store-i 19 0) ; Bluetooth Wiring, 0 = Blacktip HW60 + Ble, 1 = Blacktip HW60 - Ble, 2 = Blacktip HW410 - Ble, 3 = Cuda-X HW60 + Ble, 4 = Cuda-X HW60 - Ble
+            (eeprom-store-i 20 0) ; Battery Beeps
+            (eeprom-store-i 21 3) ; Beep Volume
+            (eeprom-store-i 22 0) ; CudaX Flip Screens
+            (eeprom-store-i 23 0) ; 2nd Screen Rotation of Display, 0-3 . Each number rotates display 90 deg.
+            (eeprom-store-i 24 0) ; Trigger Click Beeps
+        })
 
-(eeprom-store-i 0 45); Reverse Speed 2 %
-(eeprom-store-i 1 20); Untangle Speed 1 %
-(eeprom-store-i 2 30); Speed 1 %
-(eeprom-store-i 3 38); Speed 2 %
-(eeprom-store-i 4 46); Speed 3 %
-(eeprom-store-i 5 54); Speed 4 %
-(eeprom-store-i 6 62); Speed 5 %
-(eeprom-store-i 7 70); Speed 6 %
-(eeprom-store-i 8 78); Speed 7 %
-(eeprom-store-i 9 100); Speed 8 %
-(eeprom-store-i 10 9) ; Maximum number of Speeds to use, must be greater or equal to Start_Speed (actual speed #, not user speed)
-(eeprom-store-i 11 4) ; Speed the scooter starts in. Range 2-9, must be less or equal to the Max_Speed_No (actual speed #, not user speed)
-(eeprom-store-i 12 7) ; Speed to jump to on triple click, (actual speed #, not user speed)
-(eeprom-store-i 13 1) ; Turn safe start on or off 1=On 0=Off
-(eeprom-store-i 14 0) ; Enable Reverse speed. 1=On 0=Off
-(eeprom-store-i 15 0) ; Enable 5 click Smart Cruise. 1=On 0=Off
-(eeprom-store-i 16 60) ; How long before Smart Cruise times out and requires reactivation in sec.
-(eeprom-store-i 17 0) ; Rotation of Display, 0-3 . Each number rotates display 90 deg.
-(eeprom-store-i 18 5) ; Display Brighness 0-5
-(eeprom-store-i 19 0) ; Bluetooth Wiring, 0 = Blacktip HW60 + Ble, 1 = Blacktip HW60 - Ble, 2 = Blacktip HW410 - Ble, 3 = Cuda-X HW60 + Ble, 4 = Cuda-X HW60 - Ble
-(eeprom-store-i 20 0) ; Battery Beeps
-(eeprom-store-i 21 3) ; Beep Volume
-(eeprom-store-i 22 0) ; CudaX Flip Screens
-(eeprom-store-i 23 0) ; 2nd Screen Rotation of Display, 0-3 . Each number rotates display 90 deg.
-(eeprom-store-i 24 0) ; Trigger Click Beeps
-))
+        ; Mark as initialised for 1.0.0
+        (eeprom-store-i 127 1) ; indicate that the defaults have been applied
+    })
+})
 
-(eeprom-store-i 127 1) ; indicate that the defaults have been applied
-))
 
 ;**** Program to update settings from eeprom ****
 
-(defun Update_Settings () ;Program that reads eeprom and writes to variables
-   (progn
+(defun Update_Settings() ;Program that reads eeprom and writes to variables
+{
+     (define Max_Speed_No (eeprom-read-i 10))
+     (define Start_Speed (eeprom-read-i 11))
+     (define Jump_Speed (eeprom-read-i 12))
+     (define Use_Safe_Start (eeprom-read-i 13))
+     (define Enable_Reverse (eeprom-read-i 14))
+     (define Enable_Smart_Cruise (eeprom-read-i 15))
+     (define Smart_Cruise_Timeout (eeprom-read-i 16))
+     (define Rotation (eeprom-read-i 17))
+     (define Disp_Brightness (eeprom-read-i 18))
+     (define Bluetooth (eeprom-read-i 19))
+     (define Enable_Battery_Beeps (eeprom-read-i 20))
+     (define Beeps_Vol (eeprom-read-i 21))
+     (define CudaX_Flip (eeprom-read-i 22))
+     (define Rotation2 (eeprom-read-i 23))
+     (define Enable_Trigger_Beeps (eeprom-read-i 24))
+     (define Enable_Smart_Cruise_Auto_Engage (eeprom-read-i 25))
+     (define Smart_Cruise_Auto_Engage_Time (eeprom-read-i 26))
+     (define Enable_Thirds_Warning_Startup (eeprom-read-i 27))
+     (define Battery_Calculation_Method (eeprom-read-i 28))
 
-(define Max_Speed_No (eeprom-read-i 10))
-(define Start_Speed (eeprom-read-i 11) )
-(define Jump_Speed (eeprom-read-i 12))
-(define Use_Safe_Start (eeprom-read-i 13))
-(define Enable_Reverse (eeprom-read-i 14))
-(define Enable_Smart_Cruise (eeprom-read-i 15))
-(define Smart_Cruise_Timeout (eeprom-read-i 16))
-(define Rotation (eeprom-read-i 17))
-(define Disp_Brightness (eeprom-read-i 18))
-(define Bluetooth (eeprom-read-i 19))
-(define Enable_Battery_Beeps (eeprom-read-i 20))
-(define Beeps_Vol (eeprom-read-i 21))
-(define CudaX_Flip (eeprom-read-i 22))
-(define Rotation2 (eeprom-read-i 23))
-(define Enable_Trigger_Beeps (eeprom-read-i 24))
-(define Enable_Smart_Cruise_Auto_Engage (eeprom-read-i 25))
-(define Smart_Cruise_Auto_Engage_Time (eeprom-read-i 26))
-(define Enable_Thirds_Warning_Startup (eeprom-read-i 27))
-(define Battery_Calculation_Method (eeprom-read-i 28))
+     (define Speed_Set (list
+        (eeprom-read-i 0); Reverse Speed 2 %
+        (eeprom-read-i 1); Untangle Speed 1 %
+        (eeprom-read-i 2); Speed 1 %
+        (eeprom-read-i 3); Speed 2 %
+        (eeprom-read-i 4); Speed 3 %
+        (eeprom-read-i 5); Speed 4 %
+        (eeprom-read-i 6); Speed 5 %
+        (eeprom-read-i 7); Speed 6 %
+        (eeprom-read-i 8); Speed 7 %
+        (eeprom-read-i 9); Speed 8 %
+     ))
 
-(define Speed_Set (list
-(eeprom-read-i 0); Reverse Speed 2 %
-(eeprom-read-i 1); Untangle Speed 1 %
-(eeprom-read-i 2); Speed 1 %
-(eeprom-read-i 3); Speed 2 %
-(eeprom-read-i 4); Speed 3 %
-(eeprom-read-i 5); Speed 4 %
-(eeprom-read-i 6); Speed 5 %
-(eeprom-read-i 7); Speed 6 %
-(eeprom-read-i 8); Speed 7 %
-(eeprom-read-i 9); Speed 8 %
-))
-
-(if (<= Bluetooth 2) ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
-    (define Scooter_Type 0)
-    (define Scooter_Type 1)
-    )
-))
+     (if (<= Bluetooth 2) ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
+          (define Scooter_Type 0)
+          (define Scooter_Type 1)
+     )
+})
 
 (move-to-flash Update_Settings)
 
-(Update_Settings) ; creates all settings variables
 
 (defun calculate-corrected-battery ()
     ;Calculate corrected battery percentage from raw battery reading
@@ -103,15 +104,21 @@
 
 (move-to-flash calculate-corrected-battery)
 
+
 (defun calculate-ah-based-battery ()
     ;Calculate battery percentage based on ampere-hours used vs total capacity
     (let ((total-capacity (conf-get 'si-battery-ah))
-          (used-ah (get-ah)))
-        (if (> total-capacity 0)
-            (max 0.0 (min 1.0 (- 1.0 (/ used-ah total-capacity))))
-            0.0))) ; Return 0% if no capacity configured
+        (used-ah (get-ah))
+        (used_capacity (- 1.0 (/ used-ah total-capacity))))
+        (if (and (> total-capacity 0) (> used_capacity 0))
+            used_capacity
+            0.0 ; Return 0% if no capacity configured or used capacity is negative
+        )
+    )
+)
 
 (move-to-flash calculate-ah-based-battery)
+
 
 (defun get-battery-level ()
     ;Get battery level using the configured calculation method
@@ -121,19 +128,6 @@
 
 (move-to-flash get-battery-level)
 
-(define Thirds-Total 0)
-(define Warning-Counter 0); Count how many times the 3rds warnings have been triggered.
-
-;**** Auto-enable thirds warning on startup if setting is enabled ****
-(if (> Enable_Thirds_Warning_Startup 0)
-    (progn
-        ; Wait a bit for battery reading to stabilize
-        (sleep 1.0)
-        ; Calculate battery % using the configured method
-        ; Set Thirds-Total to current battery level
-        (setvar 'Thirds-Total (get-battery-level))
-        (setvar 'Warning-Counter 0)
-    ))
 
 ;**** Program that interperets data from GUI ****
 
@@ -160,96 +154,106 @@
 
 (move-to-flash My_Data_Recv_Prog)
 
-;**** Programs that setup comms with GUI ****
 
-(defun event-handler ()
-   (loopwhile t
-        (recv
-            ((event-data-rx . (? data)) (My_Data_Recv_Prog data))
-            (_ nil))
-))
+(defun setup_event_handler()
+{
+    (defun event-handler ()
+    {
+    (loopwhile t
+            (recv
+                ((event-data-rx . (? data)) (My_Data_Recv_Prog data))
+                (_ nil))
+        )
+    })
 
-(event-register-handler (spawn event-handler))
+    (event-register-handler (spawn event-handler))
 
-(event-enable 'event-data-rx)
+    (event-enable 'event-data-rx)
+})
+
+(move-to-flash setup_event_handler)
 
 
-;**** Program that monitors and debounces the trigger presses ****
+(defun start_trigger_loop()
+{
+    (gpio-configure 'pin-ppm 'pin-mode-in-pd)
 
-(define SW_PRESSED 0)
+    (define SW_PRESSED 0)
 
-(gpio-configure 'pin-ppm 'pin-mode-in-pd)
-
-(spawn 25 (fn ()
-(loopwhile t
-    (progn
+    (loopwhile-thd 25 t {
         (sleep 0.04)
         (if (= 1 (gpio-read 'pin-ppm))
             (setvar 'SW_PRESSED 1)
-             ;else
+            ;else
             (setvar 'SW_PRESSED 0)
         ) ;End of If trigger pressed statment
-    )
-)))
+    })
+})
 
-;**** Auto-Engage Smart Cruise Monitoring ****
-(spawn 30 (fn ()
-(loopwhile t
-    (progn
-        (sleep 0.5)
-        (if (and (> Enable_Smart_Cruise 0) (> Enable_Smart_Cruise_Auto_Engage 0) (= SW_STATE 2) (= Smart_Cruise 0) (!= SPEED 99) (>= SPEED 2))
-            (progn
-                ; Check if speed setting has changed
-                (if (!= SPEED Last_Speed_Setting)
-                    (progn
-                        (setvar 'Last_Speed_Setting SPEED)
-                        (setvar 'Speed_Setting_Timer (systime))
-                    )
-                    ; Speed setting hasn't changed, check if timer expired
-                    (if (> (secs-since Speed_Setting_Timer) Smart_Cruise_Auto_Engage_Time)
+(move-to-flash start_trigger_loop)
+
+
+(defun start_smart_cruise_loop()
+{
+    (define Smart_Cruise 0); variable to control Smart Cruise on 5 clicks
+
+    (let ((Speed_Setting_Timer 0) ; Timer for auto-engage functionality
+        (Last_Speed_Setting 99)) { ; Track last speed setting for auto-engage
+
+        (loopwhile-thd 30 t {
+            (sleep 0.5)
+            (if (and (> Enable_Smart_Cruise 0) (> Enable_Smart_Cruise_Auto_Engage 0) (= SW_STATE 2) (= Smart_Cruise 0) (!= SPEED 99) (>= SPEED 2))
+                (progn
+                    ; Check if speed setting has changed
+                    (if (!= SPEED Last_Speed_Setting)
                         (progn
-                            (setvar 'Smart_Cruise 3)
-                            (setvar 'Timer_Start (systime))
-                            (setvar 'Disp-Num 17)
-			    (setvar 'Click_Beep 5)
-                            (if (< SPEED 2) ; re command actuall speed as reverification sets it to 0.8x
-                                (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
-                                ;else
-                                (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
+                            (setvar 'Last_Speed_Setting SPEED)
+                            (setvar 'Speed_Setting_Timer (systime))
+                        )
+                        ; Speed setting hasn't changed, check if timer expired
+                        (if (> (secs-since Speed_Setting_Timer) Smart_Cruise_Auto_Engage_Time)
+                            (progn
+                                (setvar 'Smart_Cruise 3)
+                                (setvar 'Timer_Start (systime))
+                                (setvar 'Disp-Num 17)
+                                (setvar 'Click_Beep 5)
+                                (if (< SPEED 2) ; re command actuall speed as reverification sets it to 0.8x
+                                    (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
+                                    ;else
+                                    (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
+                                )
                             )
                         )
                     )
                 )
+                ; Not in the right state for auto-engage, reset timer
+                (setvar 'Speed_Setting_Timer (systime))
             )
-            ; Not in the right state for auto-engage, reset timer
-            (setvar 'Speed_Setting_Timer (systime))
-        )
-    )
-)))
+        })
+    })
+})
 
-;**** End of Trigger Program  ****
+(move-to-flash start_smart_cruise_loop)
 
-
-;**** Program that interprets the trigger clicks into single and double clicks and speed comands ****
-
-(define SW_STATE 0)
-(define SPEED 99) ;99 is off speed
-(define Timer_Start 0)
-(define Timer_Duration 0)
-(define New_Start_Speed Start_Speed)
-(define Smart_Cruise 0); variable to control Smart Cruise on 5 clicks
-(define Speed_Setting_Timer 0); Timer for auto-engage functionality
-(define Last_Speed_Setting 99); Track last speed setting for auto-engage
-(define Clicks 0)
 
 ; Trigger_On_Time is 0.3 for Double Click Timer Settings
 ; Trigger_Off_Time is 0.5 for Double Click Timer Settings
 
-(define Actual-Batt 0)
+(defun setup_state_machine()
+{
+    (define SW_STATE 0)
+    (define Timer_Start 0)
+    (define Timer_Duration 0)
+    (define Clicks 0)
+    (define Actual-Batt 0)
+    (define New_Start_Speed Start_Speed)
+})
+
+(move-to-flash setup_state_machine)
 
 
- (defun SW_STATE_0 ()
-
+(defun SW_STATE_0 ()
+{
     ;xxxx State "0" Off
     (loopwhile (= SW_STATE 0)
      (progn
@@ -269,8 +273,8 @@
       (setvar 'SW_STATE 1)
       (spawn  40 SW_STATE_1)
       (break)
-      )))))
-
+      ))))
+})
 
 (move-to-flash SW_STATE_0)
 
@@ -278,8 +282,8 @@
 
     ;xxxx STATE 1 Counting Clicks
 
-  (defun SW_STATE_1 ()
-
+(defun SW_STATE_1 ()
+{
     (loopwhile (= SW_STATE 1)
     (progn
     (sleep 0.02)
@@ -378,12 +382,12 @@
      (break)
      ))
      ))
-)
+})
 
 (move-to-flash SW_STATE_1)
 
 ;xxxx State 2 "Pressed"
-   (defun SW_STATE_2 ()
+(defun SW_STATE_2()
    (loopwhile (= SW_STATE 2)
    (progn
      (sleep 0.02)
@@ -434,7 +438,7 @@
 
 
 ;xxxx State 3 "Going Off"
-   (defun SW_STATE_3 ()
+(defun SW_STATE_3 ()
    (loopwhile (= SW_STATE 3)
    (progn
     (sleep 0.02)
@@ -513,349 +517,332 @@
 (move-to-flash SW_STATE_3)
 
 
- ; **** Function that sets the motor speeds ****
+(defun start_motor_speed_loop()
+{
+    (define SPEED 99) ;99 is off speed
+    (define SAFE_START_TIMER 0)
+    (define Max_ERPM (list 4100 7100)) ;1st no is Blacktip, second is CudaX
 
+    (let ((LAST_SPEED 99)
+        (Max_Current (list 22.8 46)) ; 1st no is Blacktip, second is CudaX
+        (Min_Current (list 1.7 0.35))) { ; 1st no is Blacktip, second is CudaX
 
-(define LAST_SPEED 99)
-(define SAFE_START_TIMER 0)
-(define Max_ERPM (list 4100 7100)) ;1st no is Blacktip, second is CudaX
-(define Max_Current (list 22.8 46)) ;1st no is Blacktip, second is CudaX
-(define Min_Current (list 1.7 0.35)) ;1st no is Blacktip, second is CudaX
-
-(move-to-flash Max_ERPM Max_Current Min_Current)
-
-(spawn 65 (fn ()
-  (progn
-  (loopwhile t
-  (progn
-    (sleep 0.04)
-    (loopwhile (!= SPEED LAST_SPEED)
-    (progn
-    (sleep 0.25)
-;xxxx turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isnt recieved every second from the Switch_State program
-    (if (= SPEED 99)
-       (progn
-         (set-current 0)
-         (setvar 'Batt_Disp_Timer_Start (systime)); Start trigger for Battery Display
-         (setvar 'Disp-Num 14);Turn on Off display. (off display is needed to ensure restart triggers a new display number)
-         (setvar 'SAFE_START_TIMER 0); unlock speed changes and disable safe start timer
-         (setvar 'LAST_SPEED SPEED)
-         ))
-
-    (if (!= SPEED 99)
-      (progn
- ;xxxx Soft Start section for all speeds, makes start less judery
-        (if (= LAST_SPEED 99)
+        (loopwhile-thd 65 t {
+            (sleep 0.04)
+            (loopwhile (!= SPEED LAST_SPEED)
             (progn
-            (conf-set 'l-in-current-max (ix Min_Current Scooter_Type))
-            (setvar 'SAFE_START_TIMER (systime))
-            (setvar 'LAST_SPEED 0.5)
-            (if (< SPEED 2) (set-duty (- 0 0.06)) (set-duty 0.06))
-         ))
+            (sleep 0.25)
+        ;xxxx turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isnt recieved every second from the Switch_State program
+            (if (= SPEED 99)
+            (progn
+                (set-current 0)
+                (setvar 'Batt_Disp_Timer_Start (systime)); Start trigger for Battery Display
+                (setvar 'Disp-Num 14);Turn on Off display. (off display is needed to ensure restart triggers a new display number)
+                (setvar 'SAFE_START_TIMER 0); unlock speed changes and disable safe start timer
+                (setvar 'LAST_SPEED SPEED)
+                ))
+
+            (if (!= SPEED 99)
+            (progn
+        ;xxxx Soft Start section for all speeds, makes start less judery
+                (if (= LAST_SPEED 99)
+                    (progn
+                    (conf-set 'l-in-current-max (ix Min_Current Scooter_Type))
+                    (setvar 'SAFE_START_TIMER (systime))
+                    (setvar 'LAST_SPEED 0.5)
+                    (if (< SPEED 2) (set-duty (- 0 0.06)) (set-duty 0.06))
+                ))
 
 
-;xxxx Set Actual Speeds section
+        ;xxxx Set Actual Speeds section
 
 
-         (if (and (> (secs-since SAFE_START_TIMER) 0.5) (or (= Use_Safe_Start 0) (!= LAST_SPEED 0.5) (and (> (abs (get-rpm)) 350) (> (abs (get-duty)) 0.05) (< (abs (get-current)) 5))))
+                (if (and (> (secs-since SAFE_START_TIMER) 0.5) (or (= Use_Safe_Start 0) (!= LAST_SPEED 0.5) (and (> (abs (get-rpm)) 350) (> (abs (get-duty)) 0.05) (< (abs (get-current)) 5))))
 
-         (progn
-         (conf-set 'l-in-current-max (ix Max_Current Scooter_Type))
+                (progn
+                (conf-set 'l-in-current-max (ix Max_Current Scooter_Type))
 
 
-         ;xxx reverse gear section
-         (if (< SPEED 2)
-             (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
-         ;else
-         ;xxx Normal Gears Section
-         (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
-         )
+                ;xxx reverse gear section
+                (if (< SPEED 2)
+                    (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
+                ;else
+                ;xxx Normal Gears Section
+                (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
+                )
 
-         (setvar 'Disp-Num (+ SPEED 4))
-         ;Maybe causing issues with timimg? (setvar 'Timer_Start (systime)) ; set state timer so that repeat display timing works in state 2
-         (setvar 'SAFE_START_TIMER 0); unlock speed changes and disable safe start timer
-         (setvar 'LAST_SPEED SPEED)
+                (setvar 'Disp-Num (+ SPEED 4))
+                ;Maybe causing issues with timimg? (setvar 'Timer_Start (systime)) ; set state timer so that repeat display timing works in state 2
+                (setvar 'SAFE_START_TIMER 0); unlock speed changes and disable safe start timer
+                (setvar 'LAST_SPEED SPEED)
+                ))
+
+                ;exit and stop motor if safestart hasnt cleared in 0.5 seconds and rpm is less than 500.
+                (if (and (> (secs-since SAFE_START_TIMER) 0.5) (> (abs (get-current)) 8) (< (abs (get-rpm)) 350) (= Use_Safe_Start 1) (= LAST_SPEED 0.5 ))
+                (progn
+                (setvar 'SPEED 99)
+                (setvar 'SW_STATE 1)
+                (spawn 40 SW_STATE_1)
+                (foc-beep 250 0.15 5)
+                ))
+
+
+                ))
+
           ))
+        })
+    })
+})
 
-        ;exit and stop motor if safestart hasnt cleared in 0.5 seconds and rpm is less than 500.
-        (if (and (> (secs-since SAFE_START_TIMER) 0.5) (> (abs (get-current)) 8) (< (abs (get-rpm)) 350) (= Use_Safe_Start 1) (= LAST_SPEED 0.5 ))
-         (progn
-         (setvar 'SPEED 99)
-         (setvar 'SW_STATE 1)
-         (spawn 40 SW_STATE_1)
-         (foc-beep 250 0.15 5)
-         ))
+(move-to-flash start_motor_speed_loop)
 
 
-          ))
+(defun thirds_warning_startup()
+{
+    (define Thirds-Total 0)
+    (define Warning-Counter 0) ; Count how many times the 3rds warnings have been triggered.
 
-          )))))))
-
-; **** Program that controls the display ****
-
-(def Displays [
-0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x81 0 0x81 ; Display Battery 1 Bar Rotation 0
-0 0x81 0 0x81 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 1 Bar Rotation 1
-0 0x60 0 0x60 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 1 Bar Rotation 2
-0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x60 0 0x60 ; Display Battery 1 Bar Rotation 3
-
-0 0x00 0 0x00 0 0x00 0 0x00 0 0x06 0 0x06 0 0x87 0 0x87 ; Display Battery 2 Bars Rotation 0
-0 0x81 0 0x81 0 0x87 0 0x87 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 2 Bars Rotation 1
-0 0x78 0 0x78 0 0x18 0 0x18 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 2 Bars Rotation 2
-0 0x00 0 0x00 0 0x00 0 0x00 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 2 Bars Rotation 3
-
-0 0x00 0 0x00 0 0x18 0 0x18 0 0x1E 0 0x1E 0 0x9F 0 0x9F ; Display Battery 3 Bars Rotation 0
-0 0x81 0 0x81 0 0x87 0 0x87 0 0x9F 0 0x9F 0 0x00 0 0x00 ; Display Battery 3 Bars Rotation 1
-0 0x7E 0 0x7E 0 0x1E 0 0x1E 0 0x06 0 0x06 0 0x00 0 0x00 ; Display Battery 3 Bars Rotation 2
-0 0x00 0 0x00 0 0x7E 0 0x7E 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 3 Bars Rotation 3
-
-0 0x60 0 0x60 0 0x78 0 0x78 0 0x7E 0 0x7E 0 0xFF 0 0xFF ; Display Battery 4 Bars Rotation 0
-0 0x81 0 0x81 0 0x87 0 0x87 0 0x9F 0 0x9F 0 0xFF 0 0xFF ; Display Battery 4 Bars Rotation 1
-0 0xFF 0 0xFF 0 0x9F 0 0x9F 0 0x87 0 0x87 0 0x81 0 0x81 ; Display Battery 4 Bars Rotation 2
-0 0xFF 0 0xFF 0 0x7E 0 0x7E 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 4 Bars Rotation 3
-
-0 0x1F 0 0x3F 0 0x33 0 0x1F 0 0x0F 0 0x1B 0 0x33 0 0x33 ; Display Reverse Rotation 0
-0 0x00 0 0xFF 0 0xFF 0 0x6C 0 0x6E 0 0xFB 0 0xB1 0 0x00 ; Display Reverse Rotation 1
-0 0x33 0 0x33 0 0x36 0 0x3C 0 0x3E 0 0x33 0 0x3F 0 0x3E ; Display Reverse Rotation 2
-0 0x00 0 0x63 0 0xF7 0 0x9D 0 0x8D 0 0xFF 0 0xFF 0 0x00 ; Display Reverse Rotation 3
-
-0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x3F 0 0x1E ; Display Untangle Rotation 0
-0 0x00 0 0x7F 0 0xFF 0 0x81 0 0x81 0 0xFF 0 0x7F 0 0x00 ; Display Untangle Rotation 1
-0 0x1E 0 0x3F 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 ; Display Untangle Rotation 2
-0 0x00 0 0xBF 0 0xFF 0 0x60 0 0x60 0 0xFF 0 0xBF 0 0x00 ; Display Untangle Rotation 3
-
-0 0x0C 0 0x0E 0 0x0E 0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x1E ; Display One Rotation 0
-0 0x00 0 0x00 0 0xB0 0 0xFF 0 0xFF 0 0x80 0 0x00 0 0x00 ; Display One Rotation 1
-0 0x1E 0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x1C 0 0x1C 0 0x0C ; Display One Rotation 2
-0 0x00 0 0x00 0 0x40 0 0xFF 0 0xFF 0 0x43 0 0x00 0 0x00 ; Display One Rotation 3
-
-0 0x1E 0 0x3F 0 0x31 0 0x18 0 0x06 0 0x03 0 0x3F 0 0x1E ; Display Two Rotation 0
-0 0x00 0 0x33 0 0xE7 0 0xE5 0 0xE9 0 0xF9 0 0x31 0 0x00 ; Display Two Rotation 1
-0 0x1E 0 0x3F 0 0x30 0 0x18 0 0x06 0 0x23 0 0x3F 0 0x1E ; Display Two Rotation 2
-0 0x00 0 0x23 0 0xE7 0 0xE5 0 0xE9 0 0xF9 0 0x33 0 0x00 ; Display Two Rotation 3
-
-0 0x1E 0 0x33 0 0x30 0 0x1C 0 0x3C 0 0x30 0 0x33 0 0x1E ; Display Three Rotation 0
-0 0x00 0 0x21 0 0xE1 0 0xCC 0 0xCC 0 0xFF 0 0x37 0 0x00 ; Display Three Rotation 1
-0 0x1E 0 0x33 0 0x03 0 0x0F 0 0x0E 0 0x03 0 0x33 0 0x1E ; Display Three Rotation 2
-0 0x00 0 0x3B 0 0xFF 0 0xCC 0 0xCC 0 0xE1 0 0x21 0 0x00 ; Display Three Rotation 3
-
-0 0x18 0 0x1C 0 0x1A 0 0x19 0 0x3F 0 0x3F 0 0x18 0 0x18 ; Display Four Rotation 0
-0 0x00 0 0x0E 0 0x16 0 0x26 0 0xFF 0 0xFF 0 0x06 0 0x00 ; Display Four Rotation 1
-0 0x06 0 0x06 0 0x3F 0 0x3F 0 0x26 0 0x16 0 0x0E 0 0x06 ; Display Four Rotation 2
-0 0x00 0 0x18 0 0xFF 0 0xFF 0 0x19 0 0x1A 0 0x1C 0 0x00 ; Display Four Rotation 3
-
-0 0x1E 0 0x03 0 0x03 0 0x1F 0 0x30 0 0x30 0 0x33 0 0x1E ; Display Five Rotation 0
-0 0x00 0 0x39 0 0xF9 0 0xC8 0 0xC8 0 0xCF 0 0x07 0 0x00 ; Display Five Rotation 1
-0 0x1E 0 0x33 0 0x03 0 0x03 0 0x3E 0 0x30 0 0x30 0 0x1E ; Display Five Rotation 2
-0 0x00 0 0x38 0 0xFC 0 0xC4 0 0xC4 0 0xE7 0 0x27 0 0x00 ; Display Five Rotation 3
-
-0 0x1E 0 0x23 0 0x03 0 0x1F 0 0x33 0 0x33 0 0x33 0 0x1E ; Display Six Rotation 0
-0 0x00 0 0x3F 0 0xFF 0 0xC8 0 0xC8 0 0xCF 0 0x27 0 0x00 ; Display Six Rotation 1
-0 0x1E 0 0x33 0 0x33 0 0x33 0 0x3E 0 0x30 0 0x31 0 0x1E ; Display Six Rotation 2
-0 0x00 0 0x39 0 0xFC 0 0xC4 0 0xC4 0 0xFF 0 0x3F 0 0x00 ; Display Six Rotation 3
-
-0 0x3F 0 0x33 0 0x30 0 0x18 0 0x0C 0 0x0C 0 0x0C 0 0x0C ; Display Seven Rotation 0
-0 0x00 0 0x60 0 0x60 0 0xC7 0 0xCF 0 0x78 0 0x70 0 0x00 ; Display Seven Rotation 1
-0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x06 0 0x03 0 0x33 0 0x3F ; Display Seven Rotation 2
-0 0x00 0 0x83 0 0x87 0 0xFC 0 0xF8 0 0x81 0 0x81 0 0x00 ; Display Seven Rotation 3
-
-0 0x1E 0 0x21 0 0xD2 0 0xC0 0 0xD2 0 0xCC 0 0x21 0 0x1E ; Display Eight Rotation 0
-0 0x1E 0 0x21 0 0xD4 0 0xC2 0 0xC2 0 0xD4 0 0x21 0 0x1E ; Display Eight Rotation 1
-0 0x1E 0 0x21 0 0xCC 0 0xD2 0 0xC0 0 0xD2 0 0x21 0 0x1E ; Display Eight Rotation 2
-0 0x1E 0 0x21 0 0xCA 0 0xD0 0 0xD0 0 0xCA 0 0x21 0 0x1E ; Display Eight Rotation 3
-
-0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off Rotation 0
-0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off Rotation 1
-0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off Rotation 2
-0 0x1E 0 0x21 0 0xD0 0 0xC8 0 0xC4 0 0xC2 0 0x21 0 0x1E ; Display Off Rotation 3
-
-0 0x0C 0 0x2D 0 0xCC 0 0xCC 0 0xCC 0 0xC0 0 0x21 0 0x1E ; Display Startup Rotation 0
-0 0x1E 0 0x21 0 0x80 0 0xFC 0 0xFC 0 0x80 0 0x21 0 0x1E ; Display Startup Rotation 1
-0 0x1E 0 0x21 0 0xC0 0 0xCC 0 0xCC 0 0xCC 0 0x2D 0 0x0C ; Display Startup Rotation 2
-0 0x1E 0 0x21 0 0x40 0 0xCF 0 0xCF 0 0x40 0 0x21 0 0x1E ; Display Startup Rotation 3
-
-0 0x00 0 0x13 0 0xA8 0 0xA0 0 0x90 0 0x80 0 0x13 0 0x00 ; Display Custom ? Rotation 0
-0 0x1E 0 0x21 0 0x21 0 0x00 0 0x10 0 0x25 0 0x18 0 0x00 ; Display Custom ? Rotation 1
-0 0x00 0 0x32 0 0x40 0 0x42 0 0x41 0 0x45 0 0x32 0 0x00 ; Display Custom ? Rotation 2
-0 0x00 0 0x06 0 0x29 0 0x02 0 0x00 0 0x21 0 0x21 0 0x1E ; Display Custom ? Rotation 3
-
-0 0x1C 0 0x36 0 0x03 0 0x03 0 0x03 0 0x03 0 0x36 0 0x1C ; Display Custom Rotation 0
-0 0x00 0 0x1E 0 0x3F 0 0xE1 0 0xC0 0 0xE1 0 0x21 0 0x00 ; Display Custom Rotation 1
-0 0x0E 0 0x1B 0 0x30 0 0x30 0 0x30 0 0x30 0 0x1B 0 0x0E ; Display Custom Rotation 2
-0 0x00 0 0x21 0 0xE1 0 0xC0 0 0xE1 0 0x3F 0 0x1E 0 0x00 ; Display Custom Rotation 3
-
-0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x81 0 0x81 ; Display 3rds 1 Bar Rotation 0
-0 0x81 0 0x81 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display 3rds 1 Bar Rotation 1
-0 0x60 0 0x60 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display 3rds 1 Bar Rotation 2
-0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x60 0 0x60 ; Display 3rds 1 Bar Rotation 3
-
-0 0x00 0 0x00 0 0x00 0 0x0C 0 0x0C 0 0x0C 0 0x8D 0 0x8D ; Display 3rds 2 Bars Rotation 0
-0 0x81 0 0x81 0 0x00 0 0x8F 0 0x8F 0 0x00 0 0x00 0 0x00 ; Display 3rds 2 Bars Rotation 1
-0 0x6C 0 0x6C 0 0x0C 0 0x0C 0 0x0C 0 0x00 0 0x00 0 0x00 ; Display 3rds 2 Bars Rotation 2
-0 0x00 0 0x00 0 0x00 0 0x7C 0 0x7C 0 0x00 0 0x60 0 0x60 ; Display 3rds 2 Bars Rotation 3
-
-0 0x60 0 0x60 0 0x60 0 0x6C 0 0x6C 0 0x6C 0 0xED 0 0xED ; Display 3rds 3 Bars Rotation 0
-0 0x81 0 0x81 0 0x00 0 0x8F 0 0x8F 0 0x00 0 0xFF 0 0xFF ; Display 3rds 3 Bars Rotation 1
-0 0xED 0 0xED 0 0x8D 0 0x8D 0 0x8D 0 0x81 0 0x81 0 0x81 ; Display 3rds 3 Bars Rotation 2
-0 0xFF 0 0xFF 0 0x00 0 0x7C 0 0x7C 0 0x00 0 0x60 0 0x60 ; Display 3rds 3 Bars Rotation 3
-
-0 0x23 0 0x52 0 0x52 0 0x52 0 0x52 0 0x52 0 0x52 0 0xA7 ; Display 10 Percent Rotation 0
-0 0x80 0 0xC0 0 0xFF 0 0x80 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 10 Percent Rotation 1
-0 0x79 0 0x92 0 0x92 0 0x92 0 0x92 0 0x92 0 0x92 0 0x31 ; Display 10 Percent Rotation 2
-0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x40 0 0xFF 0 0xC0 0 0x40 ; Display 10 Percent Rotation 3
-
-0 0xA3 0 0x54 0 0x54 0 0x54 0 0x53 0 0xD0 0 0xD0 0 0x27 ; Display 20 Percent Rotation 0
-0 0x43 0 0xC4 0 0xC4 0 0xB8 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 20 Percent Rotation 1
-0 0x39 0 0xC2 0 0xC2 0 0xB2 0 0x8A 0 0x8A 0 0x8A 0 0x71 ; Display 20 Percent Rotation 2
-0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x47 0 0xC8 0 0xC8 0 0xB0 ; Display 20 Percent Rotation 3
-
-0 0xA3 0 0x54 0 0x54 0 0x53 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 30 Percent Rotation 0
-0 0xC0 0 0xC8 0 0xC8 0 0x37 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 30 Percent Rotation 1
-0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xB2 0 0x8A 0 0x8A 0 0x71 ; Display 30 Percent Rotation 2
-0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x3B 0 0xC4 0 0xC4 0 0xC0 ; Display 30 Percent Rotation 3
-
-0 0x22 0 0x53 0 0xD2 0 0xD2 0 0xD7 0 0x52 0 0x52 0 0x22 ; Display 40 Percent Rotation 0
-0 0x1C 0 0x24 0 0xFF 0 0x04 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 40 Percent Rotation 1
-0 0x11 0 0x92 0 0x92 0 0xFA 0 0xD2 0 0xD2 0 0xB2 0 0x11 ; Display 40 Percent Rotation 2
-0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x08 0 0xFF 0 0x09 0 0x0E ; Display 40 Percent Rotation 3
-
-0 0xA7 0 0xD0 0 0xD0 0 0x53 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 50 Percent Rotation 0
-0 0xF0 0 0xC8 0 0xC8 0 0x47 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 50 Percent Rotation 1
-0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xB2 0 0xC2 0 0xC2 0 0x79 ; Display 50 Percent Rotation 2
-0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0xB8 0 0xC4 0 0xC4 0 0xC3 ; Display 50 Percent Rotation 3
-
-0 0x27 0 0xD0 0 0xD0 0 0xD3 0 0xD4 0 0xD4 0 0xD4 0 0x23 ; Display 60 Percent Rotation 0
-0 0x3F 0 0xC8 0 0xC8 0 0x47 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 60 Percent Rotation 1
-0 0x31 0 0xCA 0 0xCA 0 0xCA 0 0xF2 0 0xC2 0 0xC2 0 0x39 ; Display 60 Percent Rotation 2
-0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0xB8 0 0xC4 0 0xC4 0 0x3F ; Display 60 Percent Rotation 3
-
-0 0xA7 0 0x54 0 0x54 0 0x53 0 0x52 0 0x51 0 0x51 0 0xA0 ; Display 70 Percent Rotation 0
-0 0xC0 0 0x4B 0 0x4C 0 0x70 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 70 Percent Rotation 1
-0 0x41 0 0xA2 0 0xA2 0 0x92 0 0xB2 0 0x8A 0 0x8A 0 0x79 ; Display 70 Percent Rotation 2
-0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x83 0 0x8C 0 0xB4 0 0xC0 ; Display 70 Percent Rotation 3
-
-0 0x23 0 0xD4 0 0xD4 0 0xD4 0 0x53 0 0xD4 0 0xD4 0 0x23 ; Display 80 Percent Rotation 0
-0 0x3B 0 0xC4 0 0xC4 0 0x3B 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 80 Percent Rotation 1
-0 0x31 0 0xCA 0 0xCA 0 0xB2 0 0xCA 0 0xCA 0 0xCA 0 0x31 ; Display 80 Percent Rotation 2
-0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x37 0 0xC8 0 0xC8 0 0x37 ; Display 80 Percent Rotation 3
-
-0 0x23 0 0xD4 0 0xD4 0 0x57 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 90 Percent Rotation 0
-0 0xB0 0 0xC8 0 0xC8 0 0x3F 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 90 Percent Rotation 1
-0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xBA 0 0xCA 0 0xCA 0 0x31 ; Display 90 Percent Rotation 2
-0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x3F 0 0xC4 0 0xC4 0 0x43 ; Display 90 Percent Rotation 3
-
-0 0xE3 0 0x90 0 0x90 0 0x93 0 0x90 0 0x90 0 0x90 0 0xE0 ; Display 100 Percent Rotation 0
-0 0xFF 0 0x48 0 0x48 0 0x00 0 0x00 0 0x3F 0 0xC0 0 0xC0 ; Display 100 Percent Rotation 1
-0 0xC1 0 0x42 0 0x42 0 0x42 0 0x72 0 0x42 0 0x42 0 0xF1 ; Display 100 Percent Rotation 2
-0 0xC0 0 0xC0 0 0x3F 0 0x00 0 0x00 0 0x84 0 0x84 0 0xFF ; Display 100 Percent Rotation 3
-
-
-])
-
-(move-to-flash Displays)
-
-
-;List with all the screen Brightness commands
-(define Brightness_Bytes (list
-0xE0; 0 Min
-0xE3; 1
-0xE6; 2
-0xE9; 3
-0xEC; 4
-0xEF; 5 Max
-))
-
-(move-to-flash Brightness_Bytes)
-
- (if (or (= 0 Bluetooth) (= 3 Bluetooth)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
-     (i2c-start 'rate-400k 'pin-swdio 'pin-swclk); Works HW 60 with screen on SWD Connector. Screen SDA pin to Vesc SWDIO (2), Screen SCL pin to Vesc SWCLK (4)
-     (if (or (= 1 Bluetooth) ( = 4 Bluetooth)) ;1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth
-         (i2c-start 'rate-400k 'pin-rx 'pin-tx); Works HW 60 with screen on Comm Connector. Screen SDA pin to Vesc RX/SDA (5), Screen SCL pin to Vesc  TX/SCL (6)
-         (if ( = 2 Bluetooth)
-             (i2c-start 'rate-400k 'pin-tx 'pin-rx); tested on HW 410 Tested: SN 189, SN 1691
-              (nil))))
-
-  (define mpu-addr 0x70) ; I2C Address for the screen
-
-  (i2c-tx-rx 0x70 (list 0x21)) ; start the oscillator
-  (i2c-tx-rx 0x70 (list (ix Brightness_Bytes Disp_Brightness)))  ;set brightness
-
-  (if (= Scooter_Type 1) ; For cuda X setup second screen
-         (progn
-         (i2c-tx-rx 0x71 (list 0x21)) ; start the oscillator
-         (i2c-tx-rx 0x71 (list (ix Brightness_Bytes Disp_Brightness)))  ;set brightness
-   ))
-
-
-
-  (define Start 0) ;variable used to define start position in the array of diferent display screens
-  (define Disp-Num 1) ;variable used to define the display screen you are accesing 0-X
-  (define Last-Disp-Num 1); variable used to track last display screen show
-  (define pixbuf (array-create 16))  ;create a temp array to store display bytes in
-  (bufclear pixbuf) ;clear the buffer
-  (define Disp_Timer_Start 0); Timer for display duration
-  ;(define Disp_Duration 5) ; eliminated to save memory
-
-(spawn 45 (fn ()
-  (loopwhile t
-  (progn
-  (sleep 0.25)
-;xxxx Timer section to turn display off, gets reset by each new request to display
-  (if (> Disp_Timer_Start 1); check to see if display is on. dont want to run i2c comands continously
-  (if (> (secs-since Disp_Timer_Start) 5) ;check timer to see if its longer than display duration and display needs turning off, new display comands will keep adding time
-  (progn
-
-  (if (= Scooter_Type 0) ;For Blacktip Turn off the display
-        (if (!= Last-Disp-Num 17); if last display was the Smart Cruise, dont disable display
-            (i2c-tx-rx 0x70 (list 0x80))))
-   ;else For Cuda X make sure it doesnt get stuck on diaplaying B1 or B2 error, so switch back to last battery.
-  (if (and (= Scooter_Type 1) (> Last-Disp-Num 20) )
-      (setvar 'Disp-Num Last-Batt-Disp-Num))
-
-  (setvar 'Disp_Timer_Start 0)
-  )))
-;xxxx End of timer section
-
-    (if (!= Disp-Num Last-Disp-Num)
-    (progn
-    (if (= Scooter_Type 1) ; For cuda X second screen
+    (if (> Enable_Thirds_Warning_Startup 0)
         (progn
-        (if (= CudaX_Flip 1)
-            (setvar 'mpu-addr 0x70)
-            (setvar 'mpu-addr 0x71)
+            ; Wait a bit for battery reading to stabilize
+            (sleep 1.0)
+            ; Calculate battery % using the configured method
+            ; Set Thirds-Total to current battery level
+            (setvar 'Thirds-Total (get-battery-level))
+            (setvar 'Warning-Counter 0)
         )
-        (if (or (= Disp-Num 0) (= Disp-Num 1) (= Disp-Num 2) (= Disp-Num 3) (> Disp-Num 17) )
-            (if (= CudaX_Flip 1)
-                (setvar 'mpu-addr 0x71)
-                (setvar 'mpu-addr 0x70)
-        )    )
-    ))
-    (setvar 'Disp_Timer_Start (systime))
-    (if (= mpu-addr 0x70)
-        (setvar 'Start (+(* 64 Disp-Num) (* 16 Rotation))) ;define the correct start position in the array for the display
-        (setvar 'Start (+(* 64 Disp-Num) (* 16 Rotation2)))
-        )
-    (bufclear pixbuf)
-    (bufcpy pixbuf 0 Displays Start 16) ;copy the required display from "Displays" Array to "pixbuf"
-    (i2c-tx-rx mpu-addr pixbuf) ;send display characters
-    (i2c-tx-rx mpu-addr (list 0x81)) ;Turn on display
-    (setvar 'Last-Disp-Num Disp-Num)
-    (setvar 'mpu-addr 0x70)
-        ))
+    )
+})
 
-      ))))
- ; **** End of Display program ****
+(move-to-flash thirds_warning_startup)
+
+
+(defun start_display_output_loop()
+{
+    (define Disp-Num 1) ;variable used to define the display screen you are accesing 0-X
+    (define Last-Disp-Num 1); variable used to track last display screen show
+
+    (let ((start_pos 0) ;variable used to define start position in the array of diferent display screens
+          (pixbuf (array-create 16)) ;create a temp array to store display bytes in
+          (Displays [
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x81 0 0x81 ; Display Battery 1 Bar Rotation 0
+            0 0x81 0 0x81 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 1 Bar Rotation 1
+            0 0x60 0 0x60 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 1 Bar Rotation 2
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x60 0 0x60 ; Display Battery 1 Bar Rotation 3
+
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x06 0 0x06 0 0x87 0 0x87 ; Display Battery 2 Bars Rotation 0
+            0 0x81 0 0x81 0 0x87 0 0x87 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 2 Bars Rotation 1
+            0 0x78 0 0x78 0 0x18 0 0x18 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 2 Bars Rotation 2
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 2 Bars Rotation 3
+
+            0 0x00 0 0x00 0 0x18 0 0x18 0 0x1E 0 0x1E 0 0x9F 0 0x9F ; Display Battery 3 Bars Rotation 0
+            0 0x81 0 0x81 0 0x87 0 0x87 0 0x9F 0 0x9F 0 0x00 0 0x00 ; Display Battery 3 Bars Rotation 1
+            0 0x7E 0 0x7E 0 0x1E 0 0x1E 0 0x06 0 0x06 0 0x00 0 0x00 ; Display Battery 3 Bars Rotation 2
+            0 0x00 0 0x00 0 0x7E 0 0x7E 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 3 Bars Rotation 3
+
+            0 0x60 0 0x60 0 0x78 0 0x78 0 0x7E 0 0x7E 0 0xFF 0 0xFF ; Display Battery 4 Bars Rotation 0
+            0 0x81 0 0x81 0 0x87 0 0x87 0 0x9F 0 0x9F 0 0xFF 0 0xFF ; Display Battery 4 Bars Rotation 1
+            0 0xFF 0 0xFF 0 0x9F 0 0x9F 0 0x87 0 0x87 0 0x81 0 0x81 ; Display Battery 4 Bars Rotation 2
+            0 0xFF 0 0xFF 0 0x7E 0 0x7E 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 4 Bars Rotation 3
+
+            0 0x1F 0 0x3F 0 0x33 0 0x1F 0 0x0F 0 0x1B 0 0x33 0 0x33 ; Display Reverse Rotation 0
+            0 0x00 0 0xFF 0 0xFF 0 0x6C 0 0x6E 0 0xFB 0 0xB1 0 0x00 ; Display Reverse Rotation 1
+            0 0x33 0 0x33 0 0x36 0 0x3C 0 0x3E 0 0x33 0 0x3F 0 0x3E ; Display Reverse Rotation 2
+            0 0x00 0 0x63 0 0xF7 0 0x9D 0 0x8D 0 0xFF 0 0xFF 0 0x00 ; Display Reverse Rotation 3
+
+            0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x3F 0 0x1E ; Display Untangle Rotation 0
+            0 0x00 0 0x7F 0 0xFF 0 0x81 0 0x81 0 0xFF 0 0x7F 0 0x00 ; Display Untangle Rotation 1
+            0 0x1E 0 0x3F 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 ; Display Untangle Rotation 2
+            0 0x00 0 0xBF 0 0xFF 0 0x60 0 0x60 0 0xFF 0 0xBF 0 0x00 ; Display Untangle Rotation 3
+
+            0 0x0C 0 0x0E 0 0x0E 0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x1E ; Display One Rotation 0
+            0 0x00 0 0x00 0 0xB0 0 0xFF 0 0xFF 0 0x80 0 0x00 0 0x00 ; Display One Rotation 1
+            0 0x1E 0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x1C 0 0x1C 0 0x0C ; Display One Rotation 2
+            0 0x00 0 0x00 0 0x40 0 0xFF 0 0xFF 0 0x43 0 0x00 0 0x00 ; Display One Rotation 3
+
+            0 0x1E 0 0x3F 0 0x31 0 0x18 0 0x06 0 0x03 0 0x3F 0 0x1E ; Display Two Rotation 0
+            0 0x00 0 0x33 0 0xE7 0 0xE5 0 0xE9 0 0xF9 0 0x31 0 0x00 ; Display Two Rotation 1
+            0 0x1E 0 0x3F 0 0x30 0 0x18 0 0x06 0 0x23 0 0x3F 0 0x1E ; Display Two Rotation 2
+            0 0x00 0 0x23 0 0xE7 0 0xE5 0 0xE9 0 0xF9 0 0x33 0 0x00 ; Display Two Rotation 3
+
+            0 0x1E 0 0x33 0 0x30 0 0x1C 0 0x3C 0 0x30 0 0x33 0 0x1E ; Display Three Rotation 0
+            0 0x00 0 0x21 0 0xE1 0 0xCC 0 0xCC 0 0xFF 0 0x37 0 0x00 ; Display Three Rotation 1
+            0 0x1E 0 0x33 0 0x03 0 0x0F 0 0x0E 0 0x03 0 0x33 0 0x1E ; Display Three Rotation 2
+            0 0x00 0 0x3B 0 0xFF 0 0xCC 0 0xCC 0 0xE1 0 0x21 0 0x00 ; Display Three Rotation 3
+
+            0 0x18 0 0x1C 0 0x1A 0 0x19 0 0x3F 0 0x3F 0 0x18 0 0x18 ; Display Four Rotation 0
+            0 0x00 0 0x0E 0 0x16 0 0x26 0 0xFF 0 0xFF 0 0x06 0 0x00 ; Display Four Rotation 1
+            0 0x06 0 0x06 0 0x3F 0 0x3F 0 0x26 0 0x16 0 0x0E 0 0x06 ; Display Four Rotation 2
+            0 0x00 0 0x18 0 0xFF 0 0xFF 0 0x19 0 0x1A 0 0x1C 0 0x00 ; Display Four Rotation 3
+
+            0 0x1E 0 0x03 0 0x03 0 0x1F 0 0x30 0 0x30 0 0x33 0 0x1E ; Display Five Rotation 0
+            0 0x00 0 0x39 0 0xF9 0 0xC8 0 0xC8 0 0xCF 0 0x07 0 0x00 ; Display Five Rotation 1
+            0 0x1E 0 0x33 0 0x03 0 0x03 0 0x3E 0 0x30 0 0x30 0 0x1E ; Display Five Rotation 2
+            0 0x00 0 0x38 0 0xFC 0 0xC4 0 0xC4 0 0xE7 0 0x27 0 0x00 ; Display Five Rotation 3
+
+            0 0x1E 0 0x23 0 0x03 0 0x1F 0 0x33 0 0x33 0 0x33 0 0x1E ; Display Six Rotation 0
+            0 0x00 0 0x3F 0 0xFF 0 0xC8 0 0xC8 0 0xCF 0 0x27 0 0x00 ; Display Six Rotation 1
+            0 0x1E 0 0x33 0 0x33 0 0x33 0 0x3E 0 0x30 0 0x31 0 0x1E ; Display Six Rotation 2
+            0 0x00 0 0x39 0 0xFC 0 0xC4 0 0xC4 0 0xFF 0 0x3F 0 0x00 ; Display Six Rotation 3
+
+            0 0x3F 0 0x33 0 0x30 0 0x18 0 0x0C 0 0x0C 0 0x0C 0 0x0C ; Display Seven Rotation 0
+            0 0x00 0 0x60 0 0x60 0 0xC7 0 0xCF 0 0x78 0 0x70 0 0x00 ; Display Seven Rotation 1
+            0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x06 0 0x03 0 0x33 0 0x3F ; Display Seven Rotation 2
+            0 0x00 0 0x83 0 0x87 0 0xFC 0 0xF8 0 0x81 0 0x81 0 0x00 ; Display Seven Rotation 3
+
+            0 0x1E 0 0x21 0 0xD2 0 0xC0 0 0xD2 0 0xCC 0 0x21 0 0x1E ; Display Eight Rotation 0
+            0 0x1E 0 0x21 0 0xD4 0 0xC2 0 0xC2 0 0xD4 0 0x21 0 0x1E ; Display Eight Rotation 1
+            0 0x1E 0 0x21 0 0xCC 0 0xD2 0 0xC0 0 0xD2 0 0x21 0 0x1E ; Display Eight Rotation 2
+            0 0x1E 0 0x21 0 0xCA 0 0xD0 0 0xD0 0 0xCA 0 0x21 0 0x1E ; Display Eight Rotation 3
+
+            0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off Rotation 0
+            0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off Rotation 1
+            0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off Rotation 2
+            0 0x1E 0 0x21 0 0xD0 0 0xC8 0 0xC4 0 0xC2 0 0x21 0 0x1E ; Display Off Rotation 3
+
+            0 0x0C 0 0x2D 0 0xCC 0 0xCC 0 0xCC 0 0xC0 0 0x21 0 0x1E ; Display Startup Rotation 0
+            0 0x1E 0 0x21 0 0x80 0 0xFC 0 0xFC 0 0x80 0 0x21 0 0x1E ; Display Startup Rotation 1
+            0 0x1E 0 0x21 0 0xC0 0 0xCC 0 0xCC 0 0xCC 0 0x2D 0 0x0C ; Display Startup Rotation 2
+            0 0x1E 0 0x21 0 0x40 0 0xCF 0 0xCF 0 0x40 0 0x21 0 0x1E ; Display Startup Rotation 3
+
+            0 0x00 0 0x13 0 0xA8 0 0xA0 0 0x90 0 0x80 0 0x13 0 0x00 ; Display Custom ? Rotation 0
+            0 0x1E 0 0x21 0 0x21 0 0x00 0 0x10 0 0x25 0 0x18 0 0x00 ; Display Custom ? Rotation 1
+            0 0x00 0 0x32 0 0x40 0 0x42 0 0x41 0 0x45 0 0x32 0 0x00 ; Display Custom ? Rotation 2
+            0 0x00 0 0x06 0 0x29 0 0x02 0 0x00 0 0x21 0 0x21 0 0x1E ; Display Custom ? Rotation 3
+
+            0 0x1C 0 0x36 0 0x03 0 0x03 0 0x03 0 0x03 0 0x36 0 0x1C ; Display Custom Rotation 0
+            0 0x00 0 0x1E 0 0x3F 0 0xE1 0 0xC0 0 0xE1 0 0x21 0 0x00 ; Display Custom Rotation 1
+            0 0x0E 0 0x1B 0 0x30 0 0x30 0 0x30 0 0x30 0 0x1B 0 0x0E ; Display Custom Rotation 2
+            0 0x00 0 0x21 0 0xE1 0 0xC0 0 0xE1 0 0x3F 0 0x1E 0 0x00 ; Display Custom Rotation 3
+
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x81 0 0x81 ; Display 3rds 1 Bar Rotation 0
+            0 0x81 0 0x81 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display 3rds 1 Bar Rotation 1
+            0 0x60 0 0x60 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display 3rds 1 Bar Rotation 2
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x60 0 0x60 ; Display 3rds 1 Bar Rotation 3
+
+            0 0x00 0 0x00 0 0x00 0 0x0C 0 0x0C 0 0x0C 0 0x8D 0 0x8D ; Display 3rds 2 Bars Rotation 0
+            0 0x81 0 0x81 0 0x00 0 0x8F 0 0x8F 0 0x00 0 0x00 0 0x00 ; Display 3rds 2 Bars Rotation 1
+            0 0x6C 0 0x6C 0 0x0C 0 0x0C 0 0x0C 0 0x00 0 0x00 0 0x00 ; Display 3rds 2 Bars Rotation 2
+            0 0x00 0 0x00 0 0x00 0 0x7C 0 0x7C 0 0x00 0 0x60 0 0x60 ; Display 3rds 2 Bars Rotation 3
+
+            0 0x60 0 0x60 0 0x60 0 0x6C 0 0x6C 0 0x6C 0 0xED 0 0xED ; Display 3rds 3 Bars Rotation 0
+            0 0x81 0 0x81 0 0x00 0 0x8F 0 0x8F 0 0x00 0 0xFF 0 0xFF ; Display 3rds 3 Bars Rotation 1
+            0 0xED 0 0xED 0 0x8D 0 0x8D 0 0x8D 0 0x81 0 0x81 0 0x81 ; Display 3rds 3 Bars Rotation 2
+            0 0xFF 0 0xFF 0 0x00 0 0x7C 0 0x7C 0 0x00 0 0x60 0 0x60 ; Display 3rds 3 Bars Rotation 3
+
+            0 0x23 0 0x52 0 0x52 0 0x52 0 0x52 0 0x52 0 0x52 0 0xA7 ; Display 10 Percent Rotation 0
+            0 0x80 0 0xC0 0 0xFF 0 0x80 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 10 Percent Rotation 1
+            0 0x79 0 0x92 0 0x92 0 0x92 0 0x92 0 0x92 0 0x92 0 0x31 ; Display 10 Percent Rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x40 0 0xFF 0 0xC0 0 0x40 ; Display 10 Percent Rotation 3
+
+            0 0xA3 0 0x54 0 0x54 0 0x54 0 0x53 0 0xD0 0 0xD0 0 0x27 ; Display 20 Percent Rotation 0
+            0 0x43 0 0xC4 0 0xC4 0 0xB8 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 20 Percent Rotation 1
+            0 0x39 0 0xC2 0 0xC2 0 0xB2 0 0x8A 0 0x8A 0 0x8A 0 0x71 ; Display 20 Percent Rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x47 0 0xC8 0 0xC8 0 0xB0 ; Display 20 Percent Rotation 3
+
+            0 0xA3 0 0x54 0 0x54 0 0x53 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 30 Percent Rotation 0
+            0 0xC0 0 0xC8 0 0xC8 0 0x37 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 30 Percent Rotation 1
+            0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xB2 0 0x8A 0 0x8A 0 0x71 ; Display 30 Percent Rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x3B 0 0xC4 0 0xC4 0 0xC0 ; Display 30 Percent Rotation 3
+
+            0 0x22 0 0x53 0 0xD2 0 0xD2 0 0xD7 0 0x52 0 0x52 0 0x22 ; Display 40 Percent Rotation 0
+            0 0x1C 0 0x24 0 0xFF 0 0x04 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 40 Percent Rotation 1
+            0 0x11 0 0x92 0 0x92 0 0xFA 0 0xD2 0 0xD2 0 0xB2 0 0x11 ; Display 40 Percent Rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x08 0 0xFF 0 0x09 0 0x0E ; Display 40 Percent Rotation 3
+
+            0 0xA7 0 0xD0 0 0xD0 0 0x53 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 50 Percent Rotation 0
+            0 0xF0 0 0xC8 0 0xC8 0 0x47 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 50 Percent Rotation 1
+            0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xB2 0 0xC2 0 0xC2 0 0x79 ; Display 50 Percent Rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0xB8 0 0xC4 0 0xC4 0 0xC3 ; Display 50 Percent Rotation 3
+
+            0 0x27 0 0xD0 0 0xD0 0 0xD3 0 0xD4 0 0xD4 0 0xD4 0 0x23 ; Display 60 Percent Rotation 0
+            0 0x3F 0 0xC8 0 0xC8 0 0x47 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 60 Percent Rotation 1
+            0 0x31 0 0xCA 0 0xCA 0 0xCA 0 0xF2 0 0xC2 0 0xC2 0 0x39 ; Display 60 Percent Rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0xB8 0 0xC4 0 0xC4 0 0x3F ; Display 60 Percent Rotation 3
+
+            0 0xA7 0 0x54 0 0x54 0 0x53 0 0x52 0 0x51 0 0x51 0 0xA0 ; Display 70 Percent Rotation 0
+            0 0xC0 0 0x4B 0 0x4C 0 0x70 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 70 Percent Rotation 1
+            0 0x41 0 0xA2 0 0xA2 0 0x92 0 0xB2 0 0x8A 0 0x8A 0 0x79 ; Display 70 Percent Rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x83 0 0x8C 0 0xB4 0 0xC0 ; Display 70 Percent Rotation 3
+
+            0 0x23 0 0xD4 0 0xD4 0 0xD4 0 0x53 0 0xD4 0 0xD4 0 0x23 ; Display 80 Percent Rotation 0
+            0 0x3B 0 0xC4 0 0xC4 0 0x3B 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 80 Percent Rotation 1
+            0 0x31 0 0xCA 0 0xCA 0 0xB2 0 0xCA 0 0xCA 0 0xCA 0 0x31 ; Display 80 Percent Rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x37 0 0xC8 0 0xC8 0 0x37 ; Display 80 Percent Rotation 3
+
+            0 0x23 0 0xD4 0 0xD4 0 0x57 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 90 Percent Rotation 0
+            0 0xB0 0 0xC8 0 0xC8 0 0x3F 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 90 Percent Rotation 1
+            0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xBA 0 0xCA 0 0xCA 0 0x31 ; Display 90 Percent Rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x3F 0 0xC4 0 0xC4 0 0x43 ; Display 90 Percent Rotation 3
+
+            0 0xE3 0 0x90 0 0x90 0 0x93 0 0x90 0 0x90 0 0x90 0 0xE0 ; Display 100 Percent Rotation 0
+            0 0xFF 0 0x48 0 0x48 0 0x00 0 0x00 0 0x3F 0 0xC0 0 0xC0 ; Display 100 Percent Rotation 1
+            0 0xC1 0 0x42 0 0x42 0 0x42 0 0x72 0 0x42 0 0x42 0 0xF1 ; Display 100 Percent Rotation 2
+            0 0xC0 0 0xC0 0 0x3F 0 0x00 0 0x00 0 0x84 0 0x84 0xFF ; Display 100 Percent Rotation 3
+        ])) {
+
+        (bufclear pixbuf) ;clear the buffer
+        (loopwhile-thd 45 t {
+            (sleep 0.25)
+            ;xxxx Timer section to turn display off, gets reset by each new request to display
+            (if (> Disp_Timer_Start 1); check to see if display is on. dont want to run i2c comands continously
+            (if (> (secs-since Disp_Timer_Start) 5) ;check timer to see if its longer than display duration and display needs turning off, new display comands will keep adding time
+            (progn
+
+            (if (= Scooter_Type 0) ;For Blacktip Turn off the display
+                    (if (!= Last-Disp-Num 17); if last display was the Smart Cruise, dont disable display
+                        (i2c-tx-rx 0x70 (list 0x80))))
+            ;else For Cuda X make sure it doesnt get stuck on diaplaying B1 or B2 error, so switch back to last battery.
+            (if (and (= Scooter_Type 1) (> Last-Disp-Num 20) )
+                (setvar 'Disp-Num Last-Batt-Disp-Num))
+
+            (setvar 'Disp_Timer_Start 0)
+            )))
+            ;xxxx End of timer section
+
+                (if (!= Disp-Num Last-Disp-Num)
+                (progn
+                (if (= Scooter_Type 1) ; For cuda X second screen
+                    (progn
+                    (if (= CudaX_Flip 1)
+                        (setvar 'mpu-addr 0x70)
+                        (setvar 'mpu-addr 0x71)
+                    )
+                    (if (or (= Disp-Num 0) (= Disp-Num 1) (= Disp-Num 2) (= Disp-Num 3) (> Disp-Num 17) )
+                        (if (= CudaX_Flip 1)
+                            (setvar 'mpu-addr 0x71)
+                            (setvar 'mpu-addr 0x70)
+                    )    )
+                ))
+                (setvar 'Disp_Timer_Start (systime))
+                (if (= mpu-addr 0x70)
+                    (setvar 'start_pos (+(* 64 Disp-Num) (* 16 Rotation))) ;define the correct start position in the array for the display
+                    (setvar 'start_pos (+(* 64 Disp-Num) (* 16 Rotation2)))
+                    )
+                (bufclear pixbuf)
+                (bufcpy pixbuf 0 Displays start_pos 16) ;copy the required display from "Displays" Array to "pixbuf"
+                (i2c-tx-rx mpu-addr pixbuf) ;send display characters
+                (i2c-tx-rx mpu-addr (list 0x81)) ;Turn on display
+                (setvar 'Last-Disp-Num Disp-Num)
+                (setvar 'mpu-addr 0x70)
+                    ))
+
+        })
+    })
+})
+
+(move-to-flash start_display_output_loop)
 
 
  ; **** Program that triggers the display to show battery status ****
 
-(define Batt_Disp_Timer_Start 0) ;Timer to see if Battery display has been triggered
-(define Last-Batt-Disp-Num 3); variable used to track last display screen show
-(define Batt-Disp-State 0)
+(defun start_display_battery_loop()
+{
+    (define Batt_Disp_Timer_Start 0) ;Timer to see if Battery display has been triggered
+    (define Last-Batt-Disp-Num 3); variable used to track last display screen show
 
-(spawn 45 (fn ()
-(loopwhile t
-    (progn
+    (let ((Batt-Disp-State 0))
+    (loopwhile-thd 45 t {
        (sleep 0.25)
 
         (if (or (= Batt_Disp_Timer_Start 0) (= Batt-Disp-State 0))
@@ -928,9 +915,12 @@
                (setvar 'Batt_Disp_Timer_Start 0)
               ))
 
-     ))))
+    })
+    )
+})
 
-    ;xxxx Beeps Program xxxx"
+(move-to-flash start_display_battery_loop)
+
 
    (defun Beeper (Beeps)
    (loopwhile (and (= Enable_Battery_Beeps 1) (> Batt_Disp_Timer_Start 0) (> Beeps 0))
@@ -958,43 +948,110 @@
 
        ;***** Program that beeps trigger clicks
 
-       (define Click_Beep 0)
-       (define Click_Beep_Timer 0)
 
-    (spawn 35 (fn ()
-    (loopwhile t
-    (progn
-    (sleep 0.25)
+(defun start_beeper_loop()
+{
+    (define Click_Beep 0)
 
-    (if (and (> (secs-since Click_Beep_Timer) 0.25) (!= Click_Beep_Timer 0))
-    (progn
-    (foc-play-stop)
-    (setvar 'Click_Beep_Timer 0)
-    ))
+    (let ((Click_Beep_Timer 0))
+    (loopwhile-thd 100 t {
+        (sleep 0.25)
 
-    (if (> Click_Beep 0)
-    (progn
-    (if (and (= Click_Beep 5) (> Enable_Smart_Cruise 0)(!= SPEED 99)) (foc-play-tone 1 1500 Beeps_Vol))
-    (if (= Enable_Trigger_Beeps 1)
-    (progn
-    (if (= Click_Beep 1)(foc-play-tone 1 2500 Beeps_Vol))
-    (if (= Click_Beep 2)(foc-play-tone 1 3000 Beeps_Vol))
-    (if (= Click_Beep 3)(foc-play-tone 1 3500 Beeps_Vol))
-    (if (= Click_Beep 4)(foc-play-tone 1 4000 Beeps_Vol))
-    ))
+        (if (and (> (secs-since Click_Beep_Timer) 0.25) (!= Click_Beep_Timer 0))
+        (progn
+        (foc-play-stop)
+        (setvar 'Click_Beep_Timer 0)
+        ))
 
-    (setvar 'Click_Beep_Timer (systime))
-    (setvar 'Click_Beep 0)
-    ))
+        (if (> Click_Beep 0)
+        (progn
+        (if (and (= Click_Beep 5) (> Enable_Smart_Cruise 0)(!= SPEED 99)) (foc-play-tone 1 1500 Beeps_Vol))
+        (if (= Enable_Trigger_Beeps 1)
+        (progn
+        (if (= Click_Beep 1)(foc-play-tone 1 2500 Beeps_Vol))
+        (if (= Click_Beep 2)(foc-play-tone 1 3000 Beeps_Vol))
+        (if (= Click_Beep 3)(foc-play-tone 1 3500 Beeps_Vol))
+        (if (= Click_Beep 4)(foc-play-tone 1 4000 Beeps_Vol))
+        ))
 
-    ))))
+        (setvar 'Click_Beep_Timer (systime))
+        (setvar 'Click_Beep 0)
+        ))
+
+    })
+    )
+})
+
+(move-to-flash start_beeper_loop)
 
 
-      ;******* End of trigger click beeps
+(defun peripherals_setup()
+{
+    (define Disp_Timer_Start 0); Timer for display duration
 
+    ;List with all the screen Brightness commands
+    (let ((Brightness_Bytes (list
+        0xE0; 0 Min
+        0xE3; 1
+        0xE6; 2
+        0xE9; 3
+        0xEC; 4
+        0xEF; 5 Max
+        ))) {
 
+        (if (or (= 0 Bluetooth) (= 3 Bluetooth)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
+            (i2c-start 'rate-400k 'pin-swdio 'pin-swclk); Works HW 60 with screen on SWD Connector. Screen SDA pin to Vesc SWDIO (2), Screen SCL pin to Vesc SWCLK (4)
+            (if (or (= 1 Bluetooth) ( = 4 Bluetooth)) ;1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth
+                (i2c-start 'rate-400k 'pin-rx 'pin-tx); Works HW 60 with screen on Comm Connector. Screen SDA pin to Vesc RX/SDA (5), Screen SCL pin to Vesc  TX/SCL (6)
+                (if ( = 2 Bluetooth)
+                    (i2c-start 'rate-400k 'pin-tx 'pin-rx); tested on HW 410 Tested: SN 189, SN 1691
+                    (nil))))
 
-     (spawn 35 SW_STATE_0) ;***Start state machine runnning for first time
+        (define mpu-addr 0x70) ; I2C Address for the screen
 
-     (setvar 'Disp-Num 15); display startup screen, change bytes if you want a different one
-     (setvar 'Batt_Disp_Timer_Start (systime)); turns battery display on for power on.
+        (i2c-tx-rx 0x70 (list 0x21)) ; start the oscillator
+        (i2c-tx-rx 0x70 (list (ix Brightness_Bytes Disp_Brightness)))  ;set brightness
+
+        (if (= Scooter_Type 1) ; For cuda X setup second screen
+                (progn
+                (i2c-tx-rx 0x71 (list 0x21)) ; start the oscillator
+                (i2c-tx-rx 0x71 (list (ix Brightness_Bytes Disp_Brightness)))  ;set brightness
+        ))
+    })
+})
+
+(defun main()
+{
+    (eeprom_set_defaults)
+
+    (Update_Settings) ; creates all settings variables
+
+    (thirds_warning_startup)
+
+    (setup_event_handler)
+
+    (setup_state_machine)
+
+    (start_motor_speed_loop)
+
+    (start_beeper_loop)
+
+    (peripherals_setup)
+
+    (start_display_output_loop)
+
+    (start_display_battery_loop)
+
+    (start_smart_cruise_loop)
+
+    (start_trigger_loop)
+
+    (spawn 35 SW_STATE_0) ;***Start state machine runnning for first time
+
+    (setvar 'Disp-Num 15) ; display startup screen, change bytes if you want a different one
+    (setvar 'Batt_Disp_Timer_Start (systime)) ; turns battery display on for power on.
+
+    (puts "Startup complete")
+})
+
+(main)
