@@ -1,5 +1,7 @@
 Dive Xtras Scooter software for VESC controller using Lisp and qml to create a package.
 
+![Blacktip DPV Logo.](/blacktip_dpv/shark_with_laser.png)
+
 Features
 All new software with multiple new features
 
