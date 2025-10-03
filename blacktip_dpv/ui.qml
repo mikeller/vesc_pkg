@@ -1053,10 +1053,9 @@ Item {
 
         function onCustomAppDataReceived (data) {
             var dv = new DataView(data)
-
+            var was_reading = !readSettingsDone
 
             enable_bluetooth.currentIndex =  dv.getUint8(19) // set first so U spinbox range is opened up for cuda x
-
 
             reverse_speed.realValue = dv.getUint8(0)
             untangle_speed.realValue = dv.getUint8(1)
@@ -1092,6 +1091,11 @@ Item {
             battery_ah.realValue = mMcConf.getParamDouble("si_battery_ah")
 
             readSettingsDone = true
+
+            if (was_reading) {
+                // reset the change flags because updating the settings may trigger the onChanged actions
+                swipeView.itemAt(1).has_changes = false
+            }
 
             console.log("Values From Lisp Recieved")
 
