@@ -327,7 +327,7 @@ Item {
                         DoubleSpinBox {
                             id: two_speed
                             Layout.fillWidth: true
-                            visible: (no_speeds.realValue > 1) ? true : false
+                            visible: no_speeds.realValue > 1
                             decimals: 0
                             prefix: "Speed 2: "
                             suffix: " %"
@@ -343,7 +343,7 @@ Item {
                         DoubleSpinBox {
                             id: three_speed
                             Layout.fillWidth: true
-                            visible: (no_speeds.realValue > 2) ? true : false
+                            visible: no_speeds.realValue > 2
                             decimals: 0
                             prefix: "Speed 3: "
                             suffix: " %"
@@ -359,7 +359,7 @@ Item {
                         DoubleSpinBox {
                             id: four_speed
                             Layout.fillWidth: true
-                            visible: (no_speeds.realValue > 3) ? true : false
+                            visible: no_speeds.realValue > 3
                             decimals: 0
                             prefix: "Speed 4: "
                             suffix: " %"
@@ -375,7 +375,7 @@ Item {
                         DoubleSpinBox {
                             id: five_speed
                             Layout.fillWidth: true
-                            visible: (no_speeds.realValue > 4) ? true : false
+                            visible: no_speeds.realValue > 4
                             decimals: 0
                             prefix: "Speed 5: "
                             suffix: " %"
@@ -391,7 +391,7 @@ Item {
                         DoubleSpinBox {
                             id: six_speed
                             Layout.fillWidth: true
-                            visible: (no_speeds.realValue > 5) ? true : false
+                            visible: no_speeds.realValue > 5
                             decimals: 0
                             prefix: "Speed 6: "
                             suffix: " %"
@@ -407,7 +407,7 @@ Item {
                         DoubleSpinBox {
                             id: seven_speed
                             Layout.fillWidth: true
-                            visible: (no_speeds.realValue > 6) ? true : false
+                            visible: no_speeds.realValue > 6
                             decimals: 0
                             prefix: "Speed 7: "
                             suffix: " %"
@@ -423,7 +423,7 @@ Item {
                         DoubleSpinBox {
                             id: eight_speed
                             Layout.fillWidth: true
-                            visible: (no_speeds.realValue > 7) ? true : false
+                            visible: no_speeds.realValue > 7
                             decimals: 0
                             prefix: "Speed 8: "
                             suffix: " %"
@@ -615,7 +615,7 @@ Item {
 
                     CheckBox {
                         id: cudaX_Flip
-                        visible: (enable_bluetooth.currentIndex > 2) ? true : false
+                        visible: enable_bluetooth.currentIndex > 2
                         Layout.fillWidth: true
                         text: "Flip Screens on CudaX"
                         checked: false
@@ -638,7 +638,7 @@ Item {
                      DoubleSpinBox {
                         id: display_rotation2
                         Layout.fillWidth: true
-                        visible: (enable_bluetooth.currentIndex > 2) ? true : false
+                        visible: enable_bluetooth.currentIndex > 2
                         decimals: 0
                         prefix: "Display 2 Rotation: "
                         suffix: " Deg."
@@ -1071,22 +1071,22 @@ Item {
             no_speeds.realValue = dv.getUint8(10) -1
             start_speed.realValue = dv.getUint8(11) -1
             jump_speed.realValue = dv.getUint8(12) -1
-            safe_start.checked =  (dv.getUint8(13) == 1 )? true : false
-            enable_reverse.checked =  (dv.getUint8(14) == 1 )? true : false
-            enable_smart_cruise.checked =  (dv.getUint8(15) == 1 )? true : false
+            safe_start.checked =  dv.getUint8(13) == 1
+            enable_reverse.checked =  dv.getUint8(14) == 1
+            enable_smart_cruise.checked =  dv.getUint8(15) == 1
             smart_cruise_timeout.realValue = dv.getUint8(16)
             display_rotation.realValue = (dv.getUint8(17) == 0) ? 0 : dv.getUint8(17) * 90
             display_brightness.realValue = (dv.getUint8(18) == 0) ? 0 : dv.getUint8(18) * 20
             //enable_bluetooth.currentIndex =  dv.getUint8(19)
-            enable_beeps.checked =  (dv.getUint8(20) == 1 )? true : false
+            enable_beeps.checked =  dv.getUint8(20) == 1
             beeps_volume.realValue = dv.getUint8(21)
-            cudaX_Flip.checked =  (dv.getUint8(22) == 1 )? true : false
+            cudaX_Flip.checked =  dv.getUint8(22) == 1
             display_rotation2.realValue = (dv.getUint8(23) == 0) ? 0 : dv.getUint8(23) * 90
-            enable_tbeeps.checked =  (dv.getUint8(24) == 1 )? true : false
-            enable_smart_cruise_auto_engage.checked =  (dv.getUint8(25) == 1 )? true : false
+            enable_tbeeps.checked =  dv.getUint8(24) == 1
+            enable_smart_cruise_auto_engage.checked =  dv.getUint8(25) == 1
             smart_cruise_auto_engage_delay.realValue = dv.getUint8(26)
-            enable_thirds_warning_startup.checked =  (dv.getUint8(27) == 1 )? true : false
-            use_ah_battery_calculation.checked =  (dv.getUint8(28) == 1 )? true : false
+            enable_thirds_warning_startup.checked =  dv.getUint8(27) == 1
+            use_ah_battery_calculation.checked =  dv.getUint8(28) == 1
 
             ramp_rate.realValue = mMcConf.getParamDouble("s_pid_ramp_erpms_s")
             battery_ah.realValue = mMcConf.getParamDouble("si_battery_ah")
@@ -1287,14 +1287,14 @@ Dialog {
                     Button {
                         Layout.fillWidth: true
                         text: "Reset Blacktip Defaults*"
-                        visible: (enable_bluetooth.currentIndex < 3) ? true : false
+                        visible: enable_bluetooth.currentIndex < 3
                         onClicked: { reset_defaults_blacktip ()}
                     }
 
                     Button {
                         Layout.fillWidth: true
                         text: "Reset Cuda-X Defaults*"
-                        visible: (enable_bluetooth.currentIndex > 2) ? true : false
+                        visible: enable_bluetooth.currentIndex > 2
                         onClicked: { reset_defaults_cudax ()}
                     }
 
