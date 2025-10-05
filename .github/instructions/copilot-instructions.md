@@ -22,4 +22,4 @@ Use `=` for equality comparisons.
 Use `and` for logical AND.
 Use `or` for logical OR.
 Use `not` for logical NOT.
-Multiple nested `if` statements should be replaced with `cond` statements.
+Nested `if` statements covering more than one `if` should be replaced with `cond` statements. This does not apply to `if` statements that only have a single `if` but also and 'else' block.
