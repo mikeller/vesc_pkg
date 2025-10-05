@@ -20,20 +20,20 @@
             (eeprom-store-i 7 70) ; Speed 6 %
             (eeprom-store-i 8 78) ; Speed 7 %
             (eeprom-store-i 9 100) ; Speed 8 %
-            (eeprom-store-i 10 9) ; Maximum number of Speeds to use, must be greater or equal to Start_Speed (actual speed #, not user speed)
-            (eeprom-store-i 11 4) ; Speed the scooter starts in. Range 2-9, must be less or equal to the Max_Speed_No (actual speed #, not user speed)
+            (eeprom-store-i 10 9) ; Maximum number of Speeds to use, must be greater or equal to start_speed (actual speed #, not user speed)
+            (eeprom-store-i 11 4) ; Speed the scooter starts in. Range 2-9, must be less or equal to the max_speed_no (actual speed #, not user speed)
             (eeprom-store-i 12 7) ; Speed to jump to on triple click, (actual speed #, not user speed)
             (eeprom-store-i 13 1) ; Turn safe start on or off 1=On 0=Off
             (eeprom-store-i 14 0) ; Enable Reverse speed. 1=On 0=Off
             (eeprom-store-i 15 0) ; Enable 5 click Smart Cruise. 1=On 0=Off
             (eeprom-store-i 16 60) ; How long before Smart Cruise times out and requires reactivation in sec.
-            (eeprom-store-i 17 0) ; Rotation of Display, 0-3 . Each number rotates display 90 deg.
+            (eeprom-store-i 17 0) ; rotation of Display, 0-3 . Each number rotates display 90 deg.
             (eeprom-store-i 18 5) ; Display Brighness 0-5
             (eeprom-store-i 19 0) ; Hardware configuration, 0 = Blacktip HW60 + Ble, 1 = Blacktip HW60 - Ble, 2 = Blacktip HW410 - Ble, 3 = Cuda-X HW60 + Ble, 4 = Cuda-X HW60 - Ble
             (eeprom-store-i 20 0) ; Battery Beeps
             (eeprom-store-i 21 3) ; Beep Volume
             (eeprom-store-i 22 0) ; CudaX Flip Screens
-            (eeprom-store-i 23 0) ; 2nd Screen Rotation of Display, 0-3 . Each number rotates display 90 deg.
+            (eeprom-store-i 23 0) ; 2nd Screen rotation of Display, 0-3 . Each number rotates display 90 deg.
             (eeprom-store-i 24 0) ; Trigger Click Beeps
         })
         ; Mark as initialised for 1.0.0
@@ -41,29 +41,29 @@
     })
 })
 
-(defun Update_Settings() ; Program that reads eeprom and writes to variables
+(defun update_settings() ; Program that reads eeprom and writes to variables
 {
-    (define Max_Speed_No (eeprom-read-i 10))
-    (define Start_Speed (eeprom-read-i 11))
-    (define Jump_Speed (eeprom-read-i 12))
-    (define Use_Safe_Start (eeprom-read-i 13))
-    (define Enable_Reverse (eeprom-read-i 14))
-    (define Enable_Smart_Cruise (eeprom-read-i 15))
-    (define Smart_Cruise_Timeout (eeprom-read-i 16))
-    (define Rotation (eeprom-read-i 17))
-    (define Disp_Brightness (eeprom-read-i 18))
+    (define max_speed_no (eeprom-read-i 10))
+    (define start_speed (eeprom-read-i 11))
+    (define jump_speed (eeprom-read-i 12))
+    (define use_safe_start (eeprom-read-i 13))
+    (define enable_reverse (eeprom-read-i 14))
+    (define enable_smart_cruise (eeprom-read-i 15))
+    (define smart_cruise_timeout (eeprom-read-i 16))
+    (define rotation (eeprom-read-i 17))
+    (define disp_brightness (eeprom-read-i 18))
     (define hardware_configuration (eeprom-read-i 19))
-    (define Enable_Battery_Beeps (eeprom-read-i 20))
-    (define Beeps_Vol (eeprom-read-i 21))
-    (define CudaX_Flip (eeprom-read-i 22))
-    (define Rotation2 (eeprom-read-i 23))
-    (define Enable_Trigger_Beeps (eeprom-read-i 24))
-    (define Enable_Smart_Cruise_Auto_Engage (eeprom-read-i 25))
-    (define Smart_Cruise_Auto_Engage_Time (eeprom-read-i 26))
-    (define Enable_Thirds_Warning_Startup (eeprom-read-i 27))
-    (define Battery_Calculation_Method (eeprom-read-i 28))
+    (define enable_battery_beeps (eeprom-read-i 20))
+    (define beeps_vol (eeprom-read-i 21))
+    (define cudax_flip (eeprom-read-i 22))
+    (define rotation2 (eeprom-read-i 23))
+    (define enable_trigger_beeps (eeprom-read-i 24))
+    (define enable_smart_cruise_auto_engage (eeprom-read-i 25))
+    (define smart_cruise_auto_engage_time (eeprom-read-i 26))
+    (define enable_thirds_warning_startup (eeprom-read-i 27))
+    (define battery_calculation_method (eeprom-read-i 28))
 
-    (define Speed_Set (list
+    (define speed_set (list
         (eeprom-read-i 0) ; Reverse Speed 2 %
         (eeprom-read-i 1) ; Untangle Speed 1 %
         (eeprom-read-i 2) ; Speed 1 %
@@ -77,12 +77,12 @@
     ))
 
     (if (<= hardware_configuration 2) ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
-        (define Scooter_Type 0)
-        (define Scooter_Type 1)
+        (define scooter_type 0)
+        (define scooter_type 1)
     )
 })
 
-(move-to-flash Update_Settings)
+(move-to-flash update_settings)
 
 (defun calculate-corrected-battery ()
     ; Calculate corrected battery percentage from raw battery reading
@@ -110,13 +110,13 @@
 
 (defun get-battery-level ()
     ; Get battery level using the configured calculation method
-    (if (= Battery_Calculation_Method 1)
+    (if (= battery_calculation_method 1)
         (calculate-ah-based-battery)
         (calculate-corrected-battery)))
 
 (move-to-flash get-battery-level)
 
-(defun My_Data_Recv_Prog (data)
+(defun my_data_recv_prog (data)
 {
     (if (= (bufget-u8 data 0) 255) { ; Handshake to trigger data send if not yet recieved.
         (define setbuf (array-create 29)) ; create a temp array to store setting
@@ -128,11 +128,11 @@
     } {
         (looprange i 0 29
             (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
-        (Update_Settings) ; updates actuall settings in lisp
+        (update_settings) ; updates actuall settings in lisp
     })
 })
 
-(move-to-flash My_Data_Recv_Prog)
+(move-to-flash my_data_recv_prog)
 
 (defun setup_event_handler()
 {
@@ -140,7 +140,7 @@
     {
         (loopwhile t
             (recv
-                ((event-data-rx . (? data)) (My_Data_Recv_Prog data))
+                ((event-data-rx . (? data)) (my_data_recv_prog data))
                 (_ nil))
         )
     })
@@ -154,13 +154,13 @@
 (defun start_trigger_loop()
 {
     (gpio-configure 'pin-ppm 'pin-mode-in-pd)
-    (define SW_PRESSED 0)
+    (define sw_pressed 0)
 
     (loopwhile-thd 25 t {
         (sleep 0.04)
         (if (= 1 (gpio-read 'pin-ppm))
-            (setvar 'SW_PRESSED 1)
-            (setvar 'SW_PRESSED 0)
+            (setvar 'sw_pressed 1)
+            (setvar 'sw_pressed 0)
         )
     })
 })
@@ -169,34 +169,34 @@
 
 (defun start_smart_cruise_loop()
 {
-    (define Smart_Cruise 0) ; variable to control Smart Cruise on 5 clicks
+    (define smart_cruise 0) ; variable to control Smart Cruise on 5 clicks
 
-    (let ((Speed_Setting_Timer 0) ; Timer for auto-engage functionality
-          (Last_Speed_Setting 99)) { ; Track last speed setting for auto-engage
+    (let ((speed_setting_timer 0) ; Timer for auto-engage functionality
+          (last_speed_setting 99)) { ; Track last speed setting for auto-engage
 
         (loopwhile-thd 30 t {
             (sleep 0.5)
-            (if (and (> Enable_Smart_Cruise 0) (> Enable_Smart_Cruise_Auto_Engage 0) (= SW_STATE 2) (= Smart_Cruise 0) (!= SPEED 99) (>= SPEED 2)) {
+            (if (and (> enable_smart_cruise 0) (> enable_smart_cruise_auto_engage 0) (= sw_state 2) (= smart_cruise 0) (!= speed 99) (>= speed 2)) {
                 ; Check if speed setting has changed
-                (if (!= SPEED Last_Speed_Setting) {
-                    (setvar 'Last_Speed_Setting SPEED)
-                    (setvar 'Speed_Setting_Timer (systime))
+                (if (!= speed last_speed_setting) {
+                    (setvar 'last_speed_setting speed)
+                    (setvar 'speed_setting_timer (systime))
                 } {
                     ; Speed setting hasn't changed, check if timer expired
-                    (if (> (secs-since Speed_Setting_Timer) Smart_Cruise_Auto_Engage_Time) {
-                        (setvar 'Smart_Cruise 3)
-                        (setvar 'Timer_Start (systime))
-                        (setvar 'Disp-Num 17)
-                        (setvar 'Click_Beep 5)
-                        (if (< SPEED 2) ; re command actuall speed as reverification sets it to 0.8x
-                            (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
-                            (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
+                    (if (> (secs-since speed_setting_timer) smart_cruise_auto_engage_time) {
+                        (setvar 'smart_cruise 3)
+                        (setvar 'timer_start (systime))
+                        (setvar 'disp_num 17)
+                        (setvar 'click_beep 5)
+                        (if (< speed 2) ; re command actuall speed as reverification sets it to 0.8x
+                            (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
+                            (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
                         )
                     })
                 })
             } {
                 ; Not in the right state for auto-engage, reset timer
-                (setvar 'Speed_Setting_Timer (systime))
+                (setvar 'speed_setting_timer (systime))
             })
         })
     })
@@ -210,229 +210,229 @@
 
 (defun setup_state_machine()
 {
-    (define SW_STATE 0)
-    (define Timer_Start 0)
-    (define Timer_Duration 0)
-    (define Clicks 0)
-    (define Actual-Batt 0)
-    (define New_Start_Speed Start_Speed)
+    (define sw_state 0)
+    (define timer_start 0)
+    (define timer_duration 0)
+    (define clicks 0)
+    (define actual_batt 0)
+    (define new_start_speed start_speed)
 })
 
 (move-to-flash setup_state_machine)
 
 
-(defun SW_STATE_0 ()
+(defun sw_state_0 ()
 {
     ; xxxx State "0" Off
-    (loopwhile (= SW_STATE 0) {
+    (loopwhile (= sw_state 0) {
         (sleep 0.02)
         ; Calculate corrected batt %, only needed when scooter is off in state 0
-        (setvar 'Actual-Batt (get-battery-level))
+        (setvar 'actual_batt (get-battery-level))
 
         ; Pressed
-        (if (= SW_PRESSED 1) {
-            (setvar 'Batt_Disp_Timer_Start 0) ; Stop Battery Display in case its running
-            (setvar 'Disp_Timer_Start 2) ; Stop Display in case its running
-            (setvar 'Timer_Start (systime))
-            (setvar 'Timer_Duration 0.3)
-            (setvar 'Clicks 1)
-            (setvar 'SW_STATE 1)
-            (spawn 40 SW_STATE_1)
+        (if (= sw_pressed 1) {
+            (setvar 'batt_disp_timer_start 0) ; Stop Battery Display in case its running
+            (setvar 'disp_timer_start 2) ; Stop Display in case its running
+            (setvar 'timer_start (systime))
+            (setvar 'timer_duration 0.3)
+            (setvar 'clicks 1)
+            (setvar 'sw_state 1)
+            (spawn 40 sw_state_1)
             (break)
         })
     })
 })
 
-(move-to-flash SW_STATE_0)
+(move-to-flash sw_state_0)
 
 
-; xxxx STATE 1 Counting Clicks
+; xxxx STATE 1 Counting clicks
 
-(defun SW_STATE_1 ()
+(defun sw_state_1 ()
 {
-    (loopwhile (= SW_STATE 1) {
+    (loopwhile (= sw_state 1) {
         (sleep 0.02)
 
         ; Released
-        (if (= SW_PRESSED 0) {
-            (setvar 'Disp_Timer_Start 2) ; Stop Display in case its running
-            (setvar 'Timer_Start (systime))
-            (setvar 'Timer_Duration 0.5)
-            (setvar 'SW_STATE 3)
-            (spawn 35 SW_STATE_3)
+        (if (= sw_pressed 0) {
+            (setvar 'disp_timer_start 2) ; Stop Display in case its running
+            (setvar 'timer_start (systime))
+            (setvar 'timer_duration 0.5)
+            (setvar 'sw_state 3)
+            (spawn 35 sw_state_3)
             (break)
         })
 
         ; Timer Expiry
-        (if (> (secs-since Timer_Start) Timer_Duration) {
+        (if (> (secs-since timer_start) timer_duration) {
             ; Single Click Commands
-            (if (and (= Clicks 1) (!= SPEED 99)) {
-                (setvar 'Click_Beep 1)
-                (if (> SPEED 2)
-                    (setvar 'SPEED (- SPEED 1)) ; decrease one speed
-                    (if (= SPEED 0)
-                        (setvar 'SPEED 1) ; set to untangle
+            (if (and (= clicks 1) (!= speed 99)) {
+                (setvar 'click_beep 1)
+                (if (> speed 2)
+                    (setvar 'speed (- speed 1)) ; decrease one speed
+                    (if (= speed 0)
+                        (setvar 'speed 1) ; set to untangle
                     )
                 )
             })
 
             ; Double Click Comands
-            (if (= Clicks 2)
-                (if (= SPEED 99)
-                    (setvar 'SPEED New_Start_Speed)
+            (if (= clicks 2)
+                (if (= speed 99)
+                    (setvar 'speed new_start_speed)
                     {
-                    (setvar 'Click_Beep 2)
-                    (if (< SPEED Max_Speed_No)
-                        (if (> SPEED 1)
-                            (setvar 'SPEED (+ SPEED 1)) ; increase one speed
-                            (setvar 'SPEED 0) ; set to reverse "
+                    (setvar 'click_beep 2)
+                    (if (< speed max_speed_no)
+                        (if (> speed 1)
+                            (setvar 'speed (+ speed 1)) ; increase one speed
+                            (setvar 'speed 0) ; set to reverse "
                         )
                     )
                 })
             )
 
             ; Triple Click Comands
-            (if (= Clicks 3) {
-                (if (!= SPEED 99)(setvar 'Click_Beep 3))
-                (setvar 'SPEED Jump_Speed) ; Jump Speed
+            (if (= clicks 3) {
+                (if (!= speed 99)(setvar 'click_beep 3))
+                (setvar 'speed jump_speed) ; Jump Speed
             })
 
             ; Quadruple Click Comands
-            (if (and (= Clicks 4) (= 1 Enable_Reverse)) {
-                (if (!= SPEED 99)(setvar 'Click_Beep 4))
-                (setvar 'SPEED 1) ; set to untangle
+            (if (and (= clicks 4) (= 1 enable_reverse)) {
+                (if (!= speed 99)(setvar 'click_beep 4))
+                (setvar 'speed 1) ; set to untangle
             })
 
             ; Quintuple Click Comands
-            (if (= Clicks 5) {
-                (setvar 'Click_Beep 5)
-                (if (and (!= SPEED 99) (> Enable_Smart_Cruise 0) (< Smart_Cruise 2))
-                    (setvar 'Smart_Cruise (+ 1 Smart_Cruise))
+            (if (= clicks 5) {
+                (setvar 'click_beep 5)
+                (if (and (!= speed 99) (> enable_smart_cruise 0) (< smart_cruise 2))
+                    (setvar 'smart_cruise (+ 1 smart_cruise))
                 )
 
-                (if (= Smart_Cruise 1) { ; If Smart Cruise is half-enabled, show it on screen
-                    (setvar 'Disp-Num 16)
-                    (setvar 'Last-Disp-Num 99) ; this display may be needed multiple times, so clear the last disp too
+                (if (= smart_cruise 1) { ; If Smart Cruise is half-enabled, show it on screen
+                    (setvar 'disp_num 16)
+                    (setvar 'last_disp_num 99) ; this display may be needed multiple times, so clear the last disp too
                 })
 
-                (if (= Smart_Cruise 2) { ; If Smart Cruise is enabled, show it on screen
-                    (setvar 'Disp-Num 17)
-                    (if (< SPEED 2) ; re command actuall speed as reverification sets it to 0.8x
-                        (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
-                        (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
+                (if (= smart_cruise 2) { ; If Smart Cruise is enabled, show it on screen
+                    (setvar 'disp_num 17)
+                    (if (< speed 2) ; re command actuall speed as reverification sets it to 0.8x
+                        (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
+                        (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
                     )
                 })
             })
 
             ; End of Click Actions
-            (setvar 'Clicks 0)
-            (setvar 'Timer_Duration 999999)
-            (setvar 'SW_STATE 2)
-            (spawn 30 SW_STATE_2)
+            (setvar 'clicks 0)
+            (setvar 'timer_duration 999999)
+            (setvar 'sw_state 2)
+            (spawn 30 sw_state_2)
             (break)
         })
     })
 })
 
-(move-to-flash SW_STATE_1)
+(move-to-flash sw_state_1)
 
 
 ; xxxx State 2 "Pressed"
-(defun SW_STATE_2()
-   (loopwhile (= SW_STATE 2) {
+(defun sw_state_2()
+   (loopwhile (= sw_state 2) {
      (sleep 0.02)
         (timeout-reset) ; keeps motor running
 
         ; xxx repeat display section whilst scooter is running xxx
-        (if (and (> (secs-since Timer_Start) 6) (= Smart_Cruise 0)) ; 6 = display duration +1
-            (setvar 'Disp-Num Last-Batt-Disp-Num)
+        (if (and (> (secs-since timer_start) 6) (= smart_cruise 0)) ; 6 = display duration +1
+            (setvar 'disp_num last_batt_disp_num)
         )
 
-        (if (and (> (secs-since Timer_Start) 12) (= Smart_Cruise 0)) { ; 12= (2xdisplay duration + 2)
-            (setvar 'Disp-Num (+ SPEED 4))
-            (setvar 'Timer_Start (systime))
+        (if (and (> (secs-since timer_start) 12) (= smart_cruise 0)) { ; 12= (2xdisplay duration + 2)
+            (setvar 'disp_num (+ speed 4))
+            (setvar 'timer_start (systime))
         })
 
         ; xxx end repeat display section
-        (if (and (= Smart_Cruise 1) (> (secs-since Timer_Start) 5)) ; time out Smart Cruise if second activation isnt recieved within display duration
-            (setvar 'Smart_Cruise 0)
+        (if (and (= smart_cruise 1) (> (secs-since timer_start) 5)) ; time out Smart Cruise if second activation isnt recieved within display duration
+            (setvar 'smart_cruise 0)
         )
 
         ; Extra Long Press Commands when off (10 seconds)
-        (if (and (> (secs-since Timer_Start) 10) (= SPEED 99)) {
-            (setvar 'Thirds-Total Actual-Batt)
-            (spawn Warbler 450 0.2 0)
-            (setvar 'Warning-Counter 0)
+        (if (and (> (secs-since timer_start) 10) (= speed 99)) {
+            (setvar 'thirds_total actual_batt)
+            (spawn warbler 450 0.2 0)
+            (setvar 'warning_counter 0)
         })
 
         ; Released
-        (if (= SW_PRESSED 0) {
-            (setvar 'Timer_Start (systime))
-            (setvar 'Timer_Duration 0.5)
-            (setvar 'SW_STATE 3)
-            (spawn 35 SW_STATE_3)
+        (if (= sw_pressed 0) {
+            (setvar 'timer_start (systime))
+            (setvar 'timer_duration 0.5)
+            (setvar 'sw_state 3)
+            (spawn 35 sw_state_3)
             (break)
         })
     })
 )
 
-(move-to-flash SW_STATE_2)
+(move-to-flash sw_state_2)
 
 
 ; xxxx State 3 "Going Off"
 
-(defun SW_STATE_3 ()
+(defun sw_state_3 ()
 {
-    (loopwhile (= SW_STATE 3) {
+    (loopwhile (= sw_state 3) {
         (sleep 0.02)
-        (if (> Smart_Cruise 0) ; If Smart Cruise is enabled, dont shut down
+        (if (> smart_cruise 0) ; If Smart Cruise is enabled, dont shut down
             (timeout-reset)
         )
 
         ; Pressed
-        (if (= SW_PRESSED 1) {
+        (if (= sw_pressed 1) {
             (timeout-reset) ; keeps motor running, vesc automaticaly stops if it doesnt recieve this command every second
-            (setvar 'Timer_Start (systime))
-            (setvar 'Timer_Duration 0.3)
+            (setvar 'timer_start (systime))
+            (setvar 'timer_duration 0.3)
 
-            (if (>= Smart_Cruise 2) ; if Smart Cruise is on and switch pressed, turn it off
-                (setvar 'Smart_Cruise 0)
-                (if (< SAFE_START_TIMER 1) ; check safe start isnt running, dont allow gear shifts if it is on
-                    (setvar 'Clicks (+ Clicks 1)))
+            (if (>= smart_cruise 2) ; if Smart Cruise is on and switch pressed, turn it off
+                (setvar 'smart_cruise 0)
+                (if (< safe_start_timer 1) ; check safe start isnt running, dont allow gear shifts if it is on
+                    (setvar 'clicks (+ clicks 1)))
             )
 
-            (setvar 'SW_STATE 1)
-            (spawn 40 SW_STATE_1)
+            (setvar 'sw_state 1)
+            (spawn 40 sw_state_1)
             (break)
         })
 
         ; Timer Expiry
-        (if (> (secs-since Timer_Start) Timer_Duration) {
-            (if (and (!= Smart_Cruise 2) (!= Smart_Cruise 3)) { ; If Smart Cruise is enabled, dont shut down
-                (setvar 'Timer_Duration 999999) ; set to infinite
-                (if (< SPEED Start_Speed) ; start at old speed if less than start speed
-                    (if (> SPEED 1)
-                        (setvar 'New_Start_Speed SPEED)
+        (if (> (secs-since timer_start) timer_duration) {
+            (if (and (!= smart_cruise 2) (!= smart_cruise 3)) { ; If Smart Cruise is enabled, dont shut down
+                (setvar 'timer_duration 999999) ; set to infinite
+                (if (< speed start_speed) ; start at old speed if less than start speed
+                    (if (> speed 1)
+                        (setvar 'new_start_speed speed)
                     )
-                    (setvar 'New_Start_Speed Start_Speed)
+                    (setvar 'new_start_speed start_speed)
                 )
-                (setvar 'SPEED 99)
-                (setvar 'Smart_Cruise 0) ; turn off Smart Cruise
-                (setvar 'SW_STATE 0)
-                (spawn 35 SW_STATE_0)
+                (setvar 'speed 99)
+                (setvar 'smart_cruise 0) ; turn off Smart Cruise
+                (setvar 'sw_state 0)
+                (spawn 35 sw_state_0)
                 (break) ; SWST_OFF
             })
 
-            (if (or (= Smart_Cruise 2) (= Smart_Cruise 3)) ; Require Smart Cruise to be re-enabled after a fixed duration
-                (if (> (secs-since Timer_Start) Smart_Cruise_Timeout) {
-                    (setvar 'Smart_Cruise 1)
-                    (setvar 'Timer_Start (systime))
-                    (setvar 'Timer_Duration 5) ; sets timer duration to display duration to allow for re-enable
-                    (setvar 'Disp-Num 16)
-                    (setvar 'Click_Beep 5)
-                    (if (< SPEED 2) ; slow scooter to 80% to help people realize custom is expiring
-                        (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 125)(ix Speed_Set SPEED))))
-                        (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 125)(ix Speed_Set SPEED)))
+            (if (or (= smart_cruise 2) (= smart_cruise 3)) ; Require Smart Cruise to be re-enabled after a fixed duration
+                (if (> (secs-since timer_start) smart_cruise_timeout) {
+                    (setvar 'smart_cruise 1)
+                    (setvar 'timer_start (systime))
+                    (setvar 'timer_duration 5) ; sets timer duration to display duration to allow for re-enable
+                    (setvar 'disp_num 16)
+                    (setvar 'click_beep 5)
+                    (if (< speed 2) ; slow scooter to 80% to help people realize custom is expiring
+                        (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 125)(ix speed_set speed))))
+                        (set-rpm (* (/ (ix max_erpm scooter_type) 125)(ix speed_set speed)))
                     )
                 })
             )
@@ -440,63 +440,63 @@
     }) ; end state
 })
 
-(move-to-flash SW_STATE_3)
+(move-to-flash sw_state_3)
 
 
 (defun start_motor_speed_loop()
 {
-    (define SPEED 99) ; 99 is off speed
-    (define SAFE_START_TIMER 0)
-    (define Max_ERPM (list 4100 7100)) ; 1st no is Blacktip, second is CudaX
+    (define speed 99) ; 99 is off speed
+    (define safe_start_timer 0)
+    (define max_erpm (list 4100 7100)) ; 1st no is Blacktip, second is CudaX
 
-    (let ((LAST_SPEED 99)
-        (Max_Current (list 22.8 46)) ; 1st no is Blacktip, second is CudaX
-        (Min_Current (list 1.7 0.35))) { ; 1st no is Blacktip, second is CudaX
+    (let ((last_speed 99)
+        (max_current (list 22.8 46)) ; 1st no is Blacktip, second is CudaX
+        (min_current (list 1.7 0.35))) { ; 1st no is Blacktip, second is CudaX
 
         (loopwhile-thd 65 t {
             (sleep 0.04)
-            (loopwhile (!= SPEED LAST_SPEED) {
+            (loopwhile (!= speed last_speed) {
             (sleep 0.25)
         ; xxxx turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isnt recieved every second from the Switch_State program
-            (if (= SPEED 99) {
+            (if (= speed 99) {
                 (set-current 0)
-                (setvar 'Batt_Disp_Timer_Start (systime)) ; Start trigger for Battery Display
-                (setvar 'Disp-Num 14) ; Turn on Off display. (off display is needed to ensure restart triggers a new display number)
-                (setvar 'SAFE_START_TIMER 0) ; unlock speed changes and disable safe start timer
-                (setvar 'LAST_SPEED SPEED)
+                (setvar 'batt_disp_timer_start (systime)) ; Start trigger for Battery Display
+                (setvar 'disp_num 14) ; Turn on Off display. (off display is needed to ensure restart triggers a new display number)
+                (setvar 'safe_start_timer 0) ; unlock speed changes and disable safe start timer
+                (setvar 'last_speed speed)
                 })
 
-            (if (!= SPEED 99) {
+            (if (!= speed 99) {
         ; xxxx Soft Start section for all speeds, makes start less judery
-                (if (= LAST_SPEED 99) {
-                    (conf-set 'l-in-current-max (ix Min_Current Scooter_Type))
-                    (setvar 'SAFE_START_TIMER (systime))
-                    (setvar 'LAST_SPEED 0.5)
-                    (if (< SPEED 2) (set-duty (- 0 0.06)) (set-duty 0.06))
+                (if (= last_speed 99) {
+                    (conf-set 'l-in-current-max (ix min_current scooter_type))
+                    (setvar 'safe_start_timer (systime))
+                    (setvar 'last_speed 0.5)
+                    (if (< speed 2) (set-duty (- 0 0.06)) (set-duty 0.06))
                 })
 
         ; xxxx Set Actual Speeds section
-                (if (and (> (secs-since SAFE_START_TIMER) 0.5) (or (= Use_Safe_Start 0) (!= LAST_SPEED 0.5) (and (> (abs (get-rpm)) 350) (> (abs (get-duty)) 0.05) (< (abs (get-current)) 5)))) {
-                (conf-set 'l-in-current-max (ix Max_Current Scooter_Type))
+                (if (and (> (secs-since safe_start_timer) 0.5) (or (= use_safe_start 0) (!= last_speed 0.5) (and (> (abs (get-rpm)) 350) (> (abs (get-duty)) 0.05) (< (abs (get-current)) 5)))) {
+                (conf-set 'l-in-current-max (ix max_current scooter_type))
 
                 ; xxx reverse gear section
-                (if (< SPEED 2)
-                    (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
+                (if (< speed 2)
+                    (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
                 ; xxx Normal Gears Section
-                (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
+                (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
                 )
 
-                (setvar 'Disp-Num (+ SPEED 4))
-                ; Maybe causing issues with timimg? (setvar 'Timer_Start (systime)) ; set state timer so that repeat display timing works in state 2
-                (setvar 'SAFE_START_TIMER 0) ; unlock speed changes and disable safe start timer
-                (setvar 'LAST_SPEED SPEED)
+                (setvar 'disp_num (+ speed 4))
+                ; Maybe causing issues with timimg? (setvar 'timer_start (systime)) ; set state timer so that repeat display timing works in state 2
+                (setvar 'safe_start_timer 0) ; unlock speed changes and disable safe start timer
+                (setvar 'last_speed speed)
                 })
 
                 ; exit and stop motor if safestart hasnt cleared in 0.5 seconds and rpm is less than 500.
-                (if (and (> (secs-since SAFE_START_TIMER) 0.5) (> (abs (get-current)) 8) (< (abs (get-rpm)) 350) (= Use_Safe_Start 1) (= LAST_SPEED 0.5 )) {
-                (setvar 'SPEED 99)
-                (setvar 'SW_STATE 1)
-                (spawn 40 SW_STATE_1)
+                (if (and (> (secs-since safe_start_timer) 0.5) (> (abs (get-current)) 8) (< (abs (get-rpm)) 350) (= use_safe_start 1) (= last_speed 0.5 )) {
+                (setvar 'speed 99)
+                (setvar 'sw_state 1)
+                (spawn 40 sw_state_1)
                 (foc-beep 250 0.15 5)
                 })
                 })
@@ -510,18 +510,17 @@
 
 (defun thirds_warning_startup()
 {
-    (define Thirds-Total 0)
-    (define Warning-Counter 0) ; Count how many times the 3rds warnings have been triggered.
+    (define thirds_total 0)
+    (define warning_counter 0) ; Count how many times the 3rds warnings have been triggered.
 
-    (if (> Enable_Thirds_Warning_Startup 0) {
-            ; Wait a bit for battery reading to stabilize
-            (sleep 1.0)
-            ; Calculate battery % using the configured method
-            ; Set Thirds-Total to current battery level
-            (setvar 'Thirds-Total (get-battery-level))
-            (setvar 'Warning-Counter 0)
-        }
-    )
+    (if (> enable_thirds_warning_startup 0) {
+        ; Wait a bit for battery reading to stabilize
+        (sleep 1.0)
+        ; Calculate battery % using the configured method
+        ; Set thirds_total to current battery level
+        (setvar 'thirds_total (get-battery-level))
+        (setvar 'warning_counter 0)
+    })
 })
 
 (move-to-flash thirds_warning_startup)
@@ -529,207 +528,208 @@
 
 (defun start_display_output_loop()
 {
-    (define Disp-Num 1) ; variable used to define the display screen you are accesing 0-X
-    (define Last-Disp-Num 1) ; variable used to track last display screen show
+    (define disp_num 1) ; variable used to define the display screen you are accesing 0-X
+    (define last_disp_num 1) ; variable used to track last display screen show
 
     (let ((start_pos 0) ; variable used to define start position in the array of diferent display screens
           (pixbuf (array-create 16)) ; create a temp array to store display bytes in
           (Displays [
-            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x81 0 0x81 ; Display Battery 1 Bar Rotation 0
-            0 0x81 0 0x81 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 1 Bar Rotation 1
-            0 0x60 0 0x60 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 1 Bar Rotation 2
-            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x60 0 0x60 ; Display Battery 1 Bar Rotation 3
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x81 0 0x81 ; Display Battery 1 Bar rotation 0
+            0 0x81 0 0x81 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 1 Bar rotation 1
+            0 0x60 0 0x60 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 1 Bar rotation 2
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x60 0 0x60 ; Display Battery 1 Bar rotation 3
 
-            0 0x00 0 0x00 0 0x00 0 0x00 0 0x06 0 0x06 0 0x87 0 0x87 ; Display Battery 2 Bars Rotation 0
-            0 0x81 0 0x81 0 0x87 0 0x87 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 2 Bars Rotation 1
-            0 0x78 0 0x78 0 0x18 0 0x18 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 2 Bars Rotation 2
-            0 0x00 0 0x00 0 0x00 0 0x00 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 2 Bars Rotation 3
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x06 0 0x06 0 0x87 0 0x87 ; Display Battery 2 Bars rotation 0
+            0 0x81 0 0x81 0 0x87 0 0x87 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 2 Bars rotation 1
+            0 0x78 0 0x78 0 0x18 0 0x18 0 0x00 0 0x00 0 0x00 0 0x00 ; Display Battery 2 Bars rotation 2
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 2 Bars rotation 3
 
-            0 0x00 0 0x00 0 0x18 0 0x18 0 0x1E 0 0x1E 0 0x9F 0 0x9F ; Display Battery 3 Bars Rotation 0
-            0 0x81 0 0x81 0 0x87 0 0x87 0 0x9F 0 0x9F 0 0x00 0 0x00 ; Display Battery 3 Bars Rotation 1
-            0 0x7E 0 0x7E 0 0x1E 0 0x1E 0 0x06 0 0x06 0 0x00 0 0x00 ; Display Battery 3 Bars Rotation 2
-            0 0x00 0 0x00 0 0x7E 0 0x7E 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 3 Bars Rotation 3
+            0 0x00 0 0x00 0 0x18 0 0x18 0 0x1E 0 0x1E 0 0x9F 0 0x9F ; Display Battery 3 Bars rotation 0
+            0 0x81 0 0x81 0 0x87 0 0x87 0 0x9F 0 0x9F 0 0x00 0 0x00 ; Display Battery 3 Bars rotation 1
+            0 0x7E 0 0x7E 0 0x1E 0 0x1E 0 0x06 0 0x06 0 0x00 0 0x00 ; Display Battery 3 Bars rotation 2
+            0 0x00 0 0x00 0 0x7E 0 0x7E 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 3 Bars rotation 3
 
-            0 0x60 0 0x60 0 0x78 0 0x78 0 0x7E 0 0x7E 0 0xFF 0 0xFF ; Display Battery 4 Bars Rotation 0
-            0 0x81 0 0x81 0 0x87 0 0x87 0 0x9F 0 0x9F 0 0xFF 0 0xFF ; Display Battery 4 Bars Rotation 1
-            0 0xFF 0 0xFF 0 0x9F 0 0x9F 0 0x87 0 0x87 0 0x81 0 0x81 ; Display Battery 4 Bars Rotation 2
-            0 0xFF 0 0xFF 0 0x7E 0 0x7E 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 4 Bars Rotation 3
+            0 0x60 0 0x60 0 0x78 0 0x78 0 0x7E 0 0x7E 0 0xFF 0 0xFF ; Display Battery 4 Bars rotation 0
+            0 0x81 0 0x81 0 0x87 0 0x87 0 0x9F 0 0x9F 0 0xFF 0 0xFF ; Display Battery 4 Bars rotation 1
+            0 0xFF 0 0xFF 0 0x9F 0 0x9F 0 0x87 0 0x87 0 0x81 0 0x81 ; Display Battery 4 Bars rotation 2
+            0 0xFF 0 0xFF 0 0x7E 0 0x7E 0 0x78 0 0x78 0 0x60 0 0x60 ; Display Battery 4 Bars rotation 3
 
-            0 0x1F 0 0x3F 0 0x33 0 0x1F 0 0x0F 0 0x1B 0 0x33 0 0x33 ; Display Reverse Rotation 0
-            0 0x00 0 0xFF 0 0xFF 0 0x6C 0 0x6E 0 0xFB 0 0xB1 0 0x00 ; Display Reverse Rotation 1
-            0 0x33 0 0x33 0 0x36 0 0x3C 0 0x3E 0 0x33 0 0x3F 0 0x3E ; Display Reverse Rotation 2
-            0 0x00 0 0x63 0 0xF7 0 0x9D 0 0x8D 0 0xFF 0 0xFF 0 0x00 ; Display Reverse Rotation 3
+            0 0x1F 0 0x3F 0 0x33 0 0x1F 0 0x0F 0 0x1B 0 0x33 0 0x33 ; Display Reverse rotation 0
+            0 0x00 0 0xFF 0 0xFF 0 0x6C 0 0x6E 0 0xFB 0 0xB1 0 0x00 ; Display Reverse rotation 1
+            0 0x33 0 0x33 0 0x36 0 0x3C 0 0x3E 0 0x33 0 0x3F 0 0x3E ; Display Reverse rotation 2
+            0 0x00 0 0x63 0 0xF7 0 0x9D 0 0x8D 0 0xFF 0 0xFF 0 0x00 ; Display Reverse rotation 3
 
-            0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x3F 0 0x1E ; Display Untangle Rotation 0
-            0 0x00 0 0x7F 0 0xFF 0 0x81 0 0x81 0 0xFF 0 0x7F 0 0x00 ; Display Untangle Rotation 1
-            0 0x1E 0 0x3F 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 ; Display Untangle Rotation 2
-            0 0x00 0 0xBF 0 0xFF 0 0x60 0 0x60 0 0xFF 0 0xBF 0 0x00 ; Display Untangle Rotation 3
+            0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x3F 0 0x1E ; Display Untangle rotation 0
+            0 0x00 0 0x7F 0 0xFF 0 0x81 0 0x81 0 0xFF 0 0x7F 0 0x00 ; Display Untangle rotation 1
+            0 0x1E 0 0x3F 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 0 0x33 ; Display Untangle rotation 2
+            0 0x00 0 0xBF 0 0xFF 0 0x60 0 0x60 0 0xFF 0 0xBF 0 0x00 ; Display Untangle rotation 3
 
-            0 0x0C 0 0x0E 0 0x0E 0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x1E ; Display One Rotation 0
-            0 0x00 0 0x00 0 0xB0 0 0xFF 0 0xFF 0 0x80 0 0x00 0 0x00 ; Display One Rotation 1
-            0 0x1E 0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x1C 0 0x1C 0 0x0C ; Display One Rotation 2
-            0 0x00 0 0x00 0 0x40 0 0xFF 0 0xFF 0 0x43 0 0x00 0 0x00 ; Display One Rotation 3
+            0 0x0C 0 0x0E 0 0x0E 0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x1E ; Display One rotation 0
+            0 0x00 0 0x00 0 0xB0 0 0xFF 0 0xFF 0 0x80 0 0x00 0 0x00 ; Display One rotation 1
+            0 0x1E 0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x1C 0 0x1C 0 0x0C ; Display One rotation 2
+            0 0x00 0 0x00 0 0x40 0 0xFF 0 0xFF 0 0x43 0 0x00 0 0x00 ; Display One rotation 3
 
-            0 0x1E 0 0x3F 0 0x31 0 0x18 0 0x06 0 0x03 0 0x3F 0 0x1E ; Display Two Rotation 0
-            0 0x00 0 0x33 0 0xE7 0 0xE5 0 0xE9 0 0xF9 0 0x31 0 0x00 ; Display Two Rotation 1
-            0 0x1E 0 0x3F 0 0x30 0 0x18 0 0x06 0 0x23 0 0x3F 0 0x1E ; Display Two Rotation 2
-            0 0x00 0 0x23 0 0xE7 0 0xE5 0 0xE9 0 0xF9 0 0x33 0 0x00 ; Display Two Rotation 3
+            0 0x1E 0 0x3F 0 0x31 0 0x18 0 0x06 0 0x03 0 0x3F 0 0x1E ; Display Two rotation 0
+            0 0x00 0 0x33 0 0xE7 0 0xE5 0 0xE9 0 0xF9 0 0x31 0 0x00 ; Display Two rotation 1
+            0 0x1E 0 0x3F 0 0x30 0 0x18 0 0x06 0 0x23 0 0x3F 0 0x1E ; Display Two rotation 2
+            0 0x00 0 0x23 0 0xE7 0 0xE5 0 0xE9 0 0xF9 0 0x33 0 0x00 ; Display Two rotation 3
 
-            0 0x1E 0 0x33 0 0x30 0 0x1C 0 0x3C 0 0x30 0 0x33 0 0x1E ; Display Three Rotation 0
-            0 0x00 0 0x21 0 0xE1 0 0xCC 0 0xCC 0 0xFF 0 0x37 0 0x00 ; Display Three Rotation 1
-            0 0x1E 0 0x33 0 0x03 0 0x0F 0 0x0E 0 0x03 0 0x33 0 0x1E ; Display Three Rotation 2
-            0 0x00 0 0x3B 0 0xFF 0 0xCC 0 0xCC 0 0xE1 0 0x21 0 0x00 ; Display Three Rotation 3
+            0 0x1E 0 0x33 0 0x30 0 0x1C 0 0x3C 0 0x30 0 0x33 0 0x1E ; Display Three rotation 0
+            0 0x00 0 0x21 0 0xE1 0 0xCC 0 0xCC 0 0xFF 0 0x37 0 0x00 ; Display Three rotation 1
+            0 0x1E 0 0x33 0 0x03 0 0x0F 0 0x0E 0 0x03 0 0x33 0 0x1E ; Display Three rotation 2
+            0 0x00 0 0x3B 0 0xFF 0 0xCC 0 0xCC 0 0xE1 0 0x21 0 0x00 ; Display Three rotation 3
 
-            0 0x18 0 0x1C 0 0x1A 0 0x19 0 0x3F 0 0x3F 0 0x18 0 0x18 ; Display Four Rotation 0
-            0 0x00 0 0x0E 0 0x16 0 0x26 0 0xFF 0 0xFF 0 0x06 0 0x00 ; Display Four Rotation 1
-            0 0x06 0 0x06 0 0x3F 0 0x3F 0 0x26 0 0x16 0 0x0E 0 0x06 ; Display Four Rotation 2
-            0 0x00 0 0x18 0 0xFF 0 0xFF 0 0x19 0 0x1A 0 0x1C 0 0x00 ; Display Four Rotation 3
+            0 0x18 0 0x1C 0 0x1A 0 0x19 0 0x3F 0 0x3F 0 0x18 0 0x18 ; Display Four rotation 0
+            0 0x00 0 0x0E 0 0x16 0 0x26 0 0xFF 0 0xFF 0 0x06 0 0x00 ; Display Four rotation 1
+            0 0x06 0 0x06 0 0x3F 0 0x3F 0 0x26 0 0x16 0 0x0E 0 0x06 ; Display Four rotation 2
+            0 0x00 0 0x18 0 0xFF 0 0xFF 0 0x19 0 0x1A 0 0x1C 0 0x00 ; Display Four rotation 3
 
-            0 0x1E 0 0x03 0 0x03 0 0x1F 0 0x30 0 0x30 0 0x33 0 0x1E ; Display Five Rotation 0
-            0 0x00 0 0x39 0 0xF9 0 0xC8 0 0xC8 0 0xCF 0 0x07 0 0x00 ; Display Five Rotation 1
-            0 0x1E 0 0x33 0 0x03 0 0x03 0 0x3E 0 0x30 0 0x30 0 0x1E ; Display Five Rotation 2
-            0 0x00 0 0x38 0 0xFC 0 0xC4 0 0xC4 0 0xE7 0 0x27 0 0x00 ; Display Five Rotation 3
+            0 0x1E 0 0x03 0 0x03 0 0x1F 0 0x30 0 0x30 0 0x33 0 0x1E ; Display Five rotation 0
+            0 0x00 0 0x39 0 0xF9 0 0xC8 0 0xC8 0 0xCF 0 0x07 0 0x00 ; Display Five rotation 1
+            0 0x1E 0 0x33 0 0x03 0 0x03 0 0x3E 0 0x30 0 0x30 0 0x1E ; Display Five rotation 2
+            0 0x00 0 0x38 0 0xFC 0 0xC4 0 0xC4 0 0xE7 0 0x27 0 0x00 ; Display Five rotation 3
 
-            0 0x1E 0 0x23 0 0x03 0 0x1F 0 0x33 0 0x33 0 0x33 0 0x1E ; Display Six Rotation 0
-            0 0x00 0 0x3F 0 0xFF 0 0xC8 0 0xC8 0 0xCF 0 0x27 0 0x00 ; Display Six Rotation 1
-            0 0x1E 0 0x33 0 0x33 0 0x33 0 0x3E 0 0x30 0 0x31 0 0x1E ; Display Six Rotation 2
-            0 0x00 0 0x39 0 0xFC 0 0xC4 0 0xC4 0 0xFF 0 0x3F 0 0x00 ; Display Six Rotation 3
+            0 0x1E 0 0x23 0 0x03 0 0x1F 0 0x33 0 0x33 0 0x33 0 0x1E ; Display Six rotation 0
+            0 0x00 0 0x3F 0 0xFF 0 0xC8 0 0xC8 0 0xCF 0 0x27 0 0x00 ; Display Six rotation 1
+            0 0x1E 0 0x33 0 0x33 0 0x33 0 0x3E 0 0x30 0 0x31 0 0x1E ; Display Six rotation 2
+            0 0x00 0 0x39 0 0xFC 0 0xC4 0 0xC4 0 0xFF 0 0x3F 0 0x00 ; Display Six rotation 3
 
-            0 0x3F 0 0x33 0 0x30 0 0x18 0 0x0C 0 0x0C 0 0x0C 0 0x0C ; Display Seven Rotation 0
-            0 0x00 0 0x60 0 0x60 0 0xC7 0 0xCF 0 0x78 0 0x70 0 0x00 ; Display Seven Rotation 1
-            0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x06 0 0x03 0 0x33 0 0x3F ; Display Seven Rotation 2
-            0 0x00 0 0x83 0 0x87 0 0xFC 0 0xF8 0 0x81 0 0x81 0 0x00 ; Display Seven Rotation 3
+            0 0x3F 0 0x33 0 0x30 0 0x18 0 0x0C 0 0x0C 0 0x0C 0 0x0C ; Display Seven rotation 0
+            0 0x00 0 0x60 0 0x60 0 0xC7 0 0xCF 0 0x78 0 0x70 0 0x00 ; Display Seven rotation 1
+            0 0x0C 0 0x0C 0 0x0C 0 0x0C 0 0x06 0 0x03 0 0x33 0 0x3F ; Display Seven rotation 2
+            0 0x00 0 0x83 0 0x87 0 0xFC 0 0xF8 0 0x81 0 0x81 0 0x00 ; Display Seven rotation 3
 
-            0 0x1E 0 0x21 0 0xD2 0 0xC0 0 0xD2 0 0xCC 0 0x21 0 0x1E ; Display Eight Rotation 0
-            0 0x1E 0 0x21 0 0xD4 0 0xC2 0 0xC2 0 0xD4 0 0x21 0 0x1E ; Display Eight Rotation 1
-            0 0x1E 0 0x21 0 0xCC 0 0xD2 0 0xC0 0 0xD2 0 0x21 0 0x1E ; Display Eight Rotation 2
-            0 0x1E 0 0x21 0 0xCA 0 0xD0 0 0xD0 0 0xCA 0 0x21 0 0x1E ; Display Eight Rotation 3
+            0 0x1E 0 0x21 0 0xD2 0 0xC0 0 0xD2 0 0xCC 0 0x21 0 0x1E ; Display Eight rotation 0
+            0 0x1E 0 0x21 0 0xD4 0 0xC2 0 0xC2 0 0xD4 0 0x21 0 0x1E ; Display Eight rotation 1
+            0 0x1E 0 0x21 0 0xCC 0 0xD2 0 0xC0 0 0xD2 0 0x21 0 0x1E ; Display Eight rotation 2
+            0 0x1E 0 0x21 0 0xCA 0 0xD0 0 0xD0 0 0xCA 0 0x21 0 0x1E ; Display Eight rotation 3
 
-            0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off Rotation 0
-            0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off Rotation 1
-            0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off Rotation 2
-            0 0x1E 0 0x21 0 0xD0 0 0xC8 0 0xC4 0 0xC2 0 0x21 0 0x1E ; Display Off Rotation 3
+            0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off rotation 0
+            0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off rotation 1
+            0 0x1E 0 0x21 0 0xC2 0 0xC4 0 0xC8 0 0xD0 0 0x21 0 0x1E ; Display Off rotation 2
+            0 0x1E 0 0x21 0 0xD0 0 0xC8 0 0xC4 0 0xC2 0 0x21 0 0x1E ; Display Off rotation 3
 
-            0 0x0C 0 0x2D 0 0xCC 0 0xCC 0 0xCC 0 0xC0 0 0x21 0 0x1E ; Display Startup Rotation 0
-            0 0x1E 0 0x21 0 0x80 0 0xFC 0 0xFC 0 0x80 0 0x21 0 0x1E ; Display Startup Rotation 1
-            0 0x1E 0 0x21 0 0xC0 0 0xCC 0 0xCC 0 0xCC 0 0x2D 0 0x0C ; Display Startup Rotation 2
-            0 0x1E 0 0x21 0 0x40 0 0xCF 0 0xCF 0 0x40 0 0x21 0 0x1E ; Display Startup Rotation 3
+            0 0x0C 0 0x2D 0 0xCC 0 0xCC 0 0xCC 0 0xC0 0 0x21 0 0x1E ; Display Startup rotation 0
+            0 0x1E 0 0x21 0 0x80 0 0xFC 0 0xFC 0 0x80 0 0x21 0 0x1E ; Display Startup rotation 1
+            0 0x1E 0 0x21 0 0xC0 0 0xCC 0 0xCC 0 0xCC 0 0x2D 0 0x0C ; Display Startup rotation 2
+            0 0x1E 0 0x21 0 0x40 0 0xCF 0 0xCF 0 0x40 0 0x21 0 0x1E ; Display Startup rotation 3
 
-            0 0x00 0 0x13 0 0xA8 0 0xA0 0 0x90 0 0x80 0 0x13 0 0x00 ; Display Custom ? Rotation 0
-            0 0x1E 0 0x21 0 0x21 0 0x00 0 0x10 0 0x25 0 0x18 0 0x00 ; Display Custom ? Rotation 1
-            0 0x00 0 0x32 0 0x40 0 0x42 0 0x41 0 0x45 0 0x32 0 0x00 ; Display Custom ? Rotation 2
-            0 0x00 0 0x06 0 0x29 0 0x02 0 0x00 0 0x21 0 0x21 0 0x1E ; Display Custom ? Rotation 3
+            0 0x00 0 0x13 0 0xA8 0 0xA0 0 0x90 0 0x80 0 0x13 0 0x00 ; Display Custom ? rotation 0
+            0 0x1E 0 0x21 0 0x21 0 0x00 0 0x10 0 0x25 0 0x18 0 0x00 ; Display Custom ? rotation 1
+            0 0x00 0 0x32 0 0x40 0 0x42 0 0x41 0 0x45 0 0x32 0 0x00 ; Display Custom ? rotation 2
+            0 0x00 0 0x06 0 0x29 0 0x02 0 0x00 0 0x21 0 0x21 0 0x1E ; Display Custom ? rotation 3
 
-            0 0x1C 0 0x36 0 0x03 0 0x03 0 0x03 0 0x03 0 0x36 0 0x1C ; Display Custom Rotation 0
-            0 0x00 0 0x1E 0 0x3F 0 0xE1 0 0xC0 0 0xE1 0 0x21 0 0x00 ; Display Custom Rotation 1
-            0 0x0E 0 0x1B 0 0x30 0 0x30 0 0x30 0 0x30 0 0x1B 0 0x0E ; Display Custom Rotation 2
-            0 0x00 0 0x21 0 0xE1 0 0xC0 0 0xE1 0 0x3F 0 0x1E 0 0x00 ; Display Custom Rotation 3
+            0 0x1C 0 0x36 0 0x03 0 0x03 0 0x03 0 0x03 0 0x36 0 0x1C ; Display Custom rotation 0
+            0 0x00 0 0x1E 0 0x3F 0 0xE1 0 0xC0 0 0xE1 0 0x21 0 0x00 ; Display Custom rotation 1
+            0 0x0E 0 0x1B 0 0x30 0 0x30 0 0x30 0 0x30 0 0x1B 0 0x0E ; Display Custom rotation 2
+            0 0x00 0 0x21 0 0xE1 0 0xC0 0 0xE1 0 0x3F 0 0x1E 0 0x00 ; Display Custom rotation 3
 
-            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x81 0 0x81 ; Display 3rds 1 Bar Rotation 0
-            0 0x81 0 0x81 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display 3rds 1 Bar Rotation 1
-            0 0x60 0 0x60 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display 3rds 1 Bar Rotation 2
-            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x60 0 0x60 ; Display 3rds 1 Bar Rotation 3
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x81 0 0x81 ; Display 3rds 1 Bar rotation 0
+            0 0x81 0 0x81 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display 3rds 1 Bar rotation 1
+            0 0x60 0 0x60 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 ; Display 3rds 1 Bar rotation 2
+            0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x00 0 0x60 0 0x60 ; Display 3rds 1 Bar rotation 3
 
-            0 0x00 0 0x00 0 0x00 0 0x0C 0 0x0C 0 0x0C 0 0x8D 0 0x8D ; Display 3rds 2 Bars Rotation 0
-            0 0x81 0 0x81 0 0x00 0 0x8F 0 0x8F 0 0x00 0 0x00 0 0x00 ; Display 3rds 2 Bars Rotation 1
-            0 0x6C 0 0x6C 0 0x0C 0 0x0C 0 0x0C 0 0x00 0 0x00 0 0x00 ; Display 3rds 2 Bars Rotation 2
-            0 0x00 0 0x00 0 0x00 0 0x7C 0 0x7C 0 0x00 0 0x60 0 0x60 ; Display 3rds 2 Bars Rotation 3
+            0 0x00 0 0x00 0 0x00 0 0x0C 0 0x0C 0 0x0C 0 0x8D 0 0x8D ; Display 3rds 2 Bars rotation 0
+            0 0x81 0 0x81 0 0x00 0 0x8F 0 0x8F 0 0x00 0 0x00 0 0x00 ; Display 3rds 2 Bars rotation 1
+            0 0x6C 0 0x6C 0 0x0C 0 0x0C 0 0x0C 0 0x00 0 0x00 0 0x00 ; Display 3rds 2 Bars rotation 2
+            0 0x00 0 0x00 0 0x00 0 0x7C 0 0x7C 0 0x00 0 0x60 0 0x60 ; Display 3rds 2 Bars rotation 3
 
-            0 0x60 0 0x60 0 0x60 0 0x6C 0 0x6C 0 0x6C 0 0xED 0 0xED ; Display 3rds 3 Bars Rotation 0
-            0 0x81 0 0x81 0 0x00 0 0x8F 0 0x8F 0 0x00 0 0xFF 0 0xFF ; Display 3rds 3 Bars Rotation 1
-            0 0xED 0 0xED 0 0x8D 0 0x8D 0 0x8D 0 0x81 0 0x81 0 0x81 ; Display 3rds 3 Bars Rotation 2
-            0 0xFF 0 0xFF 0 0x00 0 0x7C 0 0x7C 0 0x00 0 0x60 0 0x60 ; Display 3rds 3 Bars Rotation 3
+            0 0x60 0 0x60 0 0x60 0 0x6C 0 0x6C 0 0x6C 0 0xED 0 0xED ; Display 3rds 3 Bars rotation 0
+            0 0x81 0 0x81 0 0x00 0 0x8F 0 0x8F 0 0x00 0 0xFF 0 0xFF ; Display 3rds 3 Bars rotation 1
+            0 0xED 0 0xED 0 0x8D 0 0x8D 0 0x8D 0 0x81 0 0x81 0 0x81 ; Display 3rds 3 Bars rotation 2
+            0 0xFF 0 0xFF 0 0x00 0 0x7C 0 0x7C 0 0x00 0 0x60 0 0x60 ; Display 3rds 3 Bars rotation 3
 
-            0 0x23 0 0x52 0 0x52 0 0x52 0 0x52 0 0x52 0 0x52 0 0xA7 ; Display 10 Percent Rotation 0
-            0 0x80 0 0xC0 0 0xFF 0 0x80 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 10 Percent Rotation 1
-            0 0x79 0 0x92 0 0x92 0 0x92 0 0x92 0 0x92 0 0x92 0 0x31 ; Display 10 Percent Rotation 2
-            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x40 0 0xFF 0 0xC0 0 0x40 ; Display 10 Percent Rotation 3
+            0 0x23 0 0x52 0 0x52 0 0x52 0 0x52 0 0x52 0 0x52 0 0xA7 ; Display 10 Percent rotation 0
+            0 0x80 0 0xC0 0 0xFF 0 0x80 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 10 Percent rotation 1
+            0 0x79 0 0x92 0 0x92 0 0x92 0 0x92 0 0x92 0 0x92 0 0x31 ; Display 10 Percent rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x40 0 0xFF 0 0xC0 0 0x40 ; Display 10 Percent rotation 3
 
-            0 0xA3 0 0x54 0 0x54 0 0x54 0 0x53 0 0xD0 0 0xD0 0 0x27 ; Display 20 Percent Rotation 0
-            0 0x43 0 0xC4 0 0xC4 0 0xB8 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 20 Percent Rotation 1
-            0 0x39 0 0xC2 0 0xC2 0 0xB2 0 0x8A 0 0x8A 0 0x8A 0 0x71 ; Display 20 Percent Rotation 2
-            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x47 0 0xC8 0 0xC8 0 0xB0 ; Display 20 Percent Rotation 3
+            0 0xA3 0 0x54 0 0x54 0 0x54 0 0x53 0 0xD0 0 0xD0 0 0x27 ; Display 20 Percent rotation 0
+            0 0x43 0 0xC4 0 0xC4 0 0xB8 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 20 Percent rotation 1
+            0 0x39 0 0xC2 0 0xC2 0 0xB2 0 0x8A 0 0x8A 0 0x8A 0 0x71 ; Display 20 Percent rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x47 0 0xC8 0 0xC8 0 0xB0 ; Display 20 Percent rotation 3
 
-            0 0xA3 0 0x54 0 0x54 0 0x53 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 30 Percent Rotation 0
-            0 0xC0 0 0xC8 0 0xC8 0 0x37 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 30 Percent Rotation 1
-            0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xB2 0 0x8A 0 0x8A 0 0x71 ; Display 30 Percent Rotation 2
-            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x3B 0 0xC4 0 0xC4 0 0xC0 ; Display 30 Percent Rotation 3
+            0 0xA3 0 0x54 0 0x54 0 0x53 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 30 Percent rotation 0
+            0 0xC0 0 0xC8 0 0xC8 0 0x37 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 30 Percent rotation 1
+            0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xB2 0 0x8A 0 0x8A 0 0x71 ; Display 30 Percent rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x3B 0 0xC4 0 0xC4 0 0xC0 ; Display 30 Percent rotation 3
 
-            0 0x22 0 0x53 0 0xD2 0 0xD2 0 0xD7 0 0x52 0 0x52 0 0x22 ; Display 40 Percent Rotation 0
-            0 0x1C 0 0x24 0 0xFF 0 0x04 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 40 Percent Rotation 1
-            0 0x11 0 0x92 0 0x92 0 0xFA 0 0xD2 0 0xD2 0 0xB2 0 0x11 ; Display 40 Percent Rotation 2
-            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x08 0 0xFF 0 0x09 0 0x0E ; Display 40 Percent Rotation 3
+            0 0x22 0 0x53 0 0xD2 0 0xD2 0 0xD7 0 0x52 0 0x52 0 0x22 ; Display 40 Percent rotation 0
+            0 0x1C 0 0x24 0 0xFF 0 0x04 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 40 Percent rotation 1
+            0 0x11 0 0x92 0 0x92 0 0xFA 0 0xD2 0 0xD2 0 0xB2 0 0x11 ; Display 40 Percent rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x08 0 0xFF 0 0x09 0 0x0E ; Display 40 Percent rotation 3
 
-            0 0xA7 0 0xD0 0 0xD0 0 0x53 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 50 Percent Rotation 0
-            0 0xF0 0 0xC8 0 0xC8 0 0x47 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 50 Percent Rotation 1
-            0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xB2 0 0xC2 0 0xC2 0 0x79 ; Display 50 Percent Rotation 2
-            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0xB8 0 0xC4 0 0xC4 0 0xC3 ; Display 50 Percent Rotation 3
+            0 0xA7 0 0xD0 0 0xD0 0 0x53 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 50 Percent rotation 0
+            0 0xF0 0 0xC8 0 0xC8 0 0x47 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 50 Percent rotation 1
+            0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xB2 0 0xC2 0 0xC2 0 0x79 ; Display 50 Percent rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0xB8 0 0xC4 0 0xC4 0 0xC3 ; Display 50 Percent rotation 3
 
-            0 0x27 0 0xD0 0 0xD0 0 0xD3 0 0xD4 0 0xD4 0 0xD4 0 0x23 ; Display 60 Percent Rotation 0
-            0 0x3F 0 0xC8 0 0xC8 0 0x47 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 60 Percent Rotation 1
-            0 0x31 0 0xCA 0 0xCA 0 0xCA 0 0xF2 0 0xC2 0 0xC2 0 0x39 ; Display 60 Percent Rotation 2
-            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0xB8 0 0xC4 0 0xC4 0 0x3F ; Display 60 Percent Rotation 3
+            0 0x27 0 0xD0 0 0xD0 0 0xD3 0 0xD4 0 0xD4 0 0xD4 0 0x23 ; Display 60 Percent rotation 0
+            0 0x3F 0 0xC8 0 0xC8 0 0x47 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 60 Percent rotation 1
+            0 0x31 0 0xCA 0 0xCA 0 0xCA 0 0xF2 0 0xC2 0 0xC2 0 0x39 ; Display 60 Percent rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0xB8 0 0xC4 0 0xC4 0 0x3F ; Display 60 Percent rotation 3
 
-            0 0xA7 0 0x54 0 0x54 0 0x53 0 0x52 0 0x51 0 0x51 0 0xA0 ; Display 70 Percent Rotation 0
-            0 0xC0 0 0x4B 0 0x4C 0 0x70 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 70 Percent Rotation 1
-            0 0x41 0 0xA2 0 0xA2 0 0x92 0 0xB2 0 0x8A 0 0x8A 0 0x79 ; Display 70 Percent Rotation 2
-            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x83 0 0x8C 0 0xB4 0 0xC0 ; Display 70 Percent Rotation 3
+            0 0xA7 0 0x54 0 0x54 0 0x53 0 0x52 0 0x51 0 0x51 0 0xA0 ; Display 70 Percent rotation 0
+            0 0xC0 0 0x4B 0 0x4C 0 0x70 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 70 Percent rotation 1
+            0 0x41 0 0xA2 0 0xA2 0 0x92 0 0xB2 0 0x8A 0 0x8A 0 0x79 ; Display 70 Percent rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x83 0 0x8C 0 0xB4 0 0xC0 ; Display 70 Percent rotation 3
 
-            0 0x23 0 0xD4 0 0xD4 0 0xD4 0 0x53 0 0xD4 0 0xD4 0 0x23 ; Display 80 Percent Rotation 0
-            0 0x3B 0 0xC4 0 0xC4 0 0x3B 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 80 Percent Rotation 1
-            0 0x31 0 0xCA 0 0xCA 0 0xB2 0 0xCA 0 0xCA 0 0xCA 0 0x31 ; Display 80 Percent Rotation 2
-            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x37 0 0xC8 0 0xC8 0 0x37 ; Display 80 Percent Rotation 3
+            0 0x23 0 0xD4 0 0xD4 0 0xD4 0 0x53 0 0xD4 0 0xD4 0 0x23 ; Display 80 Percent rotation 0
+            0 0x3B 0 0xC4 0 0xC4 0 0x3B 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 80 Percent rotation 1
+            0 0x31 0 0xCA 0 0xCA 0 0xB2 0 0xCA 0 0xCA 0 0xCA 0 0x31 ; Display 80 Percent rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x37 0 0xC8 0 0xC8 0 0x37 ; Display 80 Percent rotation 3
 
-            0 0x23 0 0xD4 0 0xD4 0 0x57 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 90 Percent Rotation 0
-            0 0xB0 0 0xC8 0 0xC8 0 0x3F 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 90 Percent Rotation 1
-            0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xBA 0 0xCA 0 0xCA 0 0x31 ; Display 90 Percent Rotation 2
-            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x3F 0 0xC4 0 0xC4 0 0x43 ; Display 90 Percent Rotation 3
+            0 0x23 0 0xD4 0 0xD4 0 0x57 0 0x54 0 0x54 0 0x54 0 0xA3 ; Display 90 Percent rotation 0
+            0 0xB0 0 0xC8 0 0xC8 0 0x3F 0 0x00 0 0x3F 0 0xC0 0 0x3F ; Display 90 Percent rotation 1
+            0 0x71 0 0x8A 0 0x8A 0 0x8A 0 0xBA 0 0xCA 0 0xCA 0 0x31 ; Display 90 Percent rotation 2
+            0 0x3F 0 0xC0 0 0x3F 0 0x00 0 0x3F 0 0xC4 0 0xC4 0 0x43 ; Display 90 Percent rotation 3
 
-            0 0xE3 0 0x90 0 0x90 0 0x93 0 0x90 0 0x90 0 0x90 0 0xE0 ; Display 100 Percent Rotation 0
-            0 0xFF 0 0x48 0 0x48 0 0x00 0 0x00 0 0x3F 0 0xC0 0 0xC0 ; Display 100 Percent Rotation 1
-            0 0xC1 0 0x42 0 0x42 0 0x42 0 0x72 0 0x42 0 0x42 0 0xF1 ; Display 100 Percent Rotation 2
-            0 0xC0 0 0xC0 0 0x3F 0 0x00 0 0x00 0 0x84 0 0x84 0xFF ; Display 100 Percent Rotation 3
+            0 0xE3 0 0x90 0 0x90 0 0x93 0 0x90 0 0x90 0 0x90 0 0xE0 ; Display 100 Percent rotation 0
+            0 0xFF 0 0x48 0 0x48 0 0x00 0 0x00 0 0x3F 0 0xC0 0 0xC0 ; Display 100 Percent rotation 1
+            0 0xC1 0 0x42 0 0x42 0 0x42 0 0x72 0 0x42 0 0x42 0 0xF1 ; Display 100 Percent rotation 2
+            0 0xC0 0 0xC0 0 0x3F 0 0x00 0 0x00 0 0x84 0 0x84 0xFF ; Display 100 Percent rotation 3
         ])) {
 
         (bufclear pixbuf) ; clear the buffer
         (loopwhile-thd 45 t {
             (sleep 0.25)
             ; xxxx Timer section to turn display off, gets reset by each new request to display
-            (if (> Disp_Timer_Start 1) ; check to see if display is on. dont want to run i2c comands continously
-            (if (> (secs-since Disp_Timer_Start) 5) { ; check timer to see if its longer than display duration and display needs turning off, new display comands will keep adding time
-            (if (= Scooter_Type 0) ; For Blacktip Turn off the display
-                    (if (!= Last-Disp-Num 17) ; if last display was the Smart Cruise, dont disable display
+            (if (> disp_timer_start 1) ; check to see if display is on. dont want to run i2c comands continously
+            (if (> (secs-since disp_timer_start) 5) { ; check timer to see if its longer than display duration and display needs turning off, new display comands will keep adding time
+            (if (= scooter_type 0) ; For Blacktip Turn off the display
+                    (if (!= last_disp_num 17) ; if last display was the Smart Cruise, dont disable display
                         (i2c-tx-rx 0x70 (list 0x80))))
             ; For Cuda X make sure it doesnt get stuck on diaplaying B1 or B2 error, so switch back to last battery.
-            (if (and (= Scooter_Type 1) (> Last-Disp-Num 20) )
-                (setvar 'Disp-Num Last-Batt-Disp-Num))
+            (if (and (= scooter_type 1) (> last_disp_num 20) )
+                (setvar 'disp_num last_batt_disp_num))
 
-            (setvar 'Disp_Timer_Start 0)
+            (setvar 'disp_timer_start 0)
             }))
             ; xxxx End of timer section
 
-                (if (!= Disp-Num Last-Disp-Num) {
-                (if (= Scooter_Type 1) { ; For cuda X second screen
-                    (if (= CudaX_Flip 1)
+                (if (!= disp_num last_disp_num) {
+                (if (= scooter_type 1) { ; For cuda X second screen
+                    (if (= cudax_flip 1)
                         (setvar 'mpu-addr 0x70)
                         (setvar 'mpu-addr 0x71)
                     )
-                    (if (or (= Disp-Num 0) (= Disp-Num 1) (= Disp-Num 2) (= Disp-Num 3) (> Disp-Num 17) )
-                        (if (= CudaX_Flip 1)
+                    (if (or (= disp_num 0) (= disp_num 1) (= disp_num 2) (= disp_num 3) (> disp_num 17) )
+                        (if (= cudax_flip 1)
                             (setvar 'mpu-addr 0x71)
                             (setvar 'mpu-addr 0x70)
+                        )
                     )
                 })
-                (setvar 'Disp_Timer_Start (systime))
+                (setvar 'disp_timer_start (systime))
                 (if (= mpu-addr 0x70)
-                    (setvar 'start_pos (+(* 64 Disp-Num) (* 16 Rotation))) ; define the correct start position in the array for the display
-                    (setvar 'start_pos (+(* 64 Disp-Num) (* 16 Rotation2)))
+                    (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation))) ; define the correct start position in the array for the display
+                    (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation2)))
                     )
                 (bufclear pixbuf)
                 (bufcpy pixbuf 0 Displays start_pos 16) ; copy the required display from "Displays" Array to "pixbuf"
                 (i2c-tx-rx mpu-addr pixbuf) ; send display characters
                 (i2c-tx-rx mpu-addr (list 0x81)) ; Turn on display
-                (setvar 'Last-Disp-Num Disp-Num)
+                (setvar 'last_disp_num disp_num)
                 (setvar 'mpu-addr 0x70)
                     })
         })
@@ -743,60 +743,60 @@
 
 (defun start_display_battery_loop()
 {
-    (define Batt_Disp_Timer_Start 0) ; Timer to see if Battery display has been triggered
-    (define Last-Batt-Disp-Num 3) ; variable used to track last display screen show
+    (define batt_disp_timer_start 0) ; Timer to see if Battery display has been triggered
+    (define last_batt_disp_num 3) ; variable used to track last display screen show
 
-    (let ((Batt-Disp-State 0))
+    (let ((batt_disp_state 0))
     (loopwhile-thd 45 t {
        (sleep 0.25)
 
-        (if (or (= Batt_Disp_Timer_Start 0) (= Batt-Disp-State 0)) {
-        (setvar 'Batt-Disp-State 0)})
+        (if (or (= batt_disp_timer_start 0) (= batt_disp_state 0)) {
+        (setvar 'batt_disp_state 0)})
 
 
-        (if (and (> Batt_Disp_Timer_Start 1) (> (secs-since Batt_Disp_Timer_Start) 6) (= Batt-Disp-State 0)) { ; waits Display Duration + 1 second after scooter is turned off to stabalize battery readings
+        (if (and (> batt_disp_timer_start 1) (> (secs-since batt_disp_timer_start) 6) (= batt_disp_state 0)) { ; waits Display Duration + 1 second after scooter is turned off to stabalize battery readings
 
         ; xxxx Section for normal 4 bar battery capacity display
 
-             (if (= Thirds-Total 0)
+             (if (= thirds_total 0)
 
-             (if (> Actual-Batt 0.75) { (setvar 'Disp-Num 3) (spawn Beeper 4)} ; gets the vesc battery % and triggers the display screen
-                (if (> Actual-Batt 0.5) { (setvar 'Disp-Num 2) (spawn Beeper 3)}
-                    (if (> Actual-Batt 0.25) { (setvar 'Disp-Num 1) (spawn Beeper 2)}
-                        { (setvar 'Disp-Num 0) (spawn Beeper 1)} (nil ))))
+             (if (> actual_batt 0.75) { (setvar 'disp_num 3) (spawn beeper 4)} ; gets the vesc battery % and triggers the display screen
+                (if (> actual_batt 0.5) { (setvar 'disp_num 2) (spawn beeper 3)}
+                    (if (> actual_batt 0.25) { (setvar 'disp_num 1) (spawn beeper 2)}
+                        { (setvar 'disp_num 0) (spawn beeper 1)} (nil ))))
 
              ; Section for 1/3rds display
-              (if (and (> Actual-Batt (* Thirds-Total 0.66)) (= Warning-Counter 0)) { (setvar 'Disp-Num 20)}
-                (if (and (> Actual-Batt (* Thirds-Total 0.33)) (< Warning-Counter 3)) {
-                 (setvar 'Disp-Num 19)
-                  (if (< Warning-Counter 2) {
-                    (spawn Warbler 350 0.5 0.5)
-                     (setvar 'Warning-Counter (+ Warning-Counter 1)
+              (if (and (> actual_batt (* thirds_total 0.66)) (= warning_counter 0)) { (setvar 'disp_num 20)}
+                (if (and (> actual_batt (* thirds_total 0.33)) (< warning_counter 3)) {
+                 (setvar 'disp_num 19)
+                  (if (< warning_counter 2) {
+                    (spawn warbler 350 0.5 0.5)
+                     (setvar 'warning_counter (+ warning_counter 1)
                      )})
                     } {
-                     (setvar 'Disp-Num 18)
-                     (if (< Warning-Counter 4) {
-                        (spawn Warbler 350 0.5 0.5)
-                        (setvar 'Warning-Counter (+ Warning-Counter 1))})} (nil ))))
+                     (setvar 'disp_num 18)
+                     (if (< warning_counter 4) {
+                        (spawn warbler 350 0.5 0.5)
+                        (setvar 'warning_counter (+ warning_counter 1))})} (nil ))))
 
-                 (setvar 'Batt-Disp-State 1)
-                 (setvar 'Last-Batt-Disp-Num Disp-Num)
+                 (setvar 'batt_disp_state 1)
+                 (setvar 'last_batt_disp_num disp_num)
                     })
 
-         (if (and (> Batt_Disp_Timer_Start 1) (> (secs-since Batt_Disp_Timer_Start) 12) (= Batt-Disp-State 1) (> Thirds-Total 0)) {
+         (if (and (> batt_disp_timer_start 1) (> (secs-since batt_disp_timer_start) 12) (= batt_disp_state 1) (> thirds_total 0)) {
 
-              (if (> Actual-Batt 0.95) { (setvar 'Disp-Num 30)} ; gets the vesc battery % and triggers the display screen NOTE % are adjusted to better represent battery state, ie fully charged power tool battery will not display at 100% on the vesc
-                (if (> Actual-Batt 0.90) { (setvar 'Disp-Num 29)} ; 90%
-                    (if (> Actual-Batt 0.80) { (setvar 'Disp-Num 28)} ; 80%
-                        (if (> Actual-Batt 0.70) { (setvar 'Disp-Num 27)} ; 70%
-                            (if (> Actual-Batt 0.60) { (setvar 'Disp-Num 26)} ; 60%
-                                (if (> Actual-Batt 0.50) { (setvar 'Disp-Num 25)} ; 50%
-                                    (if (> Actual-Batt 0.40) { (setvar 'Disp-Num 24)} ; 40%
-                                       (if (> Actual-Batt 0.30) { (setvar 'Disp-Num 23)} ; 30%
-                                            (if (> Actual-Batt 0.20) { (setvar 'Disp-Num 22)} ; 20%
-                                                { (setvar 'Disp-Num 21)} (nil ))))))))))
-               (setvar 'Batt-Disp-State 0)
-               (setvar 'Batt_Disp_Timer_Start 0)
+              (if (> actual_batt 0.95) { (setvar 'disp_num 30)} ; gets the vesc battery % and triggers the display screen NOTE % are adjusted to better represent battery state, ie fully charged power tool battery will not display at 100% on the vesc
+                (if (> actual_batt 0.90) { (setvar 'disp_num 29)} ; 90%
+                    (if (> actual_batt 0.80) { (setvar 'disp_num 28)} ; 80%
+                        (if (> actual_batt 0.70) { (setvar 'disp_num 27)} ; 70%
+                            (if (> actual_batt 0.60) { (setvar 'disp_num 26)} ; 60%
+                                (if (> actual_batt 0.50) { (setvar 'disp_num 25)} ; 50%
+                                    (if (> actual_batt 0.40) { (setvar 'disp_num 24)} ; 40%
+                                       (if (> actual_batt 0.30) { (setvar 'disp_num 23)} ; 30%
+                                            (if (> actual_batt 0.20) { (setvar 'disp_num 22)} ; 20%
+                                                { (setvar 'disp_num 21)} (nil ))))))))))
+               (setvar 'batt_disp_state 0)
+               (setvar 'batt_disp_timer_start 0)
               })
     })
     )
@@ -805,55 +805,55 @@
 (move-to-flash start_display_battery_loop)
 
 
-(defun Beeper (Beeps)
-(loopwhile (and (= Enable_Battery_Beeps 1) (> Batt_Disp_Timer_Start 0) (> Beeps 0)) {
+(defun beeper (Beeps)
+(loopwhile (and (= enable_battery_beeps 1) (> batt_disp_timer_start 0) (> Beeps 0)) {
        (sleep 0.25)
-       (foc-beep 350 0.5 Beeps_Vol)
+       (foc-beep 350 0.5 beeps_vol)
       (setvar 'Beeps (- Beeps 1))
     }))
 
-(move-to-flash Beeper)
+(move-to-flash beeper)
 
-; xxxx Warbler Program xxxx"
+; xxxx warbler Program xxxx"
 
-(defun Warbler (Tone Time Delay)
+(defun warbler (Tone Time Delay)
 {
          (sleep Delay)
-         (foc-beep Tone Time Beeps_Vol)
-         (foc-beep (- Tone 200) Time Beeps_Vol)
-         (foc-beep Tone Time Beeps_Vol)
-         (foc-beep (- Tone 200) Time Beeps_Vol)
+         (foc-beep Tone Time beeps_vol)
+         (foc-beep (- Tone 200) Time beeps_vol)
+         (foc-beep Tone Time beeps_vol)
+         (foc-beep (- Tone 200) Time beeps_vol)
          })
 
- (move-to-flash Warbler)
+ (move-to-flash warbler)
 
 
 ; ***** Program that beeps trigger clicks
 
 (defun start_beeper_loop()
 {
-    (define Click_Beep 0)
+    (define click_beep 0)
 
-    (let ((Click_Beep_Timer 0))
+    (let ((click_beep_timer 0))
     (loopwhile-thd 100 t {
         (sleep 0.25)
 
-        (if (and (> (secs-since Click_Beep_Timer) 0.25) (!= Click_Beep_Timer 0)) {
+        (if (and (> (secs-since click_beep_timer) 0.25) (!= click_beep_timer 0)) {
         (foc-play-stop)
-        (setvar 'Click_Beep_Timer 0)
+        (setvar 'click_beep_timer 0)
         })
 
-        (if (> Click_Beep 0) {
-        (if (and (= Click_Beep 5) (> Enable_Smart_Cruise 0)(!= SPEED 99)) (foc-play-tone 1 1500 Beeps_Vol))
-        (if (= Enable_Trigger_Beeps 1) {
-        (if (= Click_Beep 1)(foc-play-tone 1 2500 Beeps_Vol))
-        (if (= Click_Beep 2)(foc-play-tone 1 3000 Beeps_Vol))
-        (if (= Click_Beep 3)(foc-play-tone 1 3500 Beeps_Vol))
-        (if (= Click_Beep 4)(foc-play-tone 1 4000 Beeps_Vol))
+        (if (> click_beep 0) {
+        (if (and (= click_beep 5) (> enable_smart_cruise 0)(!= speed 99)) (foc-play-tone 1 1500 beeps_vol))
+        (if (= enable_trigger_beeps 1) {
+        (if (= click_beep 1)(foc-play-tone 1 2500 beeps_vol))
+        (if (= click_beep 2)(foc-play-tone 1 3000 beeps_vol))
+        (if (= click_beep 3)(foc-play-tone 1 3500 beeps_vol))
+        (if (= click_beep 4)(foc-play-tone 1 4000 beeps_vol))
         })
 
-        (setvar 'Click_Beep_Timer (systime))
-        (setvar 'Click_Beep 0)
+        (setvar 'click_beep_timer (systime))
+        (setvar 'click_beep 0)
         })
 
     })
@@ -865,10 +865,10 @@
 
 (defun peripherals_setup()
 {
-    (define Disp_Timer_Start 0) ; Timer for display duration
+    (define disp_timer_start 0) ; Timer for display duration
 
     ; List with all the screen Brightness commands
-    (let ((Brightness_Bytes (list
+    (let ((brightness_bytes (list
         0xE0; 0 Min
         0xE3; 1
         0xE6; 2
@@ -888,11 +888,11 @@
         (define mpu-addr 0x70) ; I2C Address for the screen
 
         (i2c-tx-rx 0x70 (list 0x21)) ; start the oscillator
-        (i2c-tx-rx 0x70 (list (ix Brightness_Bytes Disp_Brightness))) ; set brightness
+        (i2c-tx-rx 0x70 (list (ix brightness_bytes disp_brightness))) ; set brightness
 
-        (if (= Scooter_Type 1) { ; For cuda X setup second screen
+        (if (= scooter_type 1) { ; For cuda X setup second screen
                 (i2c-tx-rx 0x71 (list 0x21)) ; start the oscillator
-                (i2c-tx-rx 0x71 (list (ix Brightness_Bytes Disp_Brightness))) ; set brightness
+                (i2c-tx-rx 0x71 (list (ix brightness_bytes disp_brightness))) ; set brightness
         })
     })
 })
@@ -901,7 +901,7 @@
 {
     (eeprom_set_defaults)
 
-    (Update_Settings) ; creates all settings variables
+    (update_settings) ; creates all settings variables
 
     (thirds_warning_startup)
 
@@ -923,10 +923,10 @@
 
     (start_trigger_loop)
 
-    (spawn 35 SW_STATE_0) ; ***Start state machine runnning for first time
+    (spawn 35 sw_state_0) ; ***Start state machine runnning for first time
 
-    (setvar 'Disp-Num 15) ; display startup screen, change bytes if you want a different one
-    (setvar 'Batt_Disp_Timer_Start (systime)) ; turns battery display on for power on.
+    (setvar 'disp_num 15) ; display startup screen, change bytes if you want a different one
+    (setvar 'batt_disp_timer_start (systime)) ; turns battery display on for power on.
 
     (puts "Startup complete")
 })
