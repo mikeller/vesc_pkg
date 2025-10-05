@@ -84,9 +84,9 @@
     ))
 
     ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
-    (if (<= hardware_configuration 2)
-        (define scooter_type 0)
-        (define scooter_type 1)
+    (if (<= hardware_configuration HARDWARE_BLACKTIP_MAX)
+        (define scooter_type SCOOTER_BLACKTIP)
+        (define scooter_type SCOOTER_CUDAX)
     )
 
     ; Log configuration on startup (before debug_enabled is read, so always logs once)
@@ -111,10 +111,10 @@
 (defun calculate-corrected-battery ()
     ; Calculate corrected battery percentage from raw battery reading
     (let ((raw-batt (get-batt)))
-        (+ (* 4.3867 raw-batt raw-batt raw-batt raw-batt)
-           (* -6.7072 raw-batt raw-batt raw-batt)
-           (* 2.4021 raw-batt raw-batt)
-           (* 1.3619 raw-batt))))
+        (+ (* BATTERY_COEFF_4 raw-batt raw-batt raw-batt raw-batt)
+           (* BATTERY_COEFF_3 raw-batt raw-batt raw-batt)
+           (* BATTERY_COEFF_2 raw-batt raw-batt)
+           (* BATTERY_COEFF_1 raw-batt))))
 
 (move-to-flash calculate-corrected-battery)
 
@@ -142,15 +142,15 @@
 
 (defun my_data_recv_prog (data)
 {
-    (if (= (bufget-u8 data 0) 255) { ; Handshake to trigger data send if not yet received.
-        (define setbuf (array-create 30)) ; create a temp array to store setting
+    (if (= (bufget-u8 data 0) HANDSHAKE_CODE) { ; Handshake to trigger data send if not yet received.
+        (define setbuf (array-create EEPROM_SETTINGS_COUNT)) ; create a temp array to store setting
         (bufclear setbuf) ; clear the buffer
-        (looprange i 0 30
+        (looprange i 0 EEPROM_SETTINGS_COUNT
             (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
         (send-data setbuf)
         (free setbuf)
     } {
-        (looprange i 0 30
+        (looprange i 0 EEPROM_SETTINGS_COUNT
             (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
         (update_settings) ; updates actual settings in lisp
     })
@@ -180,8 +180,8 @@
     (gpio-configure 'pin-ppm 'pin-mode-in-pd)
     (define sw_pressed 0)
 
-    (loopwhile-thd 25 t {
-        (sleep 0.04)
+    (loopwhile-thd THREAD_PRIORITY_GPIO t {
+        (sleep SLEEP_MOTOR_CONTROL)
         (if (= 1 (gpio-read 'pin-ppm))
             (setvar 'sw_pressed 1)
             (setvar 'sw_pressed 0)
@@ -194,14 +194,14 @@
 (defun start_smart_cruise_loop()
 {
     (debug_log "Smart Cruise: Starting loop")
-    (define smart_cruise 0) ; variable to control Smart Cruise on 5 clicks
+    (define smart_cruise SMART_CRUISE_OFF) ; variable to control Smart Cruise on 5 clicks
 
     (let ((speed_setting_timer 0) ; Timer for auto-engage functionality
-          (last_speed_setting 99)) { ; Track last speed setting for auto-engage
+          (last_speed_setting SPEED_OFF)) { ; Track last speed setting for auto-engage
 
-        (loopwhile-thd 30 t {
-            (sleep 0.5)
-            (if (and (> enable_smart_cruise 0) (> enable_smart_cruise_auto_engage 0) (= sw_state 2) (= smart_cruise 0) (!= speed 99) (>= speed 2)) {
+        (loopwhile-thd THREAD_PRIORITY_SMART_CRUISE t {
+            (sleep SLEEP_BACKGROUND_CHECK)
+            (if (and (> enable_smart_cruise 0) (> enable_smart_cruise_auto_engage 0) (= sw_state STATE_PRESSED) (= smart_cruise SMART_CRUISE_OFF) (!= speed SPEED_OFF) (>= speed SPEED_REVERSE_THRESHOLD)) {
                 ; Check if speed setting has changed
                 (if (!= speed last_speed_setting) {
                     (setvar 'last_speed_setting speed)
@@ -210,11 +210,11 @@
                     ; Speed setting hasn't changed, check if timer expired
                     (if (> (secs-since speed_setting_timer) smart_cruise_auto_engage_time) {
                         (debug_log "Smart Cruise: Auto-engaged")
-                        (setvar 'smart_cruise 3)
+                        (setvar 'smart_cruise SMART_CRUISE_AUTO_ENGAGED)
                         (setvar 'timer_start (systime))
-                        (setvar 'disp_num 17)
-                        (setvar 'click_beep 5)
-                        (if (< speed 2) ; re command actuall speed as reverification sets it to 0.8x
+                        (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+                        (setvar 'click_beep CLICKS_QUINTUPLE)
+                        (if (< speed SPEED_REVERSE_THRESHOLD) ; re command actual speed as reverification sets it to 0.8x
                             (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
                             (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
                         )
@@ -231,17 +231,124 @@
 (move-to-flash start_smart_cruise_loop)
 
 
-; Constants for state machine
-(define TIMER_DISABLED 86400) ; 24 hours - effectively infinite for scooter operation
+; =============================================================================
+; Constants
+; =============================================================================
 
+; Sleep intervals (seconds) - controls loop frequencies
+(define SLEEP_STATE_MACHINE 0.02)     ; 50Hz - button state polling
+(define SLEEP_MOTOR_CONTROL 0.04)     ; 25Hz - motor/GPIO polling  
+(define SLEEP_MOTOR_SPEED_CHANGE 0.25) ; 4Hz - motor speed transitions
+(define SLEEP_UI_UPDATE 0.25)         ; 4Hz - display/beeper updates
+(define SLEEP_BACKGROUND_CHECK 0.5)   ; 2Hz - Smart Cruise checking
+(define SLEEP_BATTERY_STABILIZE 1.0)  ; 1Hz - one-time battery reading delay
+
+; Timer durations (seconds)
+(define TIMER_DISABLED 86400)         ; 24 hours - effectively infinite for scooter operation
+(define TIMER_CLICK_WINDOW 0.3)       ; Click detection window
+(define TIMER_RELEASE_WINDOW 0.5)     ; Release detection window
+(define TIMER_SMART_CRUISE_TIMEOUT 5) ; Smart Cruise half-enable timeout
+(define TIMER_DISPLAY_DURATION 5)     ; Display duration (used in calculations)
+(define TIMER_LONG_PRESS 10)          ; Long press duration for special functions
+
+; Thread priorities (lower number = higher priority)
+(define THREAD_PRIORITY_GPIO 25)      ; GPIO reading (highest priority)
+(define THREAD_PRIORITY_SMART_CRUISE 30) ; Smart Cruise management
+(define THREAD_PRIORITY_STATE_MACHINE 30) ; State 2 (pressed)
+(define THREAD_PRIORITY_STATE_TRANSITIONS 35) ; States 0, 3 (off, going off)
+(define THREAD_PRIORITY_STATE_COUNTING 40) ; State 1 (counting clicks)
+(define THREAD_PRIORITY_MOTOR 65)     ; Motor control
+(define THREAD_PRIORITY_UI 100)       ; Display and beeper updates
+
+; State values
+(define STATE_OFF 0)
+(define STATE_COUNTING_CLICKS 1)
+(define STATE_PRESSED 2)
+(define STATE_GOING_OFF 3)
+
+; Special speed values
+(define SPEED_OFF 99)                 ; Motor off indicator
+(define SPEED_REVERSE_THRESHOLD 2)    ; Speeds below this are reverse
+(define SPEED_SOFT_START_SENTINEL 0.5) ; Sentinel value for soft start tracking
+
+; Click counts
+(define CLICKS_SINGLE 1)
+(define CLICKS_DOUBLE 2)
+(define CLICKS_TRIPLE 3)
+(define CLICKS_QUADRUPLE 4)
+(define CLICKS_QUINTUPLE 5)
+
+; Smart Cruise states
+(define SMART_CRUISE_OFF 0)
+(define SMART_CRUISE_HALF_ENABLED 1)
+(define SMART_CRUISE_FULLY_ENABLED 2)
+(define SMART_CRUISE_AUTO_ENGAGED 3)
+
+; Hardware configuration thresholds
+(define HARDWARE_BLACKTIP_MAX 2)      ; Hardware configs 0-2 are Blacktip
+
+; Scooter types (indices into hardware lists)
+(define SCOOTER_BLACKTIP 0)
+(define SCOOTER_CUDAX 1)
+
+; Motor control constants
+(define MAX_ERPM_BLACKTIP 4100)
+(define MAX_ERPM_CUDAX 7100)
+(define MAX_CURRENT_BLACKTIP 22.8)
+(define MAX_CURRENT_CUDAX 46)
+(define MIN_CURRENT_BLACKTIP 1.7)
+(define MIN_CURRENT_CUDAX 0.35)
+
+; Safe start parameters
+(define SAFE_START_DUTY 0.06)         ; Initial duty cycle for soft start
+(define SAFE_START_TIMEOUT 0.5)       ; Timeout for safe start checks
+(define SAFE_START_MIN_RPM 350)       ; Minimum RPM for safe start success
+(define SAFE_START_MIN_DUTY 0.05)     ; Minimum duty for safe start check
+(define SAFE_START_MAX_CURRENT 5)     ; Maximum current during safe start spin-up
+(define SAFE_START_FAIL_CURRENT 8)    ; Current threshold for safe start failure
+
+; Smart Cruise speed adjustment (slowdown to 80%)
+(define SMART_CRUISE_SLOWDOWN_DIVISOR 125) ; Divide by 125 instead of 100 for 80%
+
+; Display offset (speed value to display number mapping)
+(define DISPLAY_SPEED_OFFSET 4)
+
+; Display numbers for special screens
+(define DISPLAY_OFF 14)
+(define DISPLAY_SMART_CRUISE_HALF 16)
+(define DISPLAY_SMART_CRUISE_FULL 17)
+(define DISPLAY_SENTINEL 99)          ; Sentinel for "no previous display"
+
+; Warbler beep parameters
+(define WARBLER_FREQUENCY 450)
+(define WARBLER_DURATION 0.2)
+
+; Display timing calculations (from State 2 repeat display)
+(define DISPLAY_REPEAT_FIRST 6)       ; display duration + 1
+(define DISPLAY_REPEAT_SECOND 12)     ; 2 * display duration + 2
+
+; EEPROM settings buffer size
+(define EEPROM_SETTINGS_COUNT 30)
+
+; Battery polynomial coefficients (for voltage-based calculation)
+(define BATTERY_COEFF_4 4.3867)
+(define BATTERY_COEFF_3 -6.7072)
+(define BATTERY_COEFF_2 2.4021)
+(define BATTERY_COEFF_1 1.3619)
+
+; Data receive handshake code
+(define HANDSHAKE_CODE 255)
+
+; Display timer stop value
+(define DISPLAY_TIMER_STOP 2)
+
+; =============================================================================
 ; State Machine Design Notes:
 ; - Each state handler runs in a loop checking (= sw_state N)
 ; - When transitioning, sw_state is updated, new handler spawned, and (break) called
 ; - The loop condition prevents race conditions by ensuring old handler exits
 ; - Old thread terminates naturally when loop condition becomes false
-
-; Trigger_On_Time is 0.3 for Double Click Timer Settings
-; Trigger_Off_Time is 0.5 for Double Click Timer Settings
+; =============================================================================
 
 (defun setup_state_machine()
 {
@@ -260,8 +367,8 @@
 {
     ; xxxx State "0" Off
     (debug_log "State 0: Off")
-    (loopwhile (= sw_state 0) {
-        (sleep 0.02)
+    (loopwhile (= sw_state STATE_OFF) {
+        (sleep SLEEP_STATE_MACHINE)
         ; Calculate corrected batt %, only needed when scooter is off in state 0
         (setvar 'actual_batt (get-battery-level))
 
@@ -269,12 +376,12 @@
         (if (= sw_pressed 1) {
             (debug_log "State 0->1: Button pressed")
             (setvar 'batt_disp_timer_start 0) ; Stop Battery Display in case its running
-            (setvar 'disp_timer_start 2) ; Stop Display in case its running
+            (setvar 'disp_timer_start DISPLAY_TIMER_STOP) ; Stop Display in case its running
             (setvar 'timer_start (systime))
-            (setvar 'timer_duration 0.3)
-            (setvar 'clicks 1)
-            (setvar 'sw_state 1)
-            (spawn 40 sw_state_1)
+            (setvar 'timer_duration TIMER_CLICK_WINDOW)
+            (setvar 'clicks CLICKS_SINGLE)
+            (setvar 'sw_state STATE_COUNTING_CLICKS)
+            (spawn THREAD_PRIORITY_STATE_COUNTING sw_state_1)
             (break)
         })
     })
@@ -286,10 +393,10 @@
 ; Helper functions for click actions
 (defun handle_single_click ()
 {
-    (if (and (= clicks 1) (!= speed 99)) {
+    (if (and (= clicks CLICKS_SINGLE) (!= speed SPEED_OFF)) {
         (debug_log "Click action: Single click (speed down)")
-        (setvar 'click_beep 1)
-        (if (> speed 2)
+        (setvar 'click_beep CLICKS_SINGLE)
+        (if (> speed SPEED_REVERSE_THRESHOLD)
             (setvar 'speed (- speed 1))
             (if (= speed 0)
                 (setvar 'speed 1)
@@ -300,15 +407,15 @@
 
 (defun handle_double_click ()
 {
-    (if (= clicks 2) {
-        (if (= speed 99)
+    (if (= clicks CLICKS_DOUBLE) {
+        (if (= speed SPEED_OFF)
             {
                 (debug_log (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
                 (setvar 'speed new_start_speed)
             }
             {
                 (debug_log "Click action: Double click (speed up)")
-                (setvar 'click_beep 2)
+                (setvar 'click_beep CLICKS_DOUBLE)
                 (if (< speed max_speed_no)
                     (if (> speed 1)
                         (setvar 'speed (+ speed 1))
@@ -322,10 +429,10 @@
 
 (defun handle_triple_click ()
 {
-    (if (= clicks 3) {
+    (if (= clicks CLICKS_TRIPLE) {
         (debug_log (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
-        (if (!= speed 99)
-            (setvar 'click_beep 3)
+        (if (!= speed SPEED_OFF)
+            (setvar 'click_beep CLICKS_TRIPLE)
         )
         (setvar 'speed jump_speed)
     })
@@ -333,10 +440,10 @@
 
 (defun handle_quadruple_click ()
 {
-    (if (and (= clicks 4) (= 1 enable_reverse)) {
+    (if (and (= clicks CLICKS_QUADRUPLE) (= 1 enable_reverse)) {
         (debug_log "Click action: Quadruple click (untangle)")
-        (if (!= speed 99)
-            (setvar 'click_beep 4)
+        (if (!= speed SPEED_OFF)
+            (setvar 'click_beep CLICKS_QUADRUPLE)
         )
         (setvar 'speed 1)
     })
@@ -344,23 +451,23 @@
 
 (defun handle_quintuple_click ()
 {
-    (if (= clicks 5) {
+    (if (= clicks CLICKS_QUINTUPLE) {
         (debug_log (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
-        (setvar 'click_beep 5)
-        (if (and (!= speed 99) (> enable_smart_cruise 0) (< smart_cruise 2))
+        (setvar 'click_beep CLICKS_QUINTUPLE)
+        (if (and (!= speed SPEED_OFF) (> enable_smart_cruise 0) (< smart_cruise SMART_CRUISE_FULLY_ENABLED))
             (setvar 'smart_cruise (+ 1 smart_cruise))
         )
 
-        (if (= smart_cruise 1) {
+        (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
             (debug_log "Smart Cruise: Half-enabled (waiting for confirmation)")
-            (setvar 'disp_num 16)
-            (setvar 'last_disp_num 99)
+            (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
+            (setvar 'last_disp_num DISPLAY_SENTINEL)
         })
 
-        (if (= smart_cruise 2) {
+        (if (= smart_cruise SMART_CRUISE_FULLY_ENABLED) {
             (debug_log "Smart Cruise: Fully enabled")
-            (setvar 'disp_num 17)
-            (if (< speed 2)
+            (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+            (if (< speed SPEED_REVERSE_THRESHOLD)
                 (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
                 (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
             )
@@ -380,16 +487,16 @@
 (defun sw_state_1 ()
 {
     (debug_log (str-merge "State 1: Counting clicks=" (to-str clicks)))
-    (loopwhile (= sw_state 1) {
-        (sleep 0.02)
+    (loopwhile (= sw_state STATE_COUNTING_CLICKS) {
+        (sleep SLEEP_STATE_MACHINE)
 
         ; Released
         (if (= sw_pressed 0) {
-            (setvar 'disp_timer_start 2) ; Stop Display in case its running
+            (setvar 'disp_timer_start DISPLAY_TIMER_STOP) ; Stop Display in case its running
             (setvar 'timer_start (systime))
-            (setvar 'timer_duration 0.5)
-            (setvar 'sw_state 3)
-            (spawn 35 sw_state_3)
+            (setvar 'timer_duration TIMER_RELEASE_WINDOW)
+            (setvar 'sw_state STATE_GOING_OFF)
+            (spawn THREAD_PRIORITY_STATE_TRANSITIONS sw_state_3)
             (break)
         })
 
@@ -408,8 +515,8 @@
             (debug_log (str-merge "State 1->2: Speed=" (to-str speed)))
             (setvar 'clicks 0)
             (setvar 'timer_duration TIMER_DISABLED)
-            (setvar 'sw_state 2)
-            (spawn 30 sw_state_2)
+            (setvar 'sw_state STATE_PRESSED)
+            (spawn THREAD_PRIORITY_STATE_MACHINE sw_state_2)
             (break)
         })
     })
@@ -422,29 +529,29 @@
 (defun sw_state_2()
 {
     (debug_log "State 2: Pressed")
-   (loopwhile (= sw_state 2) {
-     (sleep 0.02)
+   (loopwhile (= sw_state STATE_PRESSED) {
+     (sleep SLEEP_STATE_MACHINE)
         (timeout-reset) ; keeps motor running
 
         ; xxx repeat display section whilst scooter is running xxx
-        (if (and (> (secs-since timer_start) 6) (= smart_cruise 0)) ; 6 = display duration +1
+        (if (and (> (secs-since timer_start) DISPLAY_REPEAT_FIRST) (= smart_cruise SMART_CRUISE_OFF)) ; 6 = display duration +1
             (setvar 'disp_num last_batt_disp_num)
         )
 
-        (if (and (> (secs-since timer_start) 12) (= smart_cruise 0)) { ; 12= (2xdisplay duration + 2)
-            (setvar 'disp_num (+ speed 4))
+        (if (and (> (secs-since timer_start) DISPLAY_REPEAT_SECOND) (= smart_cruise SMART_CRUISE_OFF)) { ; 12= (2xdisplay duration + 2)
+            (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
             (setvar 'timer_start (systime))
         })
 
         ; xxx end repeat display section
-        (if (and (= smart_cruise 1) (> (secs-since timer_start) 5)) ; time out Smart Cruise if second activation isn't received within display duration
-            (setvar 'smart_cruise 0)
+        (if (and (= smart_cruise SMART_CRUISE_HALF_ENABLED) (> (secs-since timer_start) TIMER_SMART_CRUISE_TIMEOUT)) ; time out Smart Cruise if second activation isn't received within display duration
+            (setvar 'smart_cruise SMART_CRUISE_OFF)
         )
 
         ; Extra Long Press Commands when off (10 seconds)
-        (if (and (> (secs-since timer_start) 10) (= speed 99)) {
+        (if (and (> (secs-since timer_start) TIMER_LONG_PRESS) (= speed SPEED_OFF)) {
             (setvar 'thirds_total actual_batt)
-            (spawn warbler 450 0.2 0)
+            (spawn warbler WARBLER_FREQUENCY WARBLER_DURATION 0)
             (setvar 'warning_counter 0)
         })
 
@@ -452,9 +559,9 @@
         (if (= sw_pressed 0) {
             (debug_log "State 2->3: Released")
             (setvar 'timer_start (systime))
-            (setvar 'timer_duration 0.5)
-            (setvar 'sw_state 3)
-            (spawn 35 sw_state_3)
+            (setvar 'timer_duration TIMER_RELEASE_WINDOW)
+            (setvar 'sw_state STATE_GOING_OFF)
+            (spawn THREAD_PRIORITY_STATE_TRANSITIONS sw_state_3)
             (break)
         })
     })
@@ -468,35 +575,35 @@
 (defun sw_state_3 ()
 {
     (debug_log "State 3: Going Off")
-    (loopwhile (= sw_state 3) {
-        (sleep 0.02)
-        (if (> smart_cruise 0) ; If Smart Cruise is enabled, dont shut down
+    (loopwhile (= sw_state STATE_GOING_OFF) {
+        (sleep SLEEP_STATE_MACHINE)
+        (if (> smart_cruise SMART_CRUISE_OFF) ; If Smart Cruise is enabled, dont shut down
             (timeout-reset)
         )
 
         ; Pressed
         (if (= sw_pressed 1) {
-            (timeout-reset) ; keeps motor running, vesc automaticaly stops if it doesnt recieve this command every second
+            (timeout-reset) ; keeps motor running, vesc automatically stops if it doesn't receive this command every second
             (setvar 'timer_start (systime))
-            (setvar 'timer_duration 0.3)
+            (setvar 'timer_duration TIMER_CLICK_WINDOW)
 
-            (if (>= smart_cruise 2) ; if Smart Cruise is on and switch pressed, turn it off
+            (if (>= smart_cruise SMART_CRUISE_FULLY_ENABLED) ; if Smart Cruise is on and switch pressed, turn it off
                 {
                     (debug_log "Smart Cruise: Disabled by button press")
-                    (setvar 'smart_cruise 0)
+                    (setvar 'smart_cruise SMART_CRUISE_OFF)
                 }
-                (if (< safe_start_timer 1) ; check safe start isnt running, dont allow gear shifts if it is on
+                (if (< safe_start_timer 1) ; check safe start isn't running, don't allow gear shifts if it is on
                     (setvar 'clicks (+ clicks 1)))
             )
 
-            (setvar 'sw_state 1)
-            (spawn 40 sw_state_1)
+            (setvar 'sw_state STATE_COUNTING_CLICKS)
+            (spawn THREAD_PRIORITY_STATE_COUNTING sw_state_1)
             (break)
         })
 
         ; Timer Expiry
         (if (> (secs-since timer_start) timer_duration) {
-            (if (and (!= smart_cruise 2) (!= smart_cruise 3)) { ; If Smart Cruise is enabled, dont shut down
+            (if (and (!= smart_cruise SMART_CRUISE_FULLY_ENABLED) (!= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) { ; If Smart Cruise is enabled, don't shut down
                 (debug_log "State 3->0: Timeout, shutting down")
                 (setvar 'timer_duration TIMER_DISABLED)
                 (if (< speed start_speed) ; start at old speed if less than start speed
@@ -505,23 +612,23 @@
                     )
                     (setvar 'new_start_speed start_speed)
                 )
-                (setvar 'speed 99)
-                (setvar 'smart_cruise 0) ; turn off Smart Cruise
-                (setvar 'sw_state 0)
-                (spawn 35 sw_state_0)
+                (setvar 'speed SPEED_OFF)
+                (setvar 'smart_cruise SMART_CRUISE_OFF) ; turn off Smart Cruise
+                (setvar 'sw_state STATE_OFF)
+                (spawn THREAD_PRIORITY_STATE_TRANSITIONS sw_state_0)
                 (break) ; SWST_OFF
             })
 
-            (if (or (= smart_cruise 2) (= smart_cruise 3)) ; Require Smart Cruise to be re-enabled after a fixed duration
+            (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) ; Require Smart Cruise to be re-enabled after a fixed duration
                 (if (> (secs-since timer_start) smart_cruise_timeout) {
-                    (setvar 'smart_cruise 1)
+                    (setvar 'smart_cruise SMART_CRUISE_HALF_ENABLED)
                     (setvar 'timer_start (systime))
-                    (setvar 'timer_duration 5) ; sets timer duration to display duration to allow for re-enable
-                    (setvar 'disp_num 16)
-                    (setvar 'click_beep 5)
-                    (if (< speed 2) ; slow scooter to 80% to help people realize custom is expiring
-                        (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 125)(ix speed_set speed))))
-                        (set-rpm (* (/ (ix max_erpm scooter_type) 125)(ix speed_set speed)))
+                    (setvar 'timer_duration TIMER_SMART_CRUISE_TIMEOUT) ; sets timer duration to display duration to allow for re-enable
+                    (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
+                    (setvar 'click_beep CLICKS_QUINTUPLE)
+                    (if (< speed SPEED_REVERSE_THRESHOLD) ; slow scooter to 80% to help people realize custom is expiring
+                        (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) SMART_CRUISE_SLOWDOWN_DIVISOR)(ix speed_set speed))))
+                        (set-rpm (* (/ (ix max_erpm scooter_type) SMART_CRUISE_SLOWDOWN_DIVISOR)(ix speed_set speed)))
                     )
                 })
             )
@@ -535,69 +642,69 @@
 (defun start_motor_speed_loop()
 {
     (debug_log "Motor: Starting motor speed loop")
-    (define speed 99) ; 99 is off speed
+    (define speed SPEED_OFF) ; 99 is off speed
     (define safe_start_timer 0)
-    (define max_erpm (list 4100 7100)) ; 1st no is Blacktip, second is CudaX
+    (define max_erpm (list MAX_ERPM_BLACKTIP MAX_ERPM_CUDAX)) ; 1st no is Blacktip, second is CudaX
 
-    (let ((last_speed 99)
-        (max_current (list 22.8 46)) ; 1st no is Blacktip, second is CudaX
-        (min_current (list 1.7 0.35))) { ; 1st no is Blacktip, second is CudaX
+    (let ((last_speed SPEED_OFF)
+        (max_current (list MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)) ; 1st no is Blacktip, second is CudaX
+        (min_current (list MIN_CURRENT_BLACKTIP MIN_CURRENT_CUDAX))) { ; 1st no is Blacktip, second is CudaX
 
-        (loopwhile-thd 65 t {
-            (sleep 0.04)
+        (loopwhile-thd THREAD_PRIORITY_MOTOR t {
+            (sleep SLEEP_MOTOR_CONTROL)
             (loopwhile (!= speed last_speed) {
             (debug_log (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
-            (sleep 0.25)
+            (sleep SLEEP_MOTOR_SPEED_CHANGE)
             ; turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isn't received every second from the Switch_State program
-            (if (= speed 99) {
+            (if (= speed SPEED_OFF) {
                 (debug_log "Motor: Stopping motor")
                 (set-current 0)
                 (setvar 'batt_disp_timer_start (systime)) ; Start trigger for Battery Display
-                (setvar 'disp_num 14) ; Turn on Off display. (off display is needed to ensure restart triggers a new display number)
+                (setvar 'disp_num DISPLAY_OFF) ; Turn on Off display. (off display is needed to ensure restart triggers a new display number)
                 (setvar 'safe_start_timer 0) ; unlock speed changes and disable safe start timer
                 (setvar 'last_speed speed)
                 })
 
-            (if (!= speed 99) {
+            (if (!= speed SPEED_OFF) {
                 ; Soft Start section for all speeds, makes start less juddering
-                (if (= last_speed 99) {
+                (if (= last_speed SPEED_OFF) {
                     (debug_log "Motor: Soft start initiated")
                     (conf-set 'l-in-current-max (ix min_current scooter_type))
                     (setvar 'safe_start_timer (systime))
-                    (setvar 'last_speed 0.5)
-                    (if (< speed 2)
-                        (set-duty (- 0 0.06))
-                        (set-duty 0.06)
+                    (setvar 'last_speed SPEED_SOFT_START_SENTINEL)
+                    (if (< speed SPEED_REVERSE_THRESHOLD)
+                        (set-duty (- 0 SAFE_START_DUTY))
+                        (set-duty SAFE_START_DUTY)
                     )
                 })
 
                 ; Set Actual Speeds section
-                (if (and (> (secs-since safe_start_timer) 0.5) (or (= use_safe_start 0) (!= last_speed 0.5) (and (> (abs (get-rpm)) 350) (> (abs (get-duty)) 0.05) (< (abs (get-current)) 5)))) {
+                (if (and (> (secs-since safe_start_timer) SAFE_START_TIMEOUT) (or (= use_safe_start 0) (!= last_speed SPEED_SOFT_START_SENTINEL) (and (> (abs (get-rpm)) SAFE_START_MIN_RPM) (> (abs (get-duty)) SAFE_START_MIN_DUTY) (< (abs (get-current)) SAFE_START_MAX_CURRENT)))) {
                 (conf-set 'l-in-current-max (ix max_current scooter_type))
 
                 ; xxx reverse gear section
-                (if (< speed 2)
+                (if (< speed SPEED_REVERSE_THRESHOLD)
                     (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
                     ; xxx Normal Gears Section
                     (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
                 )
 
-                (setvar 'disp_num (+ speed 4))
+                (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
                 ; Maybe causing issues with timing? (setvar 'timer_start (systime)) ; set state timer so that repeat display timing works in state 2
                 (setvar 'safe_start_timer 0) ; unlock speed changes and disable safe start timer
                 (setvar 'last_speed speed)
                 } {
                 ; If safe start conditions not met yet but last_speed is still 0.5, update it to speed to exit the inner loop
-                (if (= last_speed 0.5) {
+                (if (= last_speed SPEED_SOFT_START_SENTINEL) {
                     (setvar 'last_speed speed)
                 })
                 })
 
-                ; exit and stop motor if safestart hasnt cleared in 0.5 seconds and rpm is less than 500.
-                (if (and (> (secs-since safe_start_timer) 0.5) (> (abs (get-current)) 8) (< (abs (get-rpm)) 350) (= use_safe_start 1) (= last_speed 0.5 )) {
+                ; exit and stop motor if safestart hasn't cleared in 0.5 seconds and rpm is less than 500.
+                (if (and (> (secs-since safe_start_timer) SAFE_START_TIMEOUT) (> (abs (get-current)) SAFE_START_FAIL_CURRENT) (< (abs (get-rpm)) SAFE_START_MIN_RPM) (= use_safe_start 1) (= last_speed SPEED_SOFT_START_SENTINEL)) {
                 (debug_log "Motor: Safe start failed, stopping motor")
-                (setvar 'speed 99)
-                (setvar 'sw_state 1)
+                (setvar 'speed SPEED_OFF)
+                (setvar 'sw_state STATE_COUNTING_CLICKS)
                 (spawn 40 sw_state_1)
                 (foc-beep 250 0.15 5)
                 })
@@ -618,7 +725,7 @@
     (if (> enable_thirds_warning_startup 0) {
         (debug_log "Battery: Thirds warning enabled at startup")
         ; Wait a bit for battery reading to stabilize
-        (sleep 1.0)
+        (sleep SLEEP_BATTERY_STABILIZE)
         ; Calculate battery % using the configured method
         ; Set thirds_total to current battery level
         (setvar 'thirds_total (get-battery-level))
@@ -795,16 +902,16 @@
         ])) {
 
         (bufclear pixbuf) ; clear the buffer
-        (loopwhile-thd 45 t {
-            (sleep 0.25)
+        (loopwhile-thd THREAD_PRIORITY_UI t {
+            (sleep SLEEP_UI_UPDATE)
             ; xxxx Timer section to turn display off, gets reset by each new request to display
-            (if (> disp_timer_start 1) ; check to see if display is on. dont want to run i2c comands continously
-            (if (> (secs-since disp_timer_start) 5) { ; check timer to see if its longer than display duration and display needs turning off, new display comands will keep adding time
-            (if (= scooter_type 0) ; For Blacktip Turn off the display
-                    (if (!= last_disp_num 17) ; if last display was the Smart Cruise, dont disable display
+            (if (> disp_timer_start 1) ; check to see if display is on. don't want to run i2c commands continuously
+            (if (> (secs-since disp_timer_start) TIMER_DISPLAY_DURATION) { ; check timer to see if its longer than display duration and display needs turning off, new display commands will keep adding time
+            (if (= scooter_type SCOOTER_BLACKTIP) ; For Blacktip Turn off the display
+                    (if (!= last_disp_num DISPLAY_SMART_CRUISE_FULL) ; if last display was the Smart Cruise, don't disable display
                         (i2c-tx-rx 0x70 (list 0x80))))
-            ; For Cuda X make sure it doesnt get stuck on diaplaying B1 or B2 error, so switch back to last battery.
-            (if (and (= scooter_type 1) (> last_disp_num 20) )
+            ; For Cuda X make sure it doesn't get stuck on displaying B1 or B2 error, so switch back to last battery.
+            (if (and (= scooter_type SCOOTER_CUDAX) (> last_disp_num 20) )
                 (setvar 'disp_num last_batt_disp_num))
 
             (setvar 'disp_timer_start 0)
@@ -851,8 +958,8 @@
     (define last_batt_disp_num 3) ; variable used to track last display screen show
 
     (let ((batt_disp_state 0))
-    (loopwhile-thd 45 t {
-       (sleep 0.25)
+    (loopwhile-thd THREAD_PRIORITY_UI t {
+       (sleep SLEEP_UI_UPDATE)
 
         (if (or (= batt_disp_timer_start 0) (= batt_disp_state 0)) {
         (setvar 'batt_disp_state 0)})
@@ -913,11 +1020,11 @@
 (move-to-flash start_display_battery_loop)
 
 
-(defun beeper (Beeps)
-(loopwhile (and (= enable_battery_beeps 1) (> batt_disp_timer_start 0) (> Beeps 0)) {
-       (sleep 0.25)
+(defun beeper (beeps)
+(loopwhile (and (= enable_battery_beeps 1) (> batt_disp_timer_start 0) (> beeps 0)) {
+       (sleep SLEEP_UI_UPDATE)
        (foc-beep 350 0.5 beeps_vol)
-      (setvar 'Beeps (- Beeps 1))
+      (setvar 'beeps (- beeps 1))
     }))
 
 (move-to-flash beeper)
@@ -943,21 +1050,21 @@
     (define click_beep 0)
 
     (let ((click_beep_timer 0))
-    (loopwhile-thd 100 t {
-        (sleep 0.25)
+    (loopwhile-thd THREAD_PRIORITY_UI t {
+        (sleep SLEEP_UI_UPDATE)
 
-        (if (and (> (secs-since click_beep_timer) 0.25) (!= click_beep_timer 0)) {
+        (if (and (> (secs-since click_beep_timer) SLEEP_UI_UPDATE) (!= click_beep_timer 0)) {
         (foc-play-stop)
         (setvar 'click_beep_timer 0)
         })
 
         (if (> click_beep 0) {
-        (if (and (= click_beep 5) (> enable_smart_cruise 0)(!= speed 99)) (foc-play-tone 1 1500 beeps_vol))
+        (if (and (= click_beep CLICKS_QUINTUPLE) (> enable_smart_cruise 0)(!= speed SPEED_OFF)) (foc-play-tone 1 1500 beeps_vol))
         (if (= enable_trigger_beeps 1) {
-        (if (= click_beep 1)(foc-play-tone 1 2500 beeps_vol))
-        (if (= click_beep 2)(foc-play-tone 1 3000 beeps_vol))
-        (if (= click_beep 3)(foc-play-tone 1 3500 beeps_vol))
-        (if (= click_beep 4)(foc-play-tone 1 4000 beeps_vol))
+        (if (= click_beep CLICKS_SINGLE)(foc-play-tone 1 2500 beeps_vol))
+        (if (= click_beep CLICKS_DOUBLE)(foc-play-tone 1 3000 beeps_vol))
+        (if (= click_beep CLICKS_TRIPLE)(foc-play-tone 1 3500 beeps_vol))
+        (if (= click_beep CLICKS_QUADRUPLE)(foc-play-tone 1 4000 beeps_vol))
         })
 
         (setvar 'click_beep_timer (systime))
