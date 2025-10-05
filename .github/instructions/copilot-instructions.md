@@ -7,7 +7,7 @@ Never add whitespace at the end of a line, or on empty lines.
 Brace style is 1TBS (One True Brace Style).
 Use 4 spaces for indentation, not tabs.
 Use semver without a leading 'v' for version numbers (e.g. 1.2.3).
-The 'then' and 'else' blocks of condiditionals should start on a new line.
+The 'then' and 'else' blocks of conditionals should start on a new line.
 Comments are indented to the same level as the code they refer to.
 No whitespace at the end of lines or on empty lines.
 
