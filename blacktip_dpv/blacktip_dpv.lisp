@@ -13,7 +13,7 @@
         (if (not-eq (eeprom-read-i 127) (to-i32 150)) {
             (puts "EEPROM: No previous version detected, setting all defaults")
             ; Check for previous version marker (Dive Xtras V1.50 'Poseidon')
-            ; User speeds, ie 1 thru 8 are only used in the GUI, this lisp code uses speeds 0-9 with 0 & 1 being the 2 revese speeds.
+            ; User speeds, ie 1 thru 8 are only used in the GUI, this lisp code uses speeds 0-9 with 0 & 1 being the 2 reverse speeds.
             ; 99 is used as the "off" speed
             (eeprom-store-i 0 45) ; Reverse Speed 2 %
             (eeprom-store-i 1 20) ; Untangle Speed 1 %
@@ -83,7 +83,8 @@
         (eeprom-read-i 9) ; Speed 8 %
     ))
 
-    (if (<= hardware_configuration 2) ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
+    ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
+    (if (<= hardware_configuration 2)
         (define scooter_type 0)
         (define scooter_type 1)
     )
@@ -141,7 +142,7 @@
 
 (defun my_data_recv_prog (data)
 {
-    (if (= (bufget-u8 data 0) 255) { ; Handshake to trigger data send if not yet recieved.
+    (if (= (bufget-u8 data 0) 255) { ; Handshake to trigger data send if not yet received.
         (define setbuf (array-create 30)) ; create a temp array to store setting
         (bufclear setbuf) ; clear the buffer
         (looprange i 0 30
@@ -151,7 +152,7 @@
     } {
         (looprange i 0 30
             (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
-        (update_settings) ; updates actuall settings in lisp
+        (update_settings) ; updates actual settings in lisp
     })
 })
 
@@ -397,7 +398,7 @@
         })
 
         ; xxx end repeat display section
-        (if (and (= smart_cruise 1) (> (secs-since timer_start) 5)) ; time out Smart Cruise if second activation isnt recieved within display duration
+        (if (and (= smart_cruise 1) (> (secs-since timer_start) 5)) ; time out Smart Cruise if second activation isn't received within display duration
             (setvar 'smart_cruise 0)
         )
 
@@ -508,7 +509,7 @@
             (loopwhile (!= speed last_speed) {
             (debug_log (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
             (sleep 0.25)
-            ; xxxx turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isnt recieved every second from the Switch_State program
+            ; turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isn't received every second from the Switch_State program
             (if (= speed 99) {
                 (debug_log "Motor: Stopping motor")
                 (set-current 0)
@@ -519,7 +520,7 @@
                 })
 
             (if (!= speed 99) {
-                ; xxxx Soft Start section for all speeds, makes start less judery
+                ; Soft Start section for all speeds, makes start less juddering
                 (if (= last_speed 99) {
                     (debug_log "Motor: Soft start initiated")
                     (conf-set 'l-in-current-max (ix min_current scooter_type))
@@ -531,7 +532,7 @@
                     )
                 })
 
-                ; xxxx Set Actual Speeds section
+                ; Set Actual Speeds section
                 (if (and (> (secs-since safe_start_timer) 0.5) (or (= use_safe_start 0) (!= last_speed 0.5) (and (> (abs (get-rpm)) 350) (> (abs (get-duty)) 0.05) (< (abs (get-current)) 5)))) {
                 (conf-set 'l-in-current-max (ix max_current scooter_type))
 
@@ -543,7 +544,7 @@
                 )
 
                 (setvar 'disp_num (+ speed 4))
-                ; Maybe causing issues with timimg? (setvar 'timer_start (systime)) ; set state timer so that repeat display timing works in state 2
+                ; Maybe causing issues with timing? (setvar 'timer_start (systime)) ; set state timer so that repeat display timing works in state 2
                 (setvar 'safe_start_timer 0) ; unlock speed changes and disable safe start timer
                 (setvar 'last_speed speed)
                 } {
@@ -818,7 +819,7 @@
         (setvar 'batt_disp_state 0)})
 
 
-        (if (and (> batt_disp_timer_start 1) (> (secs-since batt_disp_timer_start) 6) (= batt_disp_state 0)) { ; waits Display Duration + 1 second after scooter is turned off to stabalize battery readings
+        (if (and (> batt_disp_timer_start 1) (> (secs-since batt_disp_timer_start) 6) (= batt_disp_state 0)) { ; waits Display Duration + 1 second after scooter is turned off to stabilize battery readings
 
         ; xxxx Section for normal 4 bar battery capacity display
 
