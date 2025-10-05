@@ -237,7 +237,7 @@
 
 ; Sleep intervals (seconds) - controls loop frequencies
 (define SLEEP_STATE_MACHINE 0.02)     ; 50Hz - button state polling
-(define SLEEP_MOTOR_CONTROL 0.04)     ; 25Hz - motor/GPIO polling  
+(define SLEEP_MOTOR_CONTROL 0.04)     ; 25Hz - motor/GPIO polling
 (define SLEEP_MOTOR_SPEED_CHANGE 0.25) ; 4Hz - motor speed transitions
 (define SLEEP_UI_UPDATE 0.25)         ; 4Hz - display/beeper updates
 (define SLEEP_BACKGROUND_CHECK 0.5)   ; 2Hz - Smart Cruise checking
@@ -398,18 +398,18 @@
                 (setvar 'clamped_speed 0)
                 (debug_log (str-merge "Speed: Clamped " (to-str new_speed) " to 0 (underflow)"))
             })
-            
+
             (if (> clamped_speed max_speed_no) {
                 (setvar 'clamped_speed max_speed_no)
                 (debug_log (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str max_speed_no) " (overflow)"))
             })
-            
+
             ; Check reverse enable
             (if (and (< clamped_speed SPEED_REVERSE_THRESHOLD) (= enable_reverse 0)) {
                 (setvar 'clamped_speed SPEED_REVERSE_THRESHOLD)
                 (debug_log (str-merge "Speed: Reverse disabled, clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_THRESHOLD)))
             })
-            
+
             (setvar 'speed clamped_speed)
             (debug_log (str-merge "Speed: Set to " (to-str clamped_speed)))
         })
@@ -560,7 +560,7 @@
         ; Timer Expiry
         (if (> (secs-since timer_start) timer_duration) {
             (debug_log (str-merge "State 1: Timer expired, clicks=" (to-str clicks)))
-            
+
             ; Process click actions
             (handle_single_click)
             (handle_double_click)
