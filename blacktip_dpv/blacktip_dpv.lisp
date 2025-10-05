@@ -47,6 +47,7 @@
     })
 })
 
+
 (defun update_settings() ; Program that reads eeprom and writes to variables
 {
     (define max_speed_no (eeprom-read-i 10))
@@ -467,12 +468,11 @@
     (if (and (= clicks CLICKS_SINGLE) (!= speed SPEED_OFF)) {
         (debug_log "Click action: Single click (speed down)")
         (setvar 'click_beep CLICKS_SINGLE)
-        (if (> speed SPEED_REVERSE_THRESHOLD)
-            (set_speed_safe (- speed 1))
-            (if (= speed 0)
-                (set_speed_safe 1)
-            )
-        )
+        (cond
+            ((> speed SPEED_REVERSE_THRESHOLD)
+                (set_speed_safe (- speed 1)))
+            ((= speed 0)
+                (set_speed_safe 1)))
     })
 })
 
@@ -675,12 +675,11 @@
             (if (and (!= smart_cruise SMART_CRUISE_FULLY_ENABLED) (!= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) { ; If Smart Cruise is enabled, don't shut down
                 (debug_log "State 3->0: Timeout, shutting down")
                 (setvar 'timer_duration TIMER_DISABLED)
-                (if (< speed start_speed) ; start at old speed if less than start speed
-                    (if (> speed 1)
-                        (setvar 'new_start_speed speed)
-                    )
-                    (setvar 'new_start_speed start_speed)
-                )
+                (cond
+                    ((and (< speed start_speed) (> speed 1)) ; start at old speed if less than start speed
+                        (setvar 'new_start_speed speed))
+                    ((>= speed start_speed)
+                        (setvar 'new_start_speed start_speed)))
                 (set_speed_safe SPEED_OFF)
                 (setvar 'smart_cruise SMART_CRUISE_OFF) ; turn off Smart Cruise
                 (setvar 'sw_state STATE_OFF)
@@ -1029,52 +1028,74 @@
 
         (if (and (> batt_disp_timer_start 1) (> (secs-since batt_disp_timer_start) 6) (= batt_disp_state 0)) { ; waits Display Duration + 1 second after scooter is turned off to stabilize battery readings
 
-        ; xxxx Section for normal 4 bar battery capacity display
+            ; xxxx Section for normal 4 bar battery capacity display
 
-             (if (= thirds_total 0)
+            (if (= thirds_total 0) {
+                (cond
+                    ((> actual_batt 0.75)
+                        (setvar 'disp_num 3)
+                        (spawn beeper 4))
+                    ((> actual_batt 0.5)
+                        (setvar 'disp_num 2)
+                        (spawn beeper 3))
+                    ((> actual_batt 0.25)
+                        (setvar 'disp_num 1)
+                        (spawn beeper 2))
+                    (t
+                        (setvar 'disp_num 0)
+                        (spawn beeper 1)))
+            })
 
-             (if (> actual_batt 0.75) { (setvar 'disp_num 3) (spawn beeper 4)} ; gets the vesc battery % and triggers the display screen
-                (if (> actual_batt 0.5) { (setvar 'disp_num 2) (spawn beeper 3)}
-                    (if (> actual_batt 0.25) { (setvar 'disp_num 1) (spawn beeper 2)}
-                        { (setvar 'disp_num 0) (spawn beeper 1)} (nil ))))
-
-             ; Section for 1/3rds display
-              (if (and (> actual_batt (* thirds_total 0.66)) (= warning_counter 0)) {
-                (debug_log "Battery: 2/3rds warning triggered")
-                (setvar 'disp_num 20)}
-                (if (and (> actual_batt (* thirds_total 0.33)) (< warning_counter 3)) {
-                 (debug_log "Battery: 1/3rd warning triggered")
-                 (setvar 'disp_num 19)
-                  (if (< warning_counter 2) {
-                    (spawn warbler 350 0.5 0.5)
-                     (setvar 'warning_counter (+ warning_counter 1)
-                     )})
-                    } {
-                     (debug_log "Battery: Critical warning triggered")
-                     (setvar 'disp_num 18)
-                     (if (< warning_counter 4) {
+            ; Section for 1/3rds display
+            (cond
+                ((and (> actual_batt (* thirds_total 0.66)) (= warning_counter 0))
+                    (debug_log "Battery: 2/3rds warning triggered")
+                    (setvar 'disp_num 20))
+                ((and (> actual_batt (* thirds_total 0.33)) (< warning_counter 3))
+                    (debug_log "Battery: 1/3rd warning triggered")
+                    (setvar 'disp_num 19)
+                    (if (< warning_counter 2) {
                         (spawn warbler 350 0.5 0.5)
-                        (setvar 'warning_counter (+ warning_counter 1))})} (nil ))))
+                        (setvar 'warning_counter (+ warning_counter 1))
+                    }))
+                (t
+                    (debug_log "Battery: Critical warning triggered")
+                    (setvar 'disp_num 18)
+                    (if (< warning_counter 4) {
+                        (spawn warbler 350 0.5 0.5)
+                        (setvar 'warning_counter (+ warning_counter 1))
+                    })))
 
-                 (setvar 'batt_disp_state 1)
-                 (setvar 'last_batt_disp_num disp_num)
-                    })
+            (setvar 'batt_disp_state 1)
+            (setvar 'last_batt_disp_num disp_num)
+        })
 
-         (if (and (> batt_disp_timer_start 1) (> (secs-since batt_disp_timer_start) 12) (= batt_disp_state 1) (> thirds_total 0)) {
+        (if (and (> batt_disp_timer_start 1) (> (secs-since batt_disp_timer_start) 12) (= batt_disp_state 1) (> thirds_total 0)) {
 
-              (if (> actual_batt 0.95) { (setvar 'disp_num 30)} ; gets the vesc battery % and triggers the display screen NOTE % are adjusted to better represent battery state, ie fully charged power tool battery will not display at 100% on the vesc
-                (if (> actual_batt 0.90) { (setvar 'disp_num 29)} ; 90%
-                    (if (> actual_batt 0.80) { (setvar 'disp_num 28)} ; 80%
-                        (if (> actual_batt 0.70) { (setvar 'disp_num 27)} ; 70%
-                            (if (> actual_batt 0.60) { (setvar 'disp_num 26)} ; 60%
-                                (if (> actual_batt 0.50) { (setvar 'disp_num 25)} ; 50%
-                                    (if (> actual_batt 0.40) { (setvar 'disp_num 24)} ; 40%
-                                       (if (> actual_batt 0.30) { (setvar 'disp_num 23)} ; 30%
-                                            (if (> actual_batt 0.20) { (setvar 'disp_num 22)} ; 20%
-                                                { (setvar 'disp_num 21)} (nil ))))))))))
-               (setvar 'batt_disp_state 0)
-               (setvar 'batt_disp_timer_start 0)
-              })
+            (cond
+                ((> actual_batt 0.95)
+                    (setvar 'disp_num 30))
+                ((> actual_batt 0.90)
+                    (setvar 'disp_num 29)) ; 90%
+                ((> actual_batt 0.80)
+                    (setvar 'disp_num 28)) ; 80%
+                ((> actual_batt 0.70)
+                    (setvar 'disp_num 27)) ; 70%
+                ((> actual_batt 0.60)
+                    (setvar 'disp_num 26)) ; 60%
+                ((> actual_batt 0.50)
+                    (setvar 'disp_num 25)) ; 50%
+                ((> actual_batt 0.40)
+                    (setvar 'disp_num 24)) ; 40%
+                ((> actual_batt 0.30)
+                    (setvar 'disp_num 23)) ; 30%
+                ((> actual_batt 0.20)
+                    (setvar 'disp_num 22)) ; 20%
+                (t
+                    (setvar 'disp_num 21)))
+            (setvar 'batt_disp_state 0)
+            (setvar 'batt_disp_timer_start 0)
+        })
     })
     )
 })
