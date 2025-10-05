@@ -123,9 +123,9 @@
     ; Calculate battery percentage based on ampere-hours used vs total capacity
     (let ((total-capacity (conf-get 'si-battery-ah))
           (used-ah (get-ah))
-          (used_capacity (- 1.0 (/ used-ah total-capacity))))
-        (if (and (> total-capacity 0) (> used_capacity 0))
-            used_capacity
+          (remaining_capacity (- 1.0 (/ used-ah total-capacity))))
+        (if (and (> total-capacity 0) (> remaining_capacity 0))
+            remaining_capacity
             0.0 ; Return 0% if no capacity configured or used capacity is negative
         )
     )
@@ -471,6 +471,7 @@
         (cond
             ((> speed SPEED_REVERSE_THRESHOLD)
                 (set_speed_safe (- speed 1)))
+            ; Reverse navigation: speed 0 (Reverse 2) -> speed 1 (Untangle)
             ((= speed 0)
                 (set_speed_safe 1)))
     })
@@ -479,17 +480,20 @@
 (defun handle_double_click ()
 {
     (if (= clicks CLICKS_DOUBLE) {
+        ; Start from OFF: use configured start speed
         (if (= speed SPEED_OFF)
             {
                 (debug_log (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
                 (set_speed_safe new_start_speed)
             }
+            ; Already running: increment speed (with reverse handling)
             {
                 (debug_log "Click action: Double click (speed up)")
                 (setvar 'click_beep CLICKS_DOUBLE)
                 (if (< speed max_speed_no)
                     (if (> speed 1)
                         (set_speed_safe (+ speed 1))
+                        ; Speed 1 (Untangle) -> speed 0 (Reverse 2)
                         (set_speed_safe 0)
                     )
                 )
