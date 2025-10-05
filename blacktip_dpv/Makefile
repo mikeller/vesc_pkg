@@ -7,7 +7,7 @@ blacktip_dpv.vescpkg: pkgdesc.qml README.md ui.qml blacktip_dpv.lisp
 
 check-whitespace:
 	@echo "Checking for trailing whitespace..."
-	@if grep -nE ' +$$' blacktip_dpv.lisp; then \
+	@if grep -nE '[[:space:]]+$$' blacktip_dpv.lisp; then \
 		echo "Error: Trailing whitespace found (shown above)"; \
 		exit 1; \
 	else \
