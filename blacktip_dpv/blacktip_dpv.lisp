@@ -377,6 +377,49 @@
 (move-to-flash setup_state_machine)
 
 
+; =============================================================================
+; Speed Bounds Checking
+; =============================================================================
+
+; Helper function to safely set speed with bounds checking
+; Valid speeds: 0 (reverse 2), 1 (reverse 1/untangle), 2-max_speed_no (forward), 99 (off)
+; Returns the actual speed that was set after bounds checking
+(defun set_speed_safe (new_speed)
+{
+    (let ((clamped_speed new_speed))
+    {
+        (if (= new_speed SPEED_OFF) {
+            ; Speed 99 (OFF) is always valid
+            (setvar 'speed SPEED_OFF)
+            (debug_log "Speed: Set to OFF")
+        } {
+            ; Clamp to valid range
+            (if (< new_speed 0) {
+                (setvar 'clamped_speed 0)
+                (debug_log (str-merge "Speed: Clamped " (to-str new_speed) " to 0 (underflow)"))
+            })
+            
+            (if (> clamped_speed max_speed_no) {
+                (setvar 'clamped_speed max_speed_no)
+                (debug_log (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str max_speed_no) " (overflow)"))
+            })
+            
+            ; Check reverse enable
+            (if (and (< clamped_speed SPEED_REVERSE_THRESHOLD) (= enable_reverse 0)) {
+                (setvar 'clamped_speed SPEED_REVERSE_THRESHOLD)
+                (debug_log (str-merge "Speed: Reverse disabled, clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_THRESHOLD)))
+            })
+            
+            (setvar 'speed clamped_speed)
+            (debug_log (str-merge "Speed: Set to " (to-str clamped_speed)))
+        })
+        clamped_speed
+    })
+})
+
+(move-to-flash set_speed_safe)
+
+
 (defun state_handler_off ()
 {
     ; xxxx State "0" Off
@@ -411,9 +454,9 @@
         (debug_log "Click action: Single click (speed down)")
         (setvar 'click_beep CLICKS_SINGLE)
         (if (> speed SPEED_REVERSE_THRESHOLD)
-            (setvar 'speed (- speed 1))
+            (set_speed_safe (- speed 1))
             (if (= speed 0)
-                (setvar 'speed 1)
+                (set_speed_safe 1)
             )
         )
     })
@@ -425,15 +468,15 @@
         (if (= speed SPEED_OFF)
             {
                 (debug_log (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
-                (setvar 'speed new_start_speed)
+                (set_speed_safe new_start_speed)
             }
             {
                 (debug_log "Click action: Double click (speed up)")
                 (setvar 'click_beep CLICKS_DOUBLE)
                 (if (< speed max_speed_no)
                     (if (> speed 1)
-                        (setvar 'speed (+ speed 1))
-                        (setvar 'speed 0)
+                        (set_speed_safe (+ speed 1))
+                        (set_speed_safe 0)
                     )
                 )
             }
@@ -448,7 +491,7 @@
         (if (!= speed SPEED_OFF)
             (setvar 'click_beep CLICKS_TRIPLE)
         )
-        (setvar 'speed jump_speed)
+        (set_speed_safe jump_speed)
     })
 })
 
@@ -459,7 +502,7 @@
         (if (!= speed SPEED_OFF)
             (setvar 'click_beep CLICKS_QUADRUPLE)
         )
-        (setvar 'speed 1)
+        (set_speed_safe 1)
     })
 })
 
@@ -626,7 +669,7 @@
                     )
                     (setvar 'new_start_speed start_speed)
                 )
-                (setvar 'speed SPEED_OFF)
+                (set_speed_safe SPEED_OFF)
                 (setvar 'smart_cruise SMART_CRUISE_OFF) ; turn off Smart Cruise
                 (setvar 'sw_state STATE_OFF)
                 (spawn THREAD_STACK_STATE_TRANSITIONS state_handler_off)
@@ -717,7 +760,7 @@
                 ; exit and stop motor if safestart hasn't cleared in 0.5 seconds and rpm is less than 500.
                 (if (and (> (secs-since safe_start_timer) SAFE_START_TIMEOUT) (> (abs (get-current)) SAFE_START_FAIL_CURRENT) (< (abs (get-rpm)) SAFE_START_MIN_RPM) (= use_safe_start 1) (= last_speed SPEED_SOFT_START_SENTINEL)) {
                 (debug_log "Motor: Safe start failed, stopping motor")
-                (setvar 'speed SPEED_OFF)
+                (set_speed_safe SPEED_OFF)
                 (setvar 'sw_state STATE_COUNTING_CLICKS)
                 (spawn THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
                 (foc-beep 250 0.15 5)
