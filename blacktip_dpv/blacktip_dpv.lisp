@@ -180,7 +180,7 @@
     (gpio-configure 'pin-ppm 'pin-mode-in-pd)
     (define sw_pressed 0)
 
-    (loopwhile-thd THREAD_PRIORITY_GPIO t {
+    (loopwhile-thd THREAD_STACK_GPIO t {
         (sleep SLEEP_MOTOR_CONTROL)
         (if (= 1 (gpio-read 'pin-ppm))
             (setvar 'sw_pressed 1)
@@ -199,7 +199,7 @@
     (let ((speed_setting_timer 0) ; Timer for auto-engage functionality
           (last_speed_setting SPEED_OFF)) { ; Track last speed setting for auto-engage
 
-        (loopwhile-thd THREAD_PRIORITY_SMART_CRUISE t {
+        (loopwhile-thd THREAD_STACK_SMART_CRUISE t {
             (sleep SLEEP_BACKGROUND_CHECK)
             (if (and (> enable_smart_cruise 0) (> enable_smart_cruise_auto_engage 0) (= sw_state STATE_PRESSED) (= smart_cruise SMART_CRUISE_OFF) (!= speed SPEED_OFF) (>= speed SPEED_REVERSE_THRESHOLD)) {
                 ; Check if speed setting has changed
@@ -252,13 +252,27 @@
 (define TIMER_LONG_PRESS 10)          ; Long press duration for special functions
 
 ; Thread priorities (lower number = higher priority)
-(define THREAD_PRIORITY_GPIO 25)      ; GPIO reading (highest priority)
-(define THREAD_PRIORITY_SMART_CRUISE 30) ; Smart Cruise management
-(define THREAD_PRIORITY_STATE_MACHINE 30) ; State 2 (pressed)
-(define THREAD_PRIORITY_STATE_TRANSITIONS 35) ; States 0, 3 (off, going off)
-(define THREAD_PRIORITY_STATE_COUNTING 40) ; State 1 (counting clicks)
-(define THREAD_PRIORITY_MOTOR 65)     ; Motor control
-(define THREAD_PRIORITY_UI 100)       ; Display and beeper updates
+; Thread stack sizes (in 4-byte words) for loopwhile-thd and spawn
+; Stack size determines memory allocated for thread's local variables and call stack
+; According to LispBM docs, typical values are 100-200 words (400-800 bytes)
+; Stack requirements depend on: expression nesting depth, recursion, and function argument count
+;
+; Analysis of current threads:
+; - GPIO: Simple pin read + variable set → minimal needs but should meet 100-word minimum
+; - SmartCruise: Nested conditionals + arithmetic + multiple function calls → needs substantial stack
+; - State machines: Spawn short-lived processes with moderate conditional logic
+; - Motor: Most complex - deep nesting, string ops, list operations, spawning → needs largest stack
+; - Display/Battery: I2C operations + moderate conditionals → needs good stack
+; - ClickBeep: Simple timer checks + beep calls → modest needs
+(define THREAD_STACK_GPIO 100)        ; GPIO reading - increased from 25 to meet minimum recommendation
+(define THREAD_STACK_SMART_CRUISE 150) ; Smart Cruise - increased from 30 for nested conditionals + function calls
+(define THREAD_STACK_STATE_MACHINE 120) ; State 2 (pressed) - increased from 30 for state logic
+(define THREAD_STACK_STATE_TRANSITIONS 120) ; States 0, 3 - increased from 35 for consistency
+(define THREAD_STACK_STATE_COUNTING 120) ; State 1 (counting clicks) - increased from 40 for consistency
+(define THREAD_STACK_MOTOR 200)       ; Motor control - increased from 65, most complex thread
+(define THREAD_STACK_DISPLAY 150)     ; Display updates - increased from 45 for I2C + conditionals
+(define THREAD_STACK_BATTERY 150)     ; Battery display - increased from 45 for I2C + conditionals
+(define THREAD_STACK_CLICK_BEEP 100)  ; Click beep playback - kept at 100 (already appropriate)
 
 ; State values
 (define STATE_OFF 0)
@@ -381,7 +395,7 @@
             (setvar 'timer_duration TIMER_CLICK_WINDOW)
             (setvar 'clicks CLICKS_SINGLE)
             (setvar 'sw_state STATE_COUNTING_CLICKS)
-            (spawn THREAD_PRIORITY_STATE_COUNTING sw_state_1)
+            (spawn THREAD_STACK_STATE_COUNTING sw_state_1)
             (break)
         })
     })
@@ -496,7 +510,7 @@
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_RELEASE_WINDOW)
             (setvar 'sw_state STATE_GOING_OFF)
-            (spawn THREAD_PRIORITY_STATE_TRANSITIONS sw_state_3)
+            (spawn THREAD_STACK_STATE_TRANSITIONS sw_state_3)
             (break)
         })
 
@@ -516,7 +530,7 @@
             (setvar 'clicks 0)
             (setvar 'timer_duration TIMER_DISABLED)
             (setvar 'sw_state STATE_PRESSED)
-            (spawn THREAD_PRIORITY_STATE_MACHINE sw_state_2)
+            (spawn THREAD_STACK_STATE_MACHINE sw_state_2)
             (break)
         })
     })
@@ -561,7 +575,7 @@
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_RELEASE_WINDOW)
             (setvar 'sw_state STATE_GOING_OFF)
-            (spawn THREAD_PRIORITY_STATE_TRANSITIONS sw_state_3)
+            (spawn THREAD_STACK_STATE_TRANSITIONS sw_state_3)
             (break)
         })
     })
@@ -597,7 +611,7 @@
             )
 
             (setvar 'sw_state STATE_COUNTING_CLICKS)
-            (spawn THREAD_PRIORITY_STATE_COUNTING sw_state_1)
+            (spawn THREAD_STACK_STATE_COUNTING sw_state_1)
             (break)
         })
 
@@ -615,7 +629,7 @@
                 (setvar 'speed SPEED_OFF)
                 (setvar 'smart_cruise SMART_CRUISE_OFF) ; turn off Smart Cruise
                 (setvar 'sw_state STATE_OFF)
-                (spawn THREAD_PRIORITY_STATE_TRANSITIONS sw_state_0)
+                (spawn THREAD_STACK_STATE_TRANSITIONS sw_state_0)
                 (break) ; SWST_OFF
             })
 
@@ -650,7 +664,7 @@
         (max_current (list MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)) ; 1st no is Blacktip, second is CudaX
         (min_current (list MIN_CURRENT_BLACKTIP MIN_CURRENT_CUDAX))) { ; 1st no is Blacktip, second is CudaX
 
-        (loopwhile-thd THREAD_PRIORITY_MOTOR t {
+        (loopwhile-thd THREAD_STACK_MOTOR t {
             (sleep SLEEP_MOTOR_CONTROL)
             (loopwhile (!= speed last_speed) {
             (debug_log (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
@@ -705,7 +719,7 @@
                 (debug_log "Motor: Safe start failed, stopping motor")
                 (setvar 'speed SPEED_OFF)
                 (setvar 'sw_state STATE_COUNTING_CLICKS)
-                (spawn 40 sw_state_1)
+                (spawn THREAD_STACK_STATE_COUNTING sw_state_1)
                 (foc-beep 250 0.15 5)
                 })
                 })
@@ -902,7 +916,7 @@
         ])) {
 
         (bufclear pixbuf) ; clear the buffer
-        (loopwhile-thd THREAD_PRIORITY_UI t {
+        (loopwhile-thd THREAD_STACK_DISPLAY t {
             (sleep SLEEP_UI_UPDATE)
             ; xxxx Timer section to turn display off, gets reset by each new request to display
             (if (> disp_timer_start 1) ; check to see if display is on. don't want to run i2c commands continuously
@@ -958,7 +972,7 @@
     (define last_batt_disp_num 3) ; variable used to track last display screen show
 
     (let ((batt_disp_state 0))
-    (loopwhile-thd THREAD_PRIORITY_UI t {
+    (loopwhile-thd THREAD_STACK_BATTERY t {
        (sleep SLEEP_UI_UPDATE)
 
         (if (or (= batt_disp_timer_start 0) (= batt_disp_state 0)) {
@@ -1050,7 +1064,7 @@
     (define click_beep 0)
 
     (let ((click_beep_timer 0))
-    (loopwhile-thd THREAD_PRIORITY_UI t {
+    (loopwhile-thd THREAD_STACK_CLICK_BEEP t {
         (sleep SLEEP_UI_UPDATE)
 
         (if (and (> (secs-since click_beep_timer) SLEEP_UI_UPDATE) (!= click_beep_timer 0)) {
@@ -1138,7 +1152,7 @@
 
     (start_trigger_loop)
 
-    (spawn 35 sw_state_0) ; ***Start state machine runnning for first time
+    (spawn THREAD_STACK_STATE_TRANSITIONS sw_state_0) ; ***Start state machine running for first time
 
     (setvar 'disp_num 15) ; display startup screen, change bytes if you want a different one
     (setvar 'batt_disp_timer_start (systime)) ; turns battery display on for power on.
