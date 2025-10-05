@@ -543,6 +543,11 @@
                 ; Maybe causing issues with timimg? (setvar 'timer_start (systime)) ; set state timer so that repeat display timing works in state 2
                 (setvar 'safe_start_timer 0) ; unlock speed changes and disable safe start timer
                 (setvar 'last_speed speed)
+                } {
+                ; If safe start conditions not met yet but last_speed is still 0.5, update it to speed to exit the inner loop
+                (if (= last_speed 0.5) {
+                    (setvar 'last_speed speed)
+                })
                 })
 
                 ; exit and stop motor if safestart hasnt cleared in 0.5 seconds and rpm is less than 500.
