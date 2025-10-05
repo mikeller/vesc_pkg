@@ -89,8 +89,8 @@
         (define scooter_type SCOOTER_CUDAX)
     )
 
-    ; Log configuration on startup (before debug_enabled is read, so always logs once)
-    (puts (str-merge "Config loaded: HW=" (to-str hardware_configuration)
+    ; Log configuration on startup
+    (debug-log (str-merge "Config loaded: HW=" (to-str hardware_configuration)
                      " Type=" (to-str scooter_type)
                      " Debug=" (to-str debug_enabled)
                      " BattCalc=" (to-str battery_calculation_method)))
@@ -1200,7 +1200,8 @@
     (setvar 'disp_num 15) ; display startup screen, change bytes if you want a different one
     (setvar 'batt_disp_timer_start (systime)) ; turns battery display on for power on.
 
-    (debug_log "Startup complete")
+    ; Log this irrespective of logging setting
+    (puts "Startup complete")
 })
 
 (main)
