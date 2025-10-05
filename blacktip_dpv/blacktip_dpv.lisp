@@ -1,7 +1,6 @@
 (defun eeprom_set_defaults ()
 {
     (if (not-eq (eeprom-read-i 127) (to-i32 1)) { ; Check for current version marker (blacktip_dpv release 1.0.0)
-
         ; New settings added in version 1.0.0
         (eeprom-store-i 25 0) ; Enable Auto-Engage Smart Cruise. 1=On 0=Off
         (eeprom-store-i 26 10) ; Auto-Engage Time in seconds (5-30 seconds)
@@ -9,10 +8,8 @@
         (eeprom-store-i 28 0) ; Battery calculation method: 0=Voltage-based, 1=Ampere-hour based
 
         (if (not-eq (eeprom-read-i 127) (to-i32 150)) { ; Check for previous version marker (Dive Xtras V1.50 'Poseidon')
-
             ; User speeds, ie 1 thru 8 are only used in the GUI, this lisp code uses speeds 0-9 with 0 & 1 being the 2 revese speeds.
             ; 99 is used as the "off" speed
-
             (eeprom-store-i 0 45) ; Reverse Speed 2 %
             (eeprom-store-i 1 20) ; Untangle Speed 1 %
             (eeprom-store-i 2 30) ; Speed 1 %
@@ -39,38 +36,34 @@
             (eeprom-store-i 23 0) ; 2nd Screen Rotation of Display, 0-3 . Each number rotates display 90 deg.
             (eeprom-store-i 24 0) ; Trigger Click Beeps
         })
-
         ; Mark as initialised for 1.0.0
         (eeprom-store-i 127 1) ; indicate that the defaults have been applied
     })
 })
 
-
-; **** Program to update settings from eeprom ****
-
 (defun Update_Settings() ; Program that reads eeprom and writes to variables
 {
-     (define Max_Speed_No (eeprom-read-i 10))
-     (define Start_Speed (eeprom-read-i 11))
-     (define Jump_Speed (eeprom-read-i 12))
-     (define Use_Safe_Start (eeprom-read-i 13))
-     (define Enable_Reverse (eeprom-read-i 14))
-     (define Enable_Smart_Cruise (eeprom-read-i 15))
-     (define Smart_Cruise_Timeout (eeprom-read-i 16))
-     (define Rotation (eeprom-read-i 17))
-     (define Disp_Brightness (eeprom-read-i 18))
-     (define hardware_configuration (eeprom-read-i 19))
-     (define Enable_Battery_Beeps (eeprom-read-i 20))
-     (define Beeps_Vol (eeprom-read-i 21))
-     (define CudaX_Flip (eeprom-read-i 22))
-     (define Rotation2 (eeprom-read-i 23))
-     (define Enable_Trigger_Beeps (eeprom-read-i 24))
-     (define Enable_Smart_Cruise_Auto_Engage (eeprom-read-i 25))
-     (define Smart_Cruise_Auto_Engage_Time (eeprom-read-i 26))
-     (define Enable_Thirds_Warning_Startup (eeprom-read-i 27))
-     (define Battery_Calculation_Method (eeprom-read-i 28))
+    (define Max_Speed_No (eeprom-read-i 10))
+    (define Start_Speed (eeprom-read-i 11))
+    (define Jump_Speed (eeprom-read-i 12))
+    (define Use_Safe_Start (eeprom-read-i 13))
+    (define Enable_Reverse (eeprom-read-i 14))
+    (define Enable_Smart_Cruise (eeprom-read-i 15))
+    (define Smart_Cruise_Timeout (eeprom-read-i 16))
+    (define Rotation (eeprom-read-i 17))
+    (define Disp_Brightness (eeprom-read-i 18))
+    (define hardware_configuration (eeprom-read-i 19))
+    (define Enable_Battery_Beeps (eeprom-read-i 20))
+    (define Beeps_Vol (eeprom-read-i 21))
+    (define CudaX_Flip (eeprom-read-i 22))
+    (define Rotation2 (eeprom-read-i 23))
+    (define Enable_Trigger_Beeps (eeprom-read-i 24))
+    (define Enable_Smart_Cruise_Auto_Engage (eeprom-read-i 25))
+    (define Smart_Cruise_Auto_Engage_Time (eeprom-read-i 26))
+    (define Enable_Thirds_Warning_Startup (eeprom-read-i 27))
+    (define Battery_Calculation_Method (eeprom-read-i 28))
 
-     (define Speed_Set (list
+    (define Speed_Set (list
         (eeprom-read-i 0) ; Reverse Speed 2 %
         (eeprom-read-i 1) ; Untangle Speed 1 %
         (eeprom-read-i 2) ; Speed 1 %
@@ -81,33 +74,31 @@
         (eeprom-read-i 7) ; Speed 6 %
         (eeprom-read-i 8) ; Speed 7 %
         (eeprom-read-i 9) ; Speed 8 %
-     ))
+    ))
 
-     (if (<= hardware_configuration 2) ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
-          (define Scooter_Type 0)
-          (define Scooter_Type 1)
-     )
+    (if (<= hardware_configuration 2) ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
+        (define Scooter_Type 0)
+        (define Scooter_Type 1)
+    )
 })
 
 (move-to-flash Update_Settings)
 
-
 (defun calculate-corrected-battery ()
     ; Calculate corrected battery percentage from raw battery reading
     (let ((raw-batt (get-batt)))
-    (+ (* 4.3867 raw-batt raw-batt raw-batt raw-batt)
-       (* -6.7072 raw-batt raw-batt raw-batt)
-       (* 2.4021 raw-batt raw-batt)
-       (* 1.3619 raw-batt))))
+        (+ (* 4.3867 raw-batt raw-batt raw-batt raw-batt)
+           (* -6.7072 raw-batt raw-batt raw-batt)
+           (* 2.4021 raw-batt raw-batt)
+           (* 1.3619 raw-batt))))
 
 (move-to-flash calculate-corrected-battery)
-
 
 (defun calculate-ah-based-battery ()
     ; Calculate battery percentage based on ampere-hours used vs total capacity
     (let ((total-capacity (conf-get 'si-battery-ah))
-        (used-ah (get-ah))
-        (used_capacity (- 1.0 (/ used-ah total-capacity))))
+          (used-ah (get-ah))
+          (used_capacity (- 1.0 (/ used-ah total-capacity))))
         (if (and (> total-capacity 0) (> used_capacity 0))
             used_capacity
             0.0 ; Return 0% if no capacity configured or used capacity is negative
@@ -117,7 +108,6 @@
 
 (move-to-flash calculate-ah-based-battery)
 
-
 (defun get-battery-level ()
     ; Get battery level using the configured calculation method
     (if (= Battery_Calculation_Method 1)
@@ -126,33 +116,29 @@
 
 (move-to-flash get-battery-level)
 
-
-; **** Program that interperets data from GUI ****
-
 (defun My_Data_Recv_Prog (data)
 {
     (if (= (bufget-u8 data 0) 255) { ; Handshake to trigger data send if not yet recieved.
-        (define setbuf (array-create 29))  ; create a temp array to store setting
+        (define setbuf (array-create 29)) ; create a temp array to store setting
         (bufclear setbuf) ; clear the buffer
         (looprange i 0 29
-        (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
+            (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
         (send-data setbuf)
         (free setbuf)
     } {
         (looprange i 0 29
-        (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
+            (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
         (Update_Settings) ; updates actuall settings in lisp
     })
 })
 
 (move-to-flash My_Data_Recv_Prog)
 
-
 (defun setup_event_handler()
 {
     (defun event-handler ()
     {
-    (loopwhile t
+        (loopwhile t
             (recv
                 ((event-data-rx . (? data)) (My_Data_Recv_Prog data))
                 (_ nil))
@@ -160,17 +146,14 @@
     })
 
     (event-register-handler (spawn event-handler))
-
     (event-enable 'event-data-rx)
 })
 
 (move-to-flash setup_event_handler)
 
-
 (defun start_trigger_loop()
 {
     (gpio-configure 'pin-ppm 'pin-mode-in-pd)
-
     (define SW_PRESSED 0)
 
     (loopwhile-thd 25 t {
@@ -178,19 +161,18 @@
         (if (= 1 (gpio-read 'pin-ppm))
             (setvar 'SW_PRESSED 1)
             (setvar 'SW_PRESSED 0)
-        ) ; End of If trigger pressed statment
+        )
     })
 })
 
 (move-to-flash start_trigger_loop)
-
 
 (defun start_smart_cruise_loop()
 {
     (define Smart_Cruise 0) ; variable to control Smart Cruise on 5 clicks
 
     (let ((Speed_Setting_Timer 0) ; Timer for auto-engage functionality
-        (Last_Speed_Setting 99)) { ; Track last speed setting for auto-engage
+          (Last_Speed_Setting 99)) { ; Track last speed setting for auto-engage
 
         (loopwhile-thd 30 t {
             (sleep 0.5)
@@ -255,7 +237,7 @@
             (setvar 'Timer_Duration 0.3)
             (setvar 'Clicks 1)
             (setvar 'SW_STATE 1)
-            (spawn  40 SW_STATE_1)
+            (spawn 40 SW_STATE_1)
             (break)
         })
     })
@@ -377,7 +359,7 @@
         )
 
         ; Extra Long Press Commands when off (10 seconds)
-        (if (and (> (secs-since Timer_Start) 10)  (= SPEED 99)) {
+        (if (and (> (secs-since Timer_Start) 10) (= SPEED 99)) {
             (setvar 'Thirds-Total Actual-Batt)
             (spawn Warbler 450 0.2 0)
             (setvar 'Warning-Counter 0)
@@ -736,7 +718,7 @@
                         (if (= CudaX_Flip 1)
                             (setvar 'mpu-addr 0x71)
                             (setvar 'mpu-addr 0x70)
-                    )    )
+                    )
                 })
                 (setvar 'Disp_Timer_Start (systime))
                 (if (= mpu-addr 0x70)
@@ -778,7 +760,7 @@
 
              (if (= Thirds-Total 0)
 
-             (if (>  Actual-Batt 0.75) { (setvar 'Disp-Num 3) (spawn Beeper 4)} ; gets the vesc battery % and triggers the display screen
+             (if (> Actual-Batt 0.75) { (setvar 'Disp-Num 3) (spawn Beeper 4)} ; gets the vesc battery % and triggers the display screen
                 (if (> Actual-Batt 0.5) { (setvar 'Disp-Num 2) (spawn Beeper 3)}
                     (if (> Actual-Batt 0.25) { (setvar 'Disp-Num 1) (spawn Beeper 2)}
                         { (setvar 'Disp-Num 0) (spawn Beeper 1)} (nil ))))
@@ -803,7 +785,7 @@
 
          (if (and (> Batt_Disp_Timer_Start 1) (> (secs-since Batt_Disp_Timer_Start) 12) (= Batt-Disp-State 1) (> Thirds-Total 0)) {
 
-              (if (>  Actual-Batt 0.95) { (setvar 'Disp-Num 30)} ; gets the vesc battery % and triggers the display screen NOTE % are adjusted to better represent battery state, ie fully charged power tool battery will not display at 100% on the vesc
+              (if (> Actual-Batt 0.95) { (setvar 'Disp-Num 30)} ; gets the vesc battery % and triggers the display screen NOTE % are adjusted to better represent battery state, ie fully charged power tool battery will not display at 100% on the vesc
                 (if (> Actual-Batt 0.90) { (setvar 'Disp-Num 29)} ; 90%
                     (if (> Actual-Batt 0.80) { (setvar 'Disp-Num 28)} ; 80%
                         (if (> Actual-Batt 0.70) { (setvar 'Disp-Num 27)} ; 70%
@@ -898,7 +880,7 @@
         (if (or (= 0 hardware_configuration) (= 3 hardware_configuration)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
             (i2c-start 'rate-400k 'pin-swdio 'pin-swclk) ; Works HW 60 with screen on SWD Connector. Screen SDA pin to Vesc SWDIO (2), Screen SCL pin to Vesc SWCLK (4)
             (if (or (= 1 hardware_configuration) ( = 4 hardware_configuration)) ; 1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth
-                (i2c-start 'rate-400k 'pin-rx 'pin-tx) ; Works HW 60 with screen on Comm Connector. Screen SDA pin to Vesc RX/SDA (5), Screen SCL pin to Vesc  TX/SCL (6)
+                (i2c-start 'rate-400k 'pin-rx 'pin-tx) ; Works HW 60 with screen on Comm Connector. Screen SDA pin to Vesc RX/SDA (5), Screen SCL pin to Vesc TX/SCL (6)
                 (if ( = 2 hardware_configuration)
                     (i2c-start 'rate-400k 'pin-tx 'pin-rx) ; tested on HW 410 Tested: SN 189, SN 1691
                     (nil))))
@@ -906,11 +888,11 @@
         (define mpu-addr 0x70) ; I2C Address for the screen
 
         (i2c-tx-rx 0x70 (list 0x21)) ; start the oscillator
-        (i2c-tx-rx 0x70 (list (ix Brightness_Bytes Disp_Brightness)))  ; set brightness
+        (i2c-tx-rx 0x70 (list (ix Brightness_Bytes Disp_Brightness))) ; set brightness
 
         (if (= Scooter_Type 1) { ; For cuda X setup second screen
                 (i2c-tx-rx 0x71 (list 0x21)) ; start the oscillator
-                (i2c-tx-rx 0x71 (list (ix Brightness_Bytes Disp_Brightness)))  ; set brightness
+                (i2c-tx-rx 0x71 (list (ix Brightness_Bytes Disp_Brightness))) ; set brightness
         })
     })
 })
