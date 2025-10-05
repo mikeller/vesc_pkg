@@ -130,25 +130,20 @@
 ; **** Program that interperets data from GUI ****
 
 (defun My_Data_Recv_Prog (data)
-   (progn
-    (if (= (bufget-u8 data 0) 255 ) ; Handshake to trigger data send if not yet recieved.
-    (progn
-
-    (define setbuf (array-create 29))  ; create a temp array to store setting
-    (bufclear setbuf) ; clear the buffer
-    (looprange i 0 29
-    (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
-    (send-data setbuf)
-    (free setbuf)
-    )
-
-    (progn
-    (looprange i 0 29
-    (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
-    (Update_Settings) ; updates actuall settings in lisp
-
-    )
-)))
+{
+    (if (= (bufget-u8 data 0) 255) { ; Handshake to trigger data send if not yet recieved.
+        (define setbuf (array-create 29))  ; create a temp array to store setting
+        (bufclear setbuf) ; clear the buffer
+        (looprange i 0 29
+        (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
+        (send-data setbuf)
+        (free setbuf)
+    } {
+        (looprange i 0 29
+        (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
+        (Update_Settings) ; updates actuall settings in lisp
+    })
+})
 
 (move-to-flash My_Data_Recv_Prog)
 
@@ -199,32 +194,28 @@
 
         (loopwhile-thd 30 t {
             (sleep 0.5)
-            (if (and (> Enable_Smart_Cruise 0) (> Enable_Smart_Cruise_Auto_Engage 0) (= SW_STATE 2) (= Smart_Cruise 0) (!= SPEED 99) (>= SPEED 2))
-                (progn
-                    ; Check if speed setting has changed
-                    (if (!= SPEED Last_Speed_Setting)
-                        (progn
-                            (setvar 'Last_Speed_Setting SPEED)
-                            (setvar 'Speed_Setting_Timer (systime))
+            (if (and (> Enable_Smart_Cruise 0) (> Enable_Smart_Cruise_Auto_Engage 0) (= SW_STATE 2) (= Smart_Cruise 0) (!= SPEED 99) (>= SPEED 2)) {
+                ; Check if speed setting has changed
+                (if (!= SPEED Last_Speed_Setting) {
+                    (setvar 'Last_Speed_Setting SPEED)
+                    (setvar 'Speed_Setting_Timer (systime))
+                } {
+                    ; Speed setting hasn't changed, check if timer expired
+                    (if (> (secs-since Speed_Setting_Timer) Smart_Cruise_Auto_Engage_Time) {
+                        (setvar 'Smart_Cruise 3)
+                        (setvar 'Timer_Start (systime))
+                        (setvar 'Disp-Num 17)
+                        (setvar 'Click_Beep 5)
+                        (if (< SPEED 2) ; re command actuall speed as reverification sets it to 0.8x
+                            (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
+                            (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
                         )
-                        ; Speed setting hasn't changed, check if timer expired
-                        (if (> (secs-since Speed_Setting_Timer) Smart_Cruise_Auto_Engage_Time)
-                            (progn
-                                (setvar 'Smart_Cruise 3)
-                                (setvar 'Timer_Start (systime))
-                                (setvar 'Disp-Num 17)
-                                (setvar 'Click_Beep 5)
-                                (if (< SPEED 2) ; re command actuall speed as reverification sets it to 0.8x
-                                    (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
-                                    (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
-                                )
-                            )
-                        )
-                    )
-                )
+                    })
+                })
+            } {
                 ; Not in the right state for auto-engage, reset timer
                 (setvar 'Speed_Setting_Timer (systime))
-            )
+            })
         })
     })
 })
@@ -251,25 +242,23 @@
 (defun SW_STATE_0 ()
 {
     ; xxxx State "0" Off
-    (loopwhile (= SW_STATE 0)
-     (progn
-      (sleep 0.02)
-   ; Calculate corrected batt %, only needed when scooter is off in state 0
-   (setvar 'Actual-Batt (get-battery-level))
+    (loopwhile (= SW_STATE 0) {
+        (sleep 0.02)
+        ; Calculate corrected batt %, only needed when scooter is off in state 0
+        (setvar 'Actual-Batt (get-battery-level))
 
-
-     ; Pressed
-     (if (= SW_PRESSED 1)
-     (progn
-      (setvar 'Batt_Disp_Timer_Start 0) ; Stop Battery Display in case its running
-      (setvar 'Disp_Timer_Start 2) ; Stop Display in case its running
-      (setvar 'Timer_Start (systime))
-      (setvar 'Timer_Duration 0.3)
-      (setvar 'Clicks 1)
-      (setvar 'SW_STATE 1)
-      (spawn  40 SW_STATE_1)
-      (break)
-      ))))
+        ; Pressed
+        (if (= SW_PRESSED 1) {
+            (setvar 'Batt_Disp_Timer_Start 0) ; Stop Battery Display in case its running
+            (setvar 'Disp_Timer_Start 2) ; Stop Display in case its running
+            (setvar 'Timer_Start (systime))
+            (setvar 'Timer_Duration 0.3)
+            (setvar 'Clicks 1)
+            (setvar 'SW_STATE 1)
+            (spawn  40 SW_STATE_1)
+            (break)
+        })
+    })
 })
 
 (move-to-flash SW_STATE_0)
@@ -279,98 +268,88 @@
 
 (defun SW_STATE_1 ()
 {
-    (loopwhile (= SW_STATE 1)
-    (progn
-    (sleep 0.02)
+    (loopwhile (= SW_STATE 1) {
+        (sleep 0.02)
 
-      ; Released
-     (if (= SW_PRESSED 0)
-     (progn
-     (setvar 'Disp_Timer_Start 2) ; Stop Display in case its running
-     (setvar 'Timer_Start (systime))
-     (setvar 'Timer_Duration 0.5)
-     (setvar 'SW_STATE 3)
-     (spawn 35 SW_STATE_3)
-     (break)
-      ))
+        ; Released
+        (if (= SW_PRESSED 0) {
+            (setvar 'Disp_Timer_Start 2) ; Stop Display in case its running
+            (setvar 'Timer_Start (systime))
+            (setvar 'Timer_Duration 0.5)
+            (setvar 'SW_STATE 3)
+            (spawn 35 SW_STATE_3)
+            (break)
+        })
 
-     ; Timer Expiry
-     (if (> (secs-since Timer_Start) Timer_Duration)
-     (progn
-
-     ; Single Click Commands
-     (if (and (= Clicks 1) (!= SPEED 99))
-                (progn
+        ; Timer Expiry
+        (if (> (secs-since Timer_Start) Timer_Duration) {
+            ; Single Click Commands
+            (if (and (= Clicks 1) (!= SPEED 99)) {
                 (setvar 'Click_Beep 1)
                 (if (> SPEED 2)
                     (setvar 'SPEED (- SPEED 1)) ; decrease one speed
                     (if (= SPEED 0)
                         (setvar 'SPEED 1) ; set to untangle
-
-            ))))
-
-      ; Double Click Comands
-     (if (= Clicks 2)
-            (if (= SPEED 99)
-            (setvar 'SPEED New_Start_Speed)
-            (progn
-            (setvar 'Click_Beep 2)
-            (if (< SPEED Max_Speed_No)
-                (if (> SPEED 1)
-                    (setvar 'SPEED (+ SPEED 1)) ; increase one speed
-                    (setvar 'SPEED 0) ; set to reverse "
+                    )
                 )
-              )
-         )
-     ))
+            })
 
-     ; Triple Click Comands
-     (if (= Clicks 3)
-     (progn
-         (if (!= SPEED 99)(setvar 'Click_Beep 3))
-          (setvar 'SPEED Jump_Speed) ; Jump Speed
-       ))
-
-     ; Quadruple Click Comands
-     (if (and (= Clicks 4) (= 1 Enable_Reverse))
-             (progn
-             (if (!= SPEED 99)(setvar 'Click_Beep 4))
-             (setvar 'SPEED 1) ; set to untangle
-      ))
-
-     ; Quintuple Click Comands
-     (if (= Clicks 5)
-        (progn
-        (setvar 'Click_Beep 5)
-            (if (and (!= SPEED 99) (> Enable_Smart_Cruise 0) (< Smart_Cruise 2))
-                        (setvar 'Smart_Cruise (+ 1 Smart_Cruise))
+            ; Double Click Comands
+            (if (= Clicks 2)
+                (if (= SPEED 99)
+                    (setvar 'SPEED New_Start_Speed)
+                    {
+                    (setvar 'Click_Beep 2)
+                    (if (< SPEED Max_Speed_No)
+                        (if (> SPEED 1)
+                            (setvar 'SPEED (+ SPEED 1)) ; increase one speed
+                            (setvar 'SPEED 0) ; set to reverse "
+                        )
+                    )
+                })
             )
 
-            (if (= Smart_Cruise 1) ; If Smart Cruise is half-enabled, show it on screen
-                (progn
+            ; Triple Click Comands
+            (if (= Clicks 3) {
+                (if (!= SPEED 99)(setvar 'Click_Beep 3))
+                (setvar 'SPEED Jump_Speed) ; Jump Speed
+            })
+
+            ; Quadruple Click Comands
+            (if (and (= Clicks 4) (= 1 Enable_Reverse)) {
+                (if (!= SPEED 99)(setvar 'Click_Beep 4))
+                (setvar 'SPEED 1) ; set to untangle
+            })
+
+            ; Quintuple Click Comands
+            (if (= Clicks 5) {
+                (setvar 'Click_Beep 5)
+                (if (and (!= SPEED 99) (> Enable_Smart_Cruise 0) (< Smart_Cruise 2))
+                    (setvar 'Smart_Cruise (+ 1 Smart_Cruise))
+                )
+
+                (if (= Smart_Cruise 1) { ; If Smart Cruise is half-enabled, show it on screen
                     (setvar 'Disp-Num 16)
                     (setvar 'Last-Disp-Num 99) ; this display may be needed multiple times, so clear the last disp too
-            ))
+                })
 
-            (if (= Smart_Cruise 2) ; If Smart Cruise is enabled, show it on screen
-                (progn
+                (if (= Smart_Cruise 2) { ; If Smart Cruise is enabled, show it on screen
                     (setvar 'Disp-Num 17)
                     (if (< SPEED 2) ; re command actuall speed as reverification sets it to 0.8x
                         (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED))))
                         (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 100)(ix Speed_Set SPEED)))
-                        )
-               )
-            )
-     ))
+                    )
+                })
+            })
 
-     ; End of Click Actions
-     (setvar 'Clicks 0)
-     (setvar 'Timer_Duration 999999)
-     (setvar 'SW_STATE 2)
-     (spawn 30 SW_STATE_2)
-     (break)
-     ))
-     ))
+            ; End of Click Actions
+            (setvar 'Clicks 0)
+            (setvar 'Timer_Duration 999999)
+            (setvar 'SW_STATE 2)
+            (spawn 30 SW_STATE_2)
+            (break)
+        })
+    })
 })
 
 (move-to-flash SW_STATE_1)
@@ -378,45 +357,42 @@
 
 ; xxxx State 2 "Pressed"
 (defun SW_STATE_2()
-   (loopwhile (= SW_STATE 2)
-   (progn
+   (loopwhile (= SW_STATE 2) {
      (sleep 0.02)
-     (timeout-reset) ; keeps motor running
+        (timeout-reset) ; keeps motor running
 
-     ; xxx repeat display section whilst scooter is running xxx
-      (if (and (> (secs-since Timer_Start) 6) (= Smart_Cruise 0)) ; 6 = display duration +1
-          (setvar 'Disp-Num Last-Batt-Disp-Num)
-      )
+        ; xxx repeat display section whilst scooter is running xxx
+        (if (and (> (secs-since Timer_Start) 6) (= Smart_Cruise 0)) ; 6 = display duration +1
+            (setvar 'Disp-Num Last-Batt-Disp-Num)
+        )
 
-    (if (and (> (secs-since Timer_Start) 12) (= Smart_Cruise 0)) ; 12= (2xdisplay duration + 2)
-        (progn
+        (if (and (> (secs-since Timer_Start) 12) (= Smart_Cruise 0)) { ; 12= (2xdisplay duration + 2)
             (setvar 'Disp-Num (+ SPEED 4))
             (setvar 'Timer_Start (systime))
-      ))
+        })
 
-    ; xxx end repeat display section
-     (if (and (= Smart_Cruise 1) (> (secs-since Timer_Start) 5)) ; time out Smart Cruise if second activation isnt recieved within display duration
-        (setvar 'Smart_Cruise 0)
-     )
+        ; xxx end repeat display section
+        (if (and (= Smart_Cruise 1) (> (secs-since Timer_Start) 5)) ; time out Smart Cruise if second activation isnt recieved within display duration
+            (setvar 'Smart_Cruise 0)
+        )
 
-     ; Extra Long Press Commands when off (10 seconds)
-     (if (and (> (secs-since Timer_Start) 10)  (= SPEED 99))
-     (progn
-          (setvar 'Thirds-Total Actual-Batt)
-          (spawn Warbler 450 0.2 0)
-          (setvar 'Warning-Counter 0)
-          ))
+        ; Extra Long Press Commands when off (10 seconds)
+        (if (and (> (secs-since Timer_Start) 10)  (= SPEED 99)) {
+            (setvar 'Thirds-Total Actual-Batt)
+            (spawn Warbler 450 0.2 0)
+            (setvar 'Warning-Counter 0)
+        })
 
-     ; Released
-     (if (= SW_PRESSED 0)
-     (progn
-     (setvar 'Timer_Start (systime))
-     (setvar 'Timer_Duration 0.5)
-     (setvar 'SW_STATE 3)
-     (spawn 35 SW_STATE_3)
-     (break)
-     ))))
-     )
+        ; Released
+        (if (= SW_PRESSED 0) {
+            (setvar 'Timer_Start (systime))
+            (setvar 'Timer_Duration 0.5)
+            (setvar 'SW_STATE 3)
+            (spawn 35 SW_STATE_3)
+            (break)
+        })
+    })
+)
 
 (move-to-flash SW_STATE_2)
 
@@ -424,54 +400,49 @@
 ; xxxx State 3 "Going Off"
 
 (defun SW_STATE_3 ()
-   (loopwhile (= SW_STATE 3)
-   (progn
-    (sleep 0.02)
-    (if (> Smart_Cruise 0) ; If Smart Cruise is enabled, dont shut down
-                (timeout-reset)
+{
+    (loopwhile (= SW_STATE 3) {
+        (sleep 0.02)
+        (if (> Smart_Cruise 0) ; If Smart Cruise is enabled, dont shut down
+            (timeout-reset)
+        )
+
+        ; Pressed
+        (if (= SW_PRESSED 1) {
+            (timeout-reset) ; keeps motor running, vesc automaticaly stops if it doesnt recieve this command every second
+            (setvar 'Timer_Start (systime))
+            (setvar 'Timer_Duration 0.3)
+
+            (if (>= Smart_Cruise 2) ; if Smart Cruise is on and switch pressed, turn it off
+                (setvar 'Smart_Cruise 0)
+                (if (< SAFE_START_TIMER 1) ; check safe start isnt running, dont allow gear shifts if it is on
+                    (setvar 'Clicks (+ Clicks 1)))
             )
 
-     ; Pressed
-     (if (= SW_PRESSED 1)
-     (progn
-      (timeout-reset) ; keeps motor running, vesc automaticaly stops if it doesnt recieve this command every second
-      (setvar 'Timer_Start (systime))
-      (setvar 'Timer_Duration 0.3)
+            (setvar 'SW_STATE 1)
+            (spawn 40 SW_STATE_1)
+            (break)
+        })
 
-      (if (>= Smart_Cruise 2) ; if Smart Cruise is on and switch pressed, turn it off
-            (setvar 'Smart_Cruise 0)
-            (if (< SAFE_START_TIMER 1) ; check safe start isnt running, dont allow gear shifts if it is on
-            (setvar 'Clicks (+ Clicks 1)))
-      )
-
-      (setvar 'SW_STATE 1)
-      (spawn 40 SW_STATE_1)
-      (break)
-      ))
-
-     ; Timer Expiry
-     (if (> (secs-since Timer_Start) Timer_Duration)
-      (progn
-
-            (if (and (!= Smart_Cruise 2) (!= Smart_Cruise 3)) ; If Smart Cruise is enabled, dont shut down
-                (progn
-                    (setvar 'Timer_Duration 999999) ; set to infinite
-                    (if (< SPEED Start_Speed) ; start at old speed if less than start speed
-                        (if (> SPEED 1)
-                            (setvar 'New_Start_Speed SPEED)
-                        )
-                        (setvar 'New_Start_Speed Start_Speed)
+        ; Timer Expiry
+        (if (> (secs-since Timer_Start) Timer_Duration) {
+            (if (and (!= Smart_Cruise 2) (!= Smart_Cruise 3)) { ; If Smart Cruise is enabled, dont shut down
+                (setvar 'Timer_Duration 999999) ; set to infinite
+                (if (< SPEED Start_Speed) ; start at old speed if less than start speed
+                    (if (> SPEED 1)
+                        (setvar 'New_Start_Speed SPEED)
                     )
+                    (setvar 'New_Start_Speed Start_Speed)
+                )
                 (setvar 'SPEED 99)
                 (setvar 'Smart_Cruise 0) ; turn off Smart Cruise
                 (setvar 'SW_STATE 0)
                 (spawn 35 SW_STATE_0)
                 (break) ; SWST_OFF
-            ))
+            })
 
             (if (or (= Smart_Cruise 2) (= Smart_Cruise 3)) ; Require Smart Cruise to be re-enabled after a fixed duration
-                (if (> (secs-since Timer_Start) Smart_Cruise_Timeout)
-                    (progn
+                (if (> (secs-since Timer_Start) Smart_Cruise_Timeout) {
                     (setvar 'Smart_Cruise 1)
                     (setvar 'Timer_Start (systime))
                     (setvar 'Timer_Duration 5) ; sets timer duration to display duration to allow for re-enable
@@ -481,10 +452,11 @@
                         (set-rpm (- 0 (* (/ (ix Max_ERPM Scooter_Type) 125)(ix Speed_Set SPEED))))
                         (set-rpm (* (/ (ix Max_ERPM Scooter_Type) 125)(ix Speed_Set SPEED)))
                     )
-                    )
-                ))
-         )) ; end Timer expiry
-         ))) ; end state
+                })
+            )
+        }) ; end Timer expiry
+    }) ; end state
+})
 
 (move-to-flash SW_STATE_3)
 
@@ -501,34 +473,28 @@
 
         (loopwhile-thd 65 t {
             (sleep 0.04)
-            (loopwhile (!= SPEED LAST_SPEED)
-            (progn
+            (loopwhile (!= SPEED LAST_SPEED) {
             (sleep 0.25)
         ; xxxx turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isnt recieved every second from the Switch_State program
-            (if (= SPEED 99)
-            (progn
+            (if (= SPEED 99) {
                 (set-current 0)
                 (setvar 'Batt_Disp_Timer_Start (systime)) ; Start trigger for Battery Display
                 (setvar 'Disp-Num 14) ; Turn on Off display. (off display is needed to ensure restart triggers a new display number)
                 (setvar 'SAFE_START_TIMER 0) ; unlock speed changes and disable safe start timer
                 (setvar 'LAST_SPEED SPEED)
-                ))
+                })
 
-            (if (!= SPEED 99)
-            (progn
+            (if (!= SPEED 99) {
         ; xxxx Soft Start section for all speeds, makes start less judery
-                (if (= LAST_SPEED 99)
-                    (progn
+                (if (= LAST_SPEED 99) {
                     (conf-set 'l-in-current-max (ix Min_Current Scooter_Type))
                     (setvar 'SAFE_START_TIMER (systime))
                     (setvar 'LAST_SPEED 0.5)
                     (if (< SPEED 2) (set-duty (- 0 0.06)) (set-duty 0.06))
-                ))
+                })
 
         ; xxxx Set Actual Speeds section
-                (if (and (> (secs-since SAFE_START_TIMER) 0.5) (or (= Use_Safe_Start 0) (!= LAST_SPEED 0.5) (and (> (abs (get-rpm)) 350) (> (abs (get-duty)) 0.05) (< (abs (get-current)) 5))))
-
-                (progn
+                (if (and (> (secs-since SAFE_START_TIMER) 0.5) (or (= Use_Safe_Start 0) (!= LAST_SPEED 0.5) (and (> (abs (get-rpm)) 350) (> (abs (get-duty)) 0.05) (< (abs (get-current)) 5)))) {
                 (conf-set 'l-in-current-max (ix Max_Current Scooter_Type))
 
                 ; xxx reverse gear section
@@ -542,18 +508,17 @@
                 ; Maybe causing issues with timimg? (setvar 'Timer_Start (systime)) ; set state timer so that repeat display timing works in state 2
                 (setvar 'SAFE_START_TIMER 0) ; unlock speed changes and disable safe start timer
                 (setvar 'LAST_SPEED SPEED)
-                ))
+                })
 
                 ; exit and stop motor if safestart hasnt cleared in 0.5 seconds and rpm is less than 500.
-                (if (and (> (secs-since SAFE_START_TIMER) 0.5) (> (abs (get-current)) 8) (< (abs (get-rpm)) 350) (= Use_Safe_Start 1) (= LAST_SPEED 0.5 ))
-                (progn
+                (if (and (> (secs-since SAFE_START_TIMER) 0.5) (> (abs (get-current)) 8) (< (abs (get-rpm)) 350) (= Use_Safe_Start 1) (= LAST_SPEED 0.5 )) {
                 (setvar 'SPEED 99)
                 (setvar 'SW_STATE 1)
                 (spawn 40 SW_STATE_1)
                 (foc-beep 250 0.15 5)
-                ))
-                ))
-          ))
+                })
+                })
+          })
         })
     })
 })
@@ -566,15 +531,14 @@
     (define Thirds-Total 0)
     (define Warning-Counter 0) ; Count how many times the 3rds warnings have been triggered.
 
-    (if (> Enable_Thirds_Warning_Startup 0)
-        (progn
+    (if (> Enable_Thirds_Warning_Startup 0) {
             ; Wait a bit for battery reading to stabilize
             (sleep 1.0)
             ; Calculate battery % using the configured method
             ; Set Thirds-Total to current battery level
             (setvar 'Thirds-Total (get-battery-level))
             (setvar 'Warning-Counter 0)
-        )
+        }
     )
 })
 
@@ -750,8 +714,7 @@
             (sleep 0.25)
             ; xxxx Timer section to turn display off, gets reset by each new request to display
             (if (> Disp_Timer_Start 1) ; check to see if display is on. dont want to run i2c comands continously
-            (if (> (secs-since Disp_Timer_Start) 5) ; check timer to see if its longer than display duration and display needs turning off, new display comands will keep adding time
-            (progn
+            (if (> (secs-since Disp_Timer_Start) 5) { ; check timer to see if its longer than display duration and display needs turning off, new display comands will keep adding time
             (if (= Scooter_Type 0) ; For Blacktip Turn off the display
                     (if (!= Last-Disp-Num 17) ; if last display was the Smart Cruise, dont disable display
                         (i2c-tx-rx 0x70 (list 0x80))))
@@ -760,13 +723,11 @@
                 (setvar 'Disp-Num Last-Batt-Disp-Num))
 
             (setvar 'Disp_Timer_Start 0)
-            )))
+            }))
             ; xxxx End of timer section
 
-                (if (!= Disp-Num Last-Disp-Num)
-                (progn
-                (if (= Scooter_Type 1) ; For cuda X second screen
-                    (progn
+                (if (!= Disp-Num Last-Disp-Num) {
+                (if (= Scooter_Type 1) { ; For cuda X second screen
                     (if (= CudaX_Flip 1)
                         (setvar 'mpu-addr 0x70)
                         (setvar 'mpu-addr 0x71)
@@ -776,7 +737,7 @@
                             (setvar 'mpu-addr 0x71)
                             (setvar 'mpu-addr 0x70)
                     )    )
-                ))
+                })
                 (setvar 'Disp_Timer_Start (systime))
                 (if (= mpu-addr 0x70)
                     (setvar 'start_pos (+(* 64 Disp-Num) (* 16 Rotation))) ; define the correct start position in the array for the display
@@ -788,7 +749,7 @@
                 (i2c-tx-rx mpu-addr (list 0x81)) ; Turn on display
                 (setvar 'Last-Disp-Num Disp-Num)
                 (setvar 'mpu-addr 0x70)
-                    ))
+                    })
         })
     })
 })
@@ -807,60 +768,54 @@
     (loopwhile-thd 45 t {
        (sleep 0.25)
 
-        (if (or (= Batt_Disp_Timer_Start 0) (= Batt-Disp-State 0))
-        (progn
-        (setvar 'Batt-Disp-State 0)))
+        (if (or (= Batt_Disp_Timer_Start 0) (= Batt-Disp-State 0)) {
+        (setvar 'Batt-Disp-State 0)})
 
 
-        (if (and (> Batt_Disp_Timer_Start 1) (> (secs-since Batt_Disp_Timer_Start) 6) (= Batt-Disp-State 0)) ; waits Display Duration + 1 second after scooter is turned off to stabalize battery readings
-        (progn
+        (if (and (> Batt_Disp_Timer_Start 1) (> (secs-since Batt_Disp_Timer_Start) 6) (= Batt-Disp-State 0)) { ; waits Display Duration + 1 second after scooter is turned off to stabalize battery readings
 
         ; xxxx Section for normal 4 bar battery capacity display
 
              (if (= Thirds-Total 0)
 
-             (if (>  Actual-Batt 0.75) (progn (setvar 'Disp-Num 3) (spawn Beeper 4)) ; gets the vesc battery % and triggers the display screen
-                (if (> Actual-Batt 0.5) (progn (setvar 'Disp-Num 2) (spawn Beeper 3))
-                    (if (> Actual-Batt 0.25) (progn (setvar 'Disp-Num 1) (spawn Beeper 2))
-                        (progn (setvar 'Disp-Num 0) (spawn Beeper 1)) (nil ))))
+             (if (>  Actual-Batt 0.75) { (setvar 'Disp-Num 3) (spawn Beeper 4)} ; gets the vesc battery % and triggers the display screen
+                (if (> Actual-Batt 0.5) { (setvar 'Disp-Num 2) (spawn Beeper 3)}
+                    (if (> Actual-Batt 0.25) { (setvar 'Disp-Num 1) (spawn Beeper 2)}
+                        { (setvar 'Disp-Num 0) (spawn Beeper 1)} (nil ))))
 
              ; Section for 1/3rds display
-              (if (and (> Actual-Batt (* Thirds-Total 0.66)) (= Warning-Counter 0)) (progn (setvar 'Disp-Num 20))
-                (if (and (> Actual-Batt (* Thirds-Total 0.33)) (< Warning-Counter 3))
-                 (progn
+              (if (and (> Actual-Batt (* Thirds-Total 0.66)) (= Warning-Counter 0)) { (setvar 'Disp-Num 20)}
+                (if (and (> Actual-Batt (* Thirds-Total 0.33)) (< Warning-Counter 3)) {
                  (setvar 'Disp-Num 19)
-                  (if (< Warning-Counter 2)
-                   (progn
+                  (if (< Warning-Counter 2) {
                     (spawn Warbler 350 0.5 0.5)
                      (setvar 'Warning-Counter (+ Warning-Counter 1)
-                     ))))
-                    (progn
+                     )})
+                    } {
                      (setvar 'Disp-Num 18)
-                     (if (< Warning-Counter 4)
-                        (progn
+                     (if (< Warning-Counter 4) {
                         (spawn Warbler 350 0.5 0.5)
-                        (setvar 'Warning-Counter (+ Warning-Counter 1))))) (nil ))))
+                        (setvar 'Warning-Counter (+ Warning-Counter 1))})} (nil ))))
 
                  (setvar 'Batt-Disp-State 1)
                  (setvar 'Last-Batt-Disp-Num Disp-Num)
-                    ))
+                    })
 
-         (if (and (> Batt_Disp_Timer_Start 1) (> (secs-since Batt_Disp_Timer_Start) 12) (= Batt-Disp-State 1) (> Thirds-Total 0))
-        (progn
+         (if (and (> Batt_Disp_Timer_Start 1) (> (secs-since Batt_Disp_Timer_Start) 12) (= Batt-Disp-State 1) (> Thirds-Total 0)) {
 
-              (if (>  Actual-Batt 0.95) (progn (setvar 'Disp-Num 30)) ; gets the vesc battery % and triggers the display screen NOTE % are adjusted to better represent battery state, ie fully charged power tool battery will not display at 100% on the vesc
-                (if (> Actual-Batt 0.90) (progn (setvar 'Disp-Num 29)) ; 90%
-                    (if (> Actual-Batt 0.80) (progn (setvar 'Disp-Num 28)) ; 80%
-                        (if (> Actual-Batt 0.70) (progn (setvar 'Disp-Num 27)) ; 70%
-                            (if (> Actual-Batt 0.60) (progn (setvar 'Disp-Num 26)) ; 60%
-                                (if (> Actual-Batt 0.50) (progn (setvar 'Disp-Num 25)) ; 50%
-                                    (if (> Actual-Batt 0.40) (progn (setvar 'Disp-Num 24)) ; 40%
-                                       (if (> Actual-Batt 0.30) (progn (setvar 'Disp-Num 23)) ; 30%
-                                            (if (> Actual-Batt 0.20) (progn (setvar 'Disp-Num 22)) ; 20%
-                                                (progn (setvar 'Disp-Num 21)) (nil ))))))))))
+              (if (>  Actual-Batt 0.95) { (setvar 'Disp-Num 30)} ; gets the vesc battery % and triggers the display screen NOTE % are adjusted to better represent battery state, ie fully charged power tool battery will not display at 100% on the vesc
+                (if (> Actual-Batt 0.90) { (setvar 'Disp-Num 29)} ; 90%
+                    (if (> Actual-Batt 0.80) { (setvar 'Disp-Num 28)} ; 80%
+                        (if (> Actual-Batt 0.70) { (setvar 'Disp-Num 27)} ; 70%
+                            (if (> Actual-Batt 0.60) { (setvar 'Disp-Num 26)} ; 60%
+                                (if (> Actual-Batt 0.50) { (setvar 'Disp-Num 25)} ; 50%
+                                    (if (> Actual-Batt 0.40) { (setvar 'Disp-Num 24)} ; 40%
+                                       (if (> Actual-Batt 0.30) { (setvar 'Disp-Num 23)} ; 30%
+                                            (if (> Actual-Batt 0.20) { (setvar 'Disp-Num 22)} ; 20%
+                                                { (setvar 'Disp-Num 21)} (nil ))))))))))
                (setvar 'Batt-Disp-State 0)
                (setvar 'Batt_Disp_Timer_Start 0)
-              ))
+              })
     })
     )
 })
@@ -869,25 +824,24 @@
 
 
 (defun Beeper (Beeps)
-(loopwhile (and (= Enable_Battery_Beeps 1) (> Batt_Disp_Timer_Start 0) (> Beeps 0))
-(progn
+(loopwhile (and (= Enable_Battery_Beeps 1) (> Batt_Disp_Timer_Start 0) (> Beeps 0)) {
        (sleep 0.25)
        (foc-beep 350 0.5 Beeps_Vol)
       (setvar 'Beeps (- Beeps 1))
-    )))
+    }))
 
 (move-to-flash Beeper)
 
 ; xxxx Warbler Program xxxx"
 
 (defun Warbler (Tone Time Delay)
-         (progn
+{
          (sleep Delay)
          (foc-beep Tone Time Beeps_Vol)
          (foc-beep (- Tone 200) Time Beeps_Vol)
          (foc-beep Tone Time Beeps_Vol)
          (foc-beep (- Tone 200) Time Beeps_Vol)
-         ))
+         })
 
  (move-to-flash Warbler)
 
@@ -902,26 +856,23 @@
     (loopwhile-thd 100 t {
         (sleep 0.25)
 
-        (if (and (> (secs-since Click_Beep_Timer) 0.25) (!= Click_Beep_Timer 0))
-        (progn
+        (if (and (> (secs-since Click_Beep_Timer) 0.25) (!= Click_Beep_Timer 0)) {
         (foc-play-stop)
         (setvar 'Click_Beep_Timer 0)
-        ))
+        })
 
-        (if (> Click_Beep 0)
-        (progn
+        (if (> Click_Beep 0) {
         (if (and (= Click_Beep 5) (> Enable_Smart_Cruise 0)(!= SPEED 99)) (foc-play-tone 1 1500 Beeps_Vol))
-        (if (= Enable_Trigger_Beeps 1)
-        (progn
+        (if (= Enable_Trigger_Beeps 1) {
         (if (= Click_Beep 1)(foc-play-tone 1 2500 Beeps_Vol))
         (if (= Click_Beep 2)(foc-play-tone 1 3000 Beeps_Vol))
         (if (= Click_Beep 3)(foc-play-tone 1 3500 Beeps_Vol))
         (if (= Click_Beep 4)(foc-play-tone 1 4000 Beeps_Vol))
-        ))
+        })
 
         (setvar 'Click_Beep_Timer (systime))
         (setvar 'Click_Beep 0)
-        ))
+        })
 
     })
     )
@@ -957,11 +908,10 @@
         (i2c-tx-rx 0x70 (list 0x21)) ; start the oscillator
         (i2c-tx-rx 0x70 (list (ix Brightness_Bytes Disp_Brightness)))  ; set brightness
 
-        (if (= Scooter_Type 1) ; For cuda X setup second screen
-                (progn
+        (if (= Scooter_Type 1) { ; For cuda X setup second screen
                 (i2c-tx-rx 0x71 (list 0x21)) ; start the oscillator
                 (i2c-tx-rx 0x71 (list (ix Brightness_Bytes Disp_Brightness)))  ; set brightness
-        ))
+        })
     })
 })
 
