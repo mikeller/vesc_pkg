@@ -741,7 +741,7 @@ Item {
             return
         }
 
-        var buffer = new ArrayBuffer(29)
+        var buffer = new ArrayBuffer(30)
         var da = new DataView(buffer)
 
         da.setUint8(0, reverse_speed.realValue)
@@ -773,13 +773,14 @@ Item {
         da.setUint8(26, smart_cruise_auto_engage_delay.realValue)
         da.setUint8(27, enable_thirds_warning_startup.checked ? 1 : 0)
         da.setUint8(28, use_ah_battery_calculation.checked ? 1 : 0)
+        da.setUint8(29, debug_enabled.checked ? 1 : 0)
         mCommands.sendCustomAppData(buffer)
 
         console.log("Sent values")
     }
 
     function reset_defaults_blacktip() {
-        var buffer1 = new ArrayBuffer(29)
+        var buffer1 = new ArrayBuffer(30)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 45)
         da1.setUint8(1, 20)
@@ -810,6 +811,7 @@ Item {
         da1.setUint8(26, 10) // Auto-Engage Delay default: 10 seconds
         da1.setUint8(27, 0) // Enable Thirds Warning Startup default: off
         da1.setUint8(28, 0) // Battery calculation method default: voltage-based
+        da1.setUint8(29, 0) // Debug enabled default: off
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/master/datatypes.h
@@ -884,7 +886,7 @@ Item {
     }
 
     function reset_defaults_cudax() {
-        var buffer1 = new ArrayBuffer(29)
+        var buffer1 = new ArrayBuffer(30)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 30)
         da1.setUint8(1, 10)
@@ -915,6 +917,7 @@ Item {
         da1.setUint8(26, 10) // Auto-Engage Delay default: 10 seconds
         da1.setUint8(27, 0) // Enable Thirds Warning Startup default: off
         da1.setUint8(28, 0) // Battery calculation method default: voltage-based
+        da1.setUint8(29, 0) // Debug enabled default: off
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/f6b06bc9f8d02d2ba262166127c3f2ffaedbb17e/datatypes.h#L369
@@ -1030,6 +1033,7 @@ Item {
             smart_cruise_auto_engage_delay.realValue = dv.getUint8(26)
             enable_thirds_warning_startup.checked =  dv.getUint8(27) == 1
             use_ah_battery_calculation.checked =  dv.getUint8(28) == 1
+            debug_enabled.checked =  dv.getUint8(29) == 1
 
             ramp_rate.realValue = mMcConf.getParamDouble("s_pid_ramp_erpms_s")
             battery_ah.realValue = mMcConf.getParamDouble("si_battery_ah")
@@ -1525,6 +1529,16 @@ Item {
                     font.pixelSize: Qt.application.font.pixelSize * 0.8
                     color: Utility.getAppHexColor("lightText")
                     text: "* Will trigger a scooter reboot"
+                }
+
+                CheckBox {
+                    id: debug_enabled
+                    Layout.fillWidth: true
+                    text: "Enable Debug Logging"
+                    checked: false
+                    onClicked: {
+                        beeperDisplayDialog.valuesChanged()
+                    }
                 }
             }
         }
