@@ -508,7 +508,7 @@
             (loopwhile (!= speed last_speed) {
             (debug_log (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
             (sleep 0.25)
-        ; xxxx turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isnt recieved every second from the Switch_State program
+            ; xxxx turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isnt recieved every second from the Switch_State program
             (if (= speed 99) {
                 (debug_log "Motor: Stopping motor")
                 (set-current 0)
@@ -519,24 +519,27 @@
                 })
 
             (if (!= speed 99) {
-        ; xxxx Soft Start section for all speeds, makes start less judery
+                ; xxxx Soft Start section for all speeds, makes start less judery
                 (if (= last_speed 99) {
                     (debug_log "Motor: Soft start initiated")
                     (conf-set 'l-in-current-max (ix min_current scooter_type))
                     (setvar 'safe_start_timer (systime))
                     (setvar 'last_speed 0.5)
-                    (if (< speed 2) (set-duty (- 0 0.06)) (set-duty 0.06))
+                    (if (< speed 2)
+                        (set-duty (- 0 0.06))
+                        (set-duty 0.06)
+                    )
                 })
 
-        ; xxxx Set Actual Speeds section
+                ; xxxx Set Actual Speeds section
                 (if (and (> (secs-since safe_start_timer) 0.5) (or (= use_safe_start 0) (!= last_speed 0.5) (and (> (abs (get-rpm)) 350) (> (abs (get-duty)) 0.05) (< (abs (get-current)) 5)))) {
                 (conf-set 'l-in-current-max (ix max_current scooter_type))
 
                 ; xxx reverse gear section
                 (if (< speed 2)
                     (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
-                ; xxx Normal Gears Section
-                (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
+                    ; xxx Normal Gears Section
+                    (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
                 )
 
                 (setvar 'disp_num (+ speed 4))
