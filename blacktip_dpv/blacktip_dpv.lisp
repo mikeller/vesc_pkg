@@ -32,7 +32,7 @@
             (eeprom-store-i 16 60) ; How long before Smart Cruise times out and requires reactivation in sec.
             (eeprom-store-i 17 0) ; Rotation of Display, 0-3 . Each number rotates display 90 deg.
             (eeprom-store-i 18 5) ; Display Brighness 0-5
-            (eeprom-store-i 19 0) ; Bluetooth Wiring, 0 = Blacktip HW60 + Ble, 1 = Blacktip HW60 - Ble, 2 = Blacktip HW410 - Ble, 3 = Cuda-X HW60 + Ble, 4 = Cuda-X HW60 - Ble
+            (eeprom-store-i 19 0) ; Hardware configuration, 0 = Blacktip HW60 + Ble, 1 = Blacktip HW60 - Ble, 2 = Blacktip HW410 - Ble, 3 = Cuda-X HW60 + Ble, 4 = Cuda-X HW60 - Ble
             (eeprom-store-i 20 0) ; Battery Beeps
             (eeprom-store-i 21 3) ; Beep Volume
             (eeprom-store-i 22 0) ; CudaX Flip Screens
@@ -59,7 +59,7 @@
      (define Smart_Cruise_Timeout (eeprom-read-i 16))
      (define Rotation (eeprom-read-i 17))
      (define Disp_Brightness (eeprom-read-i 18))
-     (define Bluetooth (eeprom-read-i 19))
+     (define hardware_configuration (eeprom-read-i 19))
      (define Enable_Battery_Beeps (eeprom-read-i 20))
      (define Beeps_Vol (eeprom-read-i 21))
      (define CudaX_Flip (eeprom-read-i 22))
@@ -83,7 +83,7 @@
         (eeprom-read-i 9) ; Speed 8 %
      ))
 
-     (if (<= Bluetooth 2) ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
+     (if (<= hardware_configuration 2) ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
           (define Scooter_Type 0)
           (define Scooter_Type 1)
      )
@@ -944,11 +944,11 @@
         0xEF; 5 Max
         ))) {
 
-        (if (or (= 0 Bluetooth) (= 3 Bluetooth)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
+        (if (or (= 0 hardware_configuration) (= 3 hardware_configuration)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
             (i2c-start 'rate-400k 'pin-swdio 'pin-swclk) ; Works HW 60 with screen on SWD Connector. Screen SDA pin to Vesc SWDIO (2), Screen SCL pin to Vesc SWCLK (4)
-            (if (or (= 1 Bluetooth) ( = 4 Bluetooth)) ; 1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth
+            (if (or (= 1 hardware_configuration) ( = 4 hardware_configuration)) ; 1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth
                 (i2c-start 'rate-400k 'pin-rx 'pin-tx) ; Works HW 60 with screen on Comm Connector. Screen SDA pin to Vesc RX/SDA (5), Screen SCL pin to Vesc  TX/SCL (6)
-                (if ( = 2 Bluetooth)
+                (if ( = 2 hardware_configuration)
                     (i2c-start 'rate-400k 'pin-tx 'pin-rx) ; tested on HW 410 Tested: SN 189, SN 1691
                     (nil))))
 
