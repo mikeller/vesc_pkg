@@ -90,7 +90,7 @@
     )
 
     ; Log configuration on startup
-    (debug-log (str-merge "Config loaded: HW=" (to-str hardware_configuration)
+    (debug_log (str-merge "Config loaded: HW=" (to-str hardware_configuration)
                      " Type=" (to-str scooter_type)
                      " Debug=" (to-str debug_enabled)
                      " BattCalc=" (to-str battery_calculation_method)))
@@ -214,10 +214,8 @@
                         (setvar 'timer_start (systime))
                         (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
                         (setvar 'click_beep CLICKS_QUINTUPLE)
-                        (if (< speed SPEED_REVERSE_THRESHOLD) ; re command actual speed as reverification sets it to 0.8x
-                            (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
-                            (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
-                        )
+                        ; re command actual speed as reverification sets it to 0.8x
+                        (set-rpm (calculate_rpm speed 100))
                     })
                 })
             } {
@@ -355,6 +353,22 @@
 
 ; Display timer stop value
 (define DISPLAY_TIMER_STOP 2)
+
+; =============================================================================
+; RPM Calculation Helper
+; =============================================================================
+
+(defun calculate_rpm (speed_index divisor)
+{
+    (let ((base_rpm (* (/ (ix max_erpm scooter_type) divisor) (ix speed_set speed_index))))
+    {
+        (if (< speed_index SPEED_REVERSE_THRESHOLD)
+            (- 0 base_rpm)
+            base_rpm)
+    })
+})
+
+(move-to-flash calculate_rpm)
 
 ; =============================================================================
 ; State Machine Design Notes:
@@ -524,10 +538,7 @@
         (if (= smart_cruise SMART_CRUISE_FULLY_ENABLED) {
             (debug_log "Smart Cruise: Fully enabled")
             (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-            (if (< speed SPEED_REVERSE_THRESHOLD)
-                (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
-                (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
-            )
+            (set-rpm (calculate_rpm speed 100))
         })
     })
 })
@@ -683,10 +694,8 @@
                     (setvar 'timer_duration TIMER_SMART_CRUISE_TIMEOUT) ; sets timer duration to display duration to allow for re-enable
                     (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
                     (setvar 'click_beep CLICKS_QUINTUPLE)
-                    (if (< speed SPEED_REVERSE_THRESHOLD) ; slow scooter to 80% to help people realize custom is expiring
-                        (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) SMART_CRUISE_SLOWDOWN_DIVISOR)(ix speed_set speed))))
-                        (set-rpm (* (/ (ix max_erpm scooter_type) SMART_CRUISE_SLOWDOWN_DIVISOR)(ix speed_set speed)))
-                    )
+                    ; slow scooter to 80% to help people realize custom is expiring
+                    (set-rpm (calculate_rpm speed SMART_CRUISE_SLOWDOWN_DIVISOR))
                 })
             )
         }) ; end Timer expiry
@@ -739,12 +748,7 @@
                 (if (and (> (secs-since safe_start_timer) SAFE_START_TIMEOUT) (or (= use_safe_start 0) (!= last_speed SPEED_SOFT_START_SENTINEL) (and (> (abs (get-rpm)) SAFE_START_MIN_RPM) (> (abs (get-duty)) SAFE_START_MIN_DUTY) (< (abs (get-current)) SAFE_START_MAX_CURRENT)))) {
                 (conf-set 'l-in-current-max (ix max_current scooter_type))
 
-                ; xxx reverse gear section
-                (if (< speed SPEED_REVERSE_THRESHOLD)
-                    (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
-                    ; xxx Normal Gears Section
-                    (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
-                )
+                (set-rpm (calculate_rpm speed 100))
 
                 (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
                 ; Maybe causing issues with timing? (setvar 'timer_start (systime)) ; set state timer so that repeat display timing works in state 2
