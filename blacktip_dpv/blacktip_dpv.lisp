@@ -377,7 +377,7 @@
 (move-to-flash setup_state_machine)
 
 
-(defun sw_state_0 ()
+(defun state_handler_off ()
 {
     ; xxxx State "0" Off
     (debug_log "State 0: Off")
@@ -395,13 +395,13 @@
             (setvar 'timer_duration TIMER_CLICK_WINDOW)
             (setvar 'clicks CLICKS_SINGLE)
             (setvar 'sw_state STATE_COUNTING_CLICKS)
-            (spawn THREAD_STACK_STATE_COUNTING sw_state_1)
+            (spawn THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
             (break)
         })
     })
 })
 
-(move-to-flash sw_state_0)
+(move-to-flash state_handler_off)
 
 
 ; Helper functions for click actions
@@ -498,7 +498,7 @@
 
 ; xxxx STATE 1 Counting clicks
 
-(defun sw_state_1 ()
+(defun state_handler_counting_clicks ()
 {
     (debug_log (str-merge "State 1: Counting clicks=" (to-str clicks)))
     (loopwhile (= sw_state STATE_COUNTING_CLICKS) {
@@ -510,7 +510,7 @@
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_RELEASE_WINDOW)
             (setvar 'sw_state STATE_GOING_OFF)
-            (spawn THREAD_STACK_STATE_TRANSITIONS sw_state_3)
+            (spawn THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
             (break)
         })
 
@@ -530,17 +530,17 @@
             (setvar 'clicks 0)
             (setvar 'timer_duration TIMER_DISABLED)
             (setvar 'sw_state STATE_PRESSED)
-            (spawn THREAD_STACK_STATE_MACHINE sw_state_2)
+            (spawn THREAD_STACK_STATE_MACHINE state_handler_pressed)
             (break)
         })
     })
 })
 
-(move-to-flash sw_state_1)
+(move-to-flash state_handler_counting_clicks)
 
 
 ; xxxx State 2 "Pressed"
-(defun sw_state_2()
+(defun state_handler_pressed()
 {
     (debug_log "State 2: Pressed")
    (loopwhile (= sw_state STATE_PRESSED) {
@@ -575,18 +575,18 @@
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_RELEASE_WINDOW)
             (setvar 'sw_state STATE_GOING_OFF)
-            (spawn THREAD_STACK_STATE_TRANSITIONS sw_state_3)
+            (spawn THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
             (break)
         })
     })
 })
 
-(move-to-flash sw_state_2)
+(move-to-flash state_handler_pressed)
 
 
 ; xxxx State 3 "Going Off"
 
-(defun sw_state_3 ()
+(defun state_handler_going_off ()
 {
     (debug_log "State 3: Going Off")
     (loopwhile (= sw_state STATE_GOING_OFF) {
@@ -611,7 +611,7 @@
             )
 
             (setvar 'sw_state STATE_COUNTING_CLICKS)
-            (spawn THREAD_STACK_STATE_COUNTING sw_state_1)
+            (spawn THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
             (break)
         })
 
@@ -629,7 +629,7 @@
                 (setvar 'speed SPEED_OFF)
                 (setvar 'smart_cruise SMART_CRUISE_OFF) ; turn off Smart Cruise
                 (setvar 'sw_state STATE_OFF)
-                (spawn THREAD_STACK_STATE_TRANSITIONS sw_state_0)
+                (spawn THREAD_STACK_STATE_TRANSITIONS state_handler_off)
                 (break) ; SWST_OFF
             })
 
@@ -650,7 +650,7 @@
     }) ; end state
 })
 
-(move-to-flash sw_state_3)
+(move-to-flash state_handler_going_off)
 
 
 (defun start_motor_speed_loop()
@@ -719,7 +719,7 @@
                 (debug_log "Motor: Safe start failed, stopping motor")
                 (setvar 'speed SPEED_OFF)
                 (setvar 'sw_state STATE_COUNTING_CLICKS)
-                (spawn THREAD_STACK_STATE_COUNTING sw_state_1)
+                (spawn THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
                 (foc-beep 250 0.15 5)
                 })
                 })
@@ -1152,7 +1152,7 @@
 
     (start_trigger_loop)
 
-    (spawn THREAD_STACK_STATE_TRANSITIONS sw_state_0) ; ***Start state machine running for first time
+    (spawn THREAD_STACK_STATE_TRANSITIONS state_handler_off) ; ***Start state machine running for first time
 
     (setvar 'disp_num 15) ; display startup screen, change bytes if you want a different one
     (setvar 'batt_disp_timer_start (systime)) ; turns battery display on for power on.
