@@ -660,8 +660,9 @@
                     (debug_log "Smart Cruise: Disabled by button press")
                     (setvar 'smart_cruise SMART_CRUISE_OFF)
                 }
-                (if (< safe_start_timer 1) ; check safe start isn't running, don't allow gear shifts if it is on
-                    (setvar 'clicks (+ clicks 1)))
+                (if (= safe_start_timer 0) { ; safe start uses 0 as the inactive sentinel
+                    (setvar 'clicks (+ clicks 1))
+                })
             )
 
             (setvar 'sw_state STATE_COUNTING_CLICKS)
