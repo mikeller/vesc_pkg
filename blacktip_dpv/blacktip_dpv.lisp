@@ -231,6 +231,15 @@
 (move-to-flash start_smart_cruise_loop)
 
 
+; Constants for state machine
+(define TIMER_DISABLED 86400) ; 24 hours - effectively infinite for scooter operation
+
+; State Machine Design Notes:
+; - Each state handler runs in a loop checking (= sw_state N)
+; - When transitioning, sw_state is updated, new handler spawned, and (break) called
+; - The loop condition prevents race conditions by ensuring old handler exits
+; - Old thread terminates naturally when loop condition becomes false
+
 ; Trigger_On_Time is 0.3 for Double Click Timer Settings
 ; Trigger_Off_Time is 0.5 for Double Click Timer Settings
 
@@ -274,6 +283,98 @@
 (move-to-flash sw_state_0)
 
 
+; Helper functions for click actions
+(defun handle_single_click ()
+{
+    (if (and (= clicks 1) (!= speed 99)) {
+        (debug_log "Click action: Single click (speed down)")
+        (setvar 'click_beep 1)
+        (if (> speed 2)
+            (setvar 'speed (- speed 1))
+            (if (= speed 0)
+                (setvar 'speed 1)
+            )
+        )
+    })
+})
+
+(defun handle_double_click ()
+{
+    (if (= clicks 2) {
+        (if (= speed 99)
+            {
+                (debug_log (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
+                (setvar 'speed new_start_speed)
+            }
+            {
+                (debug_log "Click action: Double click (speed up)")
+                (setvar 'click_beep 2)
+                (if (< speed max_speed_no)
+                    (if (> speed 1)
+                        (setvar 'speed (+ speed 1))
+                        (setvar 'speed 0)
+                    )
+                )
+            }
+        )
+    })
+})
+
+(defun handle_triple_click ()
+{
+    (if (= clicks 3) {
+        (debug_log (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
+        (if (!= speed 99)
+            (setvar 'click_beep 3)
+        )
+        (setvar 'speed jump_speed)
+    })
+})
+
+(defun handle_quadruple_click ()
+{
+    (if (and (= clicks 4) (= 1 enable_reverse)) {
+        (debug_log "Click action: Quadruple click (untangle)")
+        (if (!= speed 99)
+            (setvar 'click_beep 4)
+        )
+        (setvar 'speed 1)
+    })
+})
+
+(defun handle_quintuple_click ()
+{
+    (if (= clicks 5) {
+        (debug_log (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
+        (setvar 'click_beep 5)
+        (if (and (!= speed 99) (> enable_smart_cruise 0) (< smart_cruise 2))
+            (setvar 'smart_cruise (+ 1 smart_cruise))
+        )
+
+        (if (= smart_cruise 1) {
+            (debug_log "Smart Cruise: Half-enabled (waiting for confirmation)")
+            (setvar 'disp_num 16)
+            (setvar 'last_disp_num 99)
+        })
+
+        (if (= smart_cruise 2) {
+            (debug_log "Smart Cruise: Fully enabled")
+            (setvar 'disp_num 17)
+            (if (< speed 2)
+                (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
+                (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
+            )
+        })
+    })
+})
+
+(move-to-flash handle_single_click)
+(move-to-flash handle_double_click)
+(move-to-flash handle_triple_click)
+(move-to-flash handle_quadruple_click)
+(move-to-flash handle_quintuple_click)
+
+
 ; xxxx STATE 1 Counting clicks
 
 (defun sw_state_1 ()
@@ -295,80 +396,18 @@
         ; Timer Expiry
         (if (> (secs-since timer_start) timer_duration) {
             (debug_log (str-merge "State 1: Timer expired, clicks=" (to-str clicks)))
-            ; Single Click Commands
-            (if (and (= clicks 1) (!= speed 99)) {
-                (debug_log "Click action: Single click (speed down)")
-                (setvar 'click_beep 1)
-                (if (> speed 2)
-                    (setvar 'speed (- speed 1)) ; decrease one speed
-                    (if (= speed 0)
-                        (setvar 'speed 1) ; set to untangle
-                    )
-                )
-            })
-
-            ; Double Click Comands
-            (if (= clicks 2)
-                (if (= speed 99)
-                    {
-                        (debug_log (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
-                        (setvar 'speed new_start_speed)
-                    }
-                    {
-                        (debug_log "Click action: Double click (speed up)")
-                        (setvar 'click_beep 2)
-                        (if (< speed max_speed_no)
-                            (if (> speed 1)
-                                (setvar 'speed (+ speed 1)) ; increase one speed
-                                (setvar 'speed 0) ; set to reverse "
-                            )
-                        )
-                    }
-                )
-            )
-
-            ; Triple Click Comands
-            (if (= clicks 3) {
-                (debug_log (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
-                (if (!= speed 99)(setvar 'click_beep 3))
-                (setvar 'speed jump_speed) ; Jump Speed
-            })
-
-            ; Quadruple Click Comands
-            (if (and (= clicks 4) (= 1 enable_reverse)) {
-                (debug_log "Click action: Quadruple click (untangle)")
-                (if (!= speed 99)(setvar 'click_beep 4))
-                (setvar 'speed 1) ; set to untangle
-            })
-
-            ; Quintuple Click Comands
-            (if (= clicks 5) {
-                (debug_log (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
-                (setvar 'click_beep 5)
-                (if (and (!= speed 99) (> enable_smart_cruise 0) (< smart_cruise 2))
-                    (setvar 'smart_cruise (+ 1 smart_cruise))
-                )
-
-                (if (= smart_cruise 1) { ; If Smart Cruise is half-enabled, show it on screen
-                    (debug_log "Smart Cruise: Half-enabled (waiting for confirmation)")
-                    (setvar 'disp_num 16)
-                    (setvar 'last_disp_num 99) ; this display may be needed multiple times, so clear the last disp too
-                })
-
-                (if (= smart_cruise 2) { ; If Smart Cruise is enabled, show it on screen
-                    (debug_log "Smart Cruise: Fully enabled")
-                    (setvar 'disp_num 17)
-                    (if (< speed 2) ; re command actuall speed as reverification sets it to 0.8x
-                        (set-rpm (- 0 (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed))))
-                        (set-rpm (* (/ (ix max_erpm scooter_type) 100)(ix speed_set speed)))
-                    )
-                })
-            })
+            
+            ; Process click actions
+            (handle_single_click)
+            (handle_double_click)
+            (handle_triple_click)
+            (handle_quadruple_click)
+            (handle_quintuple_click)
 
             ; End of Click Actions
             (debug_log (str-merge "State 1->2: Speed=" (to-str speed)))
             (setvar 'clicks 0)
-            (setvar 'timer_duration 999999)
+            (setvar 'timer_duration TIMER_DISABLED)
             (setvar 'sw_state 2)
             (spawn 30 sw_state_2)
             (break)
@@ -459,7 +498,7 @@
         (if (> (secs-since timer_start) timer_duration) {
             (if (and (!= smart_cruise 2) (!= smart_cruise 3)) { ; If Smart Cruise is enabled, dont shut down
                 (debug_log "State 3->0: Timeout, shutting down")
-                (setvar 'timer_duration 999999) ; set to infinite
+                (setvar 'timer_duration TIMER_DISABLED)
                 (if (< speed start_speed) ; start at old speed if less than start speed
                     (if (> speed 1)
                         (setvar 'new_start_speed speed)

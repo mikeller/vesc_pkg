@@ -9,6 +9,7 @@ Use 4 spaces for indentation, not tabs.
 Use semver without a leading 'v' for version numbers (e.g. 1.2.3).
 The 'then' and 'else' blocks of condiditionals should start on a new line.
 Comments are indented to the same level as the code they refer to.
+No whitespace at the end of lines or on empty lines.
 
 ---
 applyTo: '**/*.lisp'
