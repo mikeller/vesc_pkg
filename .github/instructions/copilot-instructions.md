@@ -1,6 +1,7 @@
 ---
 applyTo: '**'
 ---
+Maintainability is a priority - choose the easiest to  understand implementation without over-simplifying.
 Only consider files in the `blacktip_dpv` directory unless otherwise specified.
 When making code changes, if the input line has trailing whitespace, please remove it.
 Never add whitespace at the end of a line, or on empty lines.
