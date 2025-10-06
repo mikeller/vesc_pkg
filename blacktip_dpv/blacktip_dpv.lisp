@@ -12,18 +12,18 @@
 
     (if (!= file-magic magic)
         {
-            (print (str-merge "Error: Invalid LUT magic. Expected 0x"
-                              (str-from-n magic "%08X")
-                              ", got 0x"
-                              (str-from-n file-magic "%08X")))
+            (print (str-merge "Error: Invalid LUT magic. Expected "
+                              (to-str magic)
+                              ", got "
+                              (to-str file-magic)))
             nil
         }
         (if (!= file-version expected-version)
             {
                 (print (str-merge "Error: Unsupported LUT version. Expected "
-                                  (str-from-n expected-version)
+                                  (to-str expected-version)
                                   ", got "
-                                  (str-from-n file-version)))
+                                  (to-str file-version)))
                 nil
             }
             num-items
@@ -32,10 +32,10 @@
 })
 
 ; Initialize display LUT (returns number of frames or nil on error)
-(define display-num-frames (validate-lut-header display-lut-bin 0x4C555444 1))
+(define display-num-frames (validate-lut-header display-lut-bin 0x4C555444u32 1))
 
 ; Initialize brightness LUT (returns number of levels or nil on error)
-(define brightness-num-levels (validate-lut-header brightness-lut-bin 0x4C555442 1))
+(define brightness-num-levels (validate-lut-header brightness-lut-bin 0x4C555442u32 1))
 
 ; Verify LUTs loaded successfully
 (if (not display-num-frames)
@@ -275,11 +275,11 @@
 ; Lightweight macro to conditionally evaluate debug logging expressions
 ; Only evaluates the logging expression when debug_enabled is 1
 ; This prevents expensive str-merge and to-str calls on memory-constrained targets
-(defmacro when-debug (expr)
+(define when-debug (macro (expr)
     `(if (and (not-eq debug_enabled nil) (= debug_enabled 1))
         (puts ,expr)
     )
-)
+))
 
 (move-to-flash when-debug)
 
