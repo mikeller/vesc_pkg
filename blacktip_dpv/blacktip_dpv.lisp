@@ -48,6 +48,32 @@
 })
 
 
+(define eeprom_corrections 0)
+
+(defun eeprom_store_if_changed (address desired_value name)
+{
+    (let ((current (eeprom-read-i address)))
+    {
+        (if (!= current desired_value) {
+            (setvar 'eeprom_corrections (+ eeprom_corrections 1))
+            (debug_log (str-merge "EEPROM: " name " corrected from " (to-str current) " to " (to-str desired_value)))
+            (eeprom-store-i address desired_value)
+        })
+        desired_value
+    })
+})
+
+(defun eeprom_read_speed_percent_at (address label)
+{
+    (let ((validated (validate_speed_percent (eeprom-read-i address) label)))
+    {
+        (eeprom_store_if_changed address validated label)
+    })
+})
+
+(move-to-flash eeprom_store_if_changed)
+(move-to-flash eeprom_read_speed_percent_at)
+
 ; =============================================================================
 ; Safe Start Helpers
 ; =============================================================================
@@ -180,6 +206,11 @@
                      " Type=" (to-str scooter_type)
                      " Debug=" (to-str debug_enabled)
                      " BattCalc=" (to-str battery_calculation_method)))
+
+    (if (> eeprom_corrections 0)
+        (puts (str-merge "EEPROM: Sanity check corrected " (to-str eeprom_corrections) " value(s)"))
+        (debug_log "EEPROM: Sanity check passed with no corrections")
+    )
 })
 
 (move-to-flash update_settings)
