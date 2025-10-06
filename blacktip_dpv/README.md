@@ -50,3 +50,18 @@ Can be adjusted in the app to vary the acceleration of the scooter. Videographer
 
 ### VESC Package Support
 The VESC team have created a fantastic ecosystem where we can now load our scooter software onto the scooter as a package. A package is a small code file thats easy to create and share. It includes the scooter code and a user interface that is accessable on the VESC app (phone) or The VESC Tool (PC). The graphical user interface and app makes it much easier for you to change settings. As the package is independant of updates of the VESC ecosystem, it can always take advantage of the latest version giving you the best posible motor control of your scooter.
+
+## Display assets and tooling
+
+The OLED screen artwork and brightness tables now live in `assets/` as CSV files
+(`display_lut.csv` and `brightness_levels.csv`). They are the source of truth for
+the generated lookup tables inside `blacktip_dpv.lisp`. The build rules run
+`python tools/update_display_tables.py` automatically so that edits to the CSVs
+are reflected in the firmware before packaging.
+
+To explore the artwork locally you can use the helper CLI:
+
+- `python tools/preview_display.py --list` &mdash; enumerate the available frames
+	and rotations.
+- `python tools/preview_display.py --index 0` &mdash; print an ASCII preview of a
+	specific frame. Add `--output some.pgm` to export an image (PGM format).

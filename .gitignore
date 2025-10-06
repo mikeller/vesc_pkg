@@ -11,3 +11,5 @@ confxml.h
 *.cproject
 *.project
 *.settings
+
+blacktip_dpv/generated/
