@@ -35,7 +35,7 @@ implementations and verify correctness without needing hardware.
 
 ## Project Structure
 
-```
+```text
 blacktip_dpv/
 ├── assets/                          # Source data files
 │   ├── display_lut.csv             # Display frames (124 frames × 4 rotations)
