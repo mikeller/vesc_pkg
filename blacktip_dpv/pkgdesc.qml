@@ -1,7 +1,7 @@
 import QtQuick 2.15
 
 Item {
-    property string pkgName: "BlacktipSmartCruise"
+    property string pkgName: "BlacktipDPV"
     property string pkgDescriptionMd: "README.md"
     property string pkgLisp: "blacktip_dpv.lisp"
     property string pkgQml: "ui.qml"
