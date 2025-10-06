@@ -56,11 +56,32 @@ class DisplayFrame:
         return [self.bytes[i] for i in range(1, 16, 2)]
 
     def render_rows(self) -> List[str]:
-        cols = self.columns()
+        """Render display as ASCII art with 90° clockwise rotation.
+        
+        The hardware stores 8 column bytes (high bytes at odd indices).
+        Each column byte has 8 bits representing pixels vertically (MSB=top).
+        
+        To rotate 90° clockwise with correct mapping:
+        - Column N (left to right) becomes row N (top to bottom)
+        - Within each column: position 0 checks bit 7 (MSB)
+        - Positions 1-7 check bits 0-6 respectively
+        """
+        cols = self.columns()  # 8 column bytes, left to right
         rows: List[str] = []
-        for bit in range(7, -1, -1):
-            row = ''.join('#' if (col >> bit) & 1 else '.' for col in cols)
-            rows.append(row)
+        
+        # Read columns from left to right (0→7) to form rows top to bottom
+        # Position 0 uses bit 7, positions 1-7 use bits 0-6
+        for col_idx in range(8):
+            row = []
+            for pos in range(8):
+                if pos == 0:
+                    # Position 0 checks bit 7 (MSB)
+                    row.append('#' if (cols[col_idx] >> 7) & 1 else '.')
+                else:
+                    # Positions 1-7 check bits 0-6
+                    row.append('#' if (cols[col_idx] >> (pos - 1)) & 1 else '.')
+            rows.append(''.join(row))
+        
         return rows
 
 
@@ -128,12 +149,26 @@ def main() -> None:
     parser.add_argument('--rotation', type=int, help='Rotation number when selecting by name')
     parser.add_argument('--output', type=Path, help='Optional PGM output path')
     parser.add_argument('--list', action='store_true', help='List available display names and rotations')
+    parser.add_argument('--show-all-rotation', type=int, metavar='ROT',
+                        help='Show all frames for the specified rotation number')
     args = parser.parse_args()
 
     frames = load_frames(ASSET_PATH)
 
     if args.list:
         list_names(frames)
+        return
+
+    if args.show_all_rotation is not None:
+        rotation_frames = [f for f in frames if f.rotation == args.show_all_rotation]
+        if not rotation_frames:
+            raise SystemExit(f"No frames found with rotation {args.show_all_rotation}")
+        print(f"=== All frames for rotation {args.show_all_rotation} ===\n")
+        for frame in rotation_frames:
+            print(f"[{frame.index}] {frame.name}")
+            for row in frame.render_rows():
+                print(row)
+            print()
         return
 
     frame = select_frame(frames, index=args.index, name=args.name, rotation=args.rotation)
