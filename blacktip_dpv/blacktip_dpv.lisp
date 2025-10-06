@@ -768,96 +768,86 @@
 (move-to-flash state_handler_off)
 
 
-; Helper functions for click actions
-(defun handle_single_click ()
+; Encapsulated click action handler
+(defun apply_click_action (click_count)
 {
-    (if (and (= clicks CLICKS_SINGLE) (!= speed SPEED_OFF)) {
-        (debug_log "Click action: Single click (speed down)")
-        (setvar 'click_beep CLICKS_SINGLE)
-        (cond
-            ((> speed SPEED_REVERSE_THRESHOLD)
-                (set_speed_safe (- speed 1)))
-            ; Reverse navigation: speed 0 (Reverse 2) -> speed 1 (Untangle)
-            ((= speed 0)
-                (set_speed_safe 1)))
-    })
-})
-
-(defun handle_double_click ()
-{
-    (if (= clicks CLICKS_DOUBLE) {
-        ; Start from OFF: use configured start speed
-        (if (= speed SPEED_OFF)
+    (cond
+        ((= click_count CLICKS_SINGLE)
+        {
+            (if (!= speed SPEED_OFF)
+            {
+                (debug_log "Click action: Single click (speed down)")
+                (setvar 'click_beep CLICKS_SINGLE)
+                (cond
+                    ((> speed SPEED_REVERSE_THRESHOLD)
+                        (set_speed_safe (- speed 1)))
+                    ((= speed 0)
+                        (set_speed_safe 1)))
+            })
+        })
+        ((= click_count CLICKS_DOUBLE)
+        {
+            (if (= speed SPEED_OFF)
             {
                 (debug_log (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
                 (set_speed_safe new_start_speed)
             }
-            ; Already running: increment speed (with reverse handling)
             {
                 (debug_log "Click action: Double click (speed up)")
                 (setvar 'click_beep CLICKS_DOUBLE)
                 (if (< speed max_speed_no)
+                {
                     (if (> speed 1)
                         (set_speed_safe (+ speed 1))
-                        ; Speed 1 (Untangle) -> speed 0 (Reverse 2)
-                        (set_speed_safe 0)
-                    )
+                        (set_speed_safe 0))
+                })
+            })
+        })
+        ((= click_count CLICKS_TRIPLE)
+        {
+            (debug_log (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
+            (if (!= speed SPEED_OFF)
+                (setvar 'click_beep CLICKS_TRIPLE)
+            )
+            (set_speed_safe jump_speed)
+        })
+        ((= click_count CLICKS_QUADRUPLE)
+        {
+            (if (= enable_reverse 1)
+            {
+                (debug_log "Click action: Quadruple click (untangle)")
+                (if (!= speed SPEED_OFF)
+                    (setvar 'click_beep CLICKS_QUADRUPLE)
                 )
-            }
-        )
-    })
-})
-
-(defun handle_triple_click ()
-{
-    (if (= clicks CLICKS_TRIPLE) {
-        (debug_log (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
-        (if (!= speed SPEED_OFF)
-            (setvar 'click_beep CLICKS_TRIPLE)
-        )
-        (set_speed_safe jump_speed)
-    })
-})
-
-(defun handle_quadruple_click ()
-{
-    (if (and (= clicks CLICKS_QUADRUPLE) (= 1 enable_reverse)) {
-        (debug_log "Click action: Quadruple click (untangle)")
-        (if (!= speed SPEED_OFF)
-            (setvar 'click_beep CLICKS_QUADRUPLE)
-        )
-        (set_speed_safe 1)
-    })
-})
-
-(defun handle_quintuple_click ()
-{
-    (if (= clicks CLICKS_QUINTUPLE) {
-        (debug_log (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
-        (setvar 'click_beep CLICKS_QUINTUPLE)
-        (if (and (!= speed SPEED_OFF) (> enable_smart_cruise 0) (< smart_cruise SMART_CRUISE_FULLY_ENABLED))
-            (setvar 'smart_cruise (+ 1 smart_cruise))
-        )
-
-        (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
-            (debug_log "Smart Cruise: Half-enabled (waiting for confirmation)")
-            (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
-            (setvar 'last_disp_num DISPLAY_SENTINEL)
+                (set_speed_safe 1)
+            })
         })
+        ((= click_count CLICKS_QUINTUPLE)
+        {
+            (debug_log (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
+            (setvar 'click_beep CLICKS_QUINTUPLE)
+            (if (and (!= speed SPEED_OFF) (> enable_smart_cruise 0) (< smart_cruise SMART_CRUISE_FULLY_ENABLED))
+                (setvar 'smart_cruise (+ 1 smart_cruise))
+            )
 
-        (if (= smart_cruise SMART_CRUISE_FULLY_ENABLED) {
-            (debug_log "Smart Cruise: Fully enabled")
-            (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-            (set-rpm (calculate_rpm speed 100))
+            (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
+                (debug_log "Smart Cruise: Half-enabled (waiting for confirmation)")
+                (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
+                (setvar 'last_disp_num DISPLAY_SENTINEL)
+            })
+
+            (if (= smart_cruise SMART_CRUISE_FULLY_ENABLED) {
+                (debug_log "Smart Cruise: Fully enabled")
+                (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+                (set-rpm (calculate_rpm speed 100))
+            })
         })
-    })
+        (t
+            (debug_log (str-merge "Click action: Unsupported count " (to-str click_count))))
+    )
 })
 
-(move-to-flash handle_single_click)
-(move-to-flash handle_double_click)
-(move-to-flash handle_triple_click)
-(move-to-flash handle_quadruple_click)
-(move-to-flash handle_quintuple_click)
+(move-to-flash apply_click_action)
 
 
 ; xxxx STATE 1 Counting clicks
@@ -882,11 +872,7 @@
             (debug_log (str-merge "State 1: Timer expired, clicks=" (to-str clicks)))
 
             ; Process click actions
-            (handle_single_click)
-            (handle_double_click)
-            (handle_triple_click)
-            (handle_quadruple_click)
-            (handle_quintuple_click)
+            (apply_click_action clicks)
 
             ; End of Click Actions
             (debug_log (str-merge "State 1->2: Speed=" (to-str speed)))
