@@ -57,10 +57,10 @@ class DisplayFrame:
 
     def render_rows(self) -> List[str]:
         """Render display as ASCII art with 90° clockwise rotation.
-        
+
         The hardware stores 8 column bytes (high bytes at odd indices).
         Each column byte has 8 bits representing pixels vertically (MSB=top).
-        
+
         To rotate 90° clockwise with correct mapping:
         - Column N (left to right) becomes row N (top to bottom)
         - Within each column: position 0 checks bit 7 (MSB)
@@ -68,20 +68,15 @@ class DisplayFrame:
         """
         cols = self.columns()  # 8 column bytes, left to right
         rows: List[str] = []
-        
+
         # Read columns from left to right (0→7) to form rows top to bottom
         # Position 0 uses bit 7, positions 1-7 use bits 0-6
-        for col_idx in range(8):
-            row = []
-            for pos in range(8):
-                if pos == 0:
-                    # Position 0 checks bit 7 (MSB)
-                    row.append('#' if (cols[col_idx] >> 7) & 1 else '.')
-                else:
-                    # Positions 1-7 check bits 0-6
-                    row.append('#' if (cols[col_idx] >> (pos - 1)) & 1 else '.')
-            rows.append(''.join(row))
-        
+        for col in cols:
+            rows.append(''.join(
+                '#' if (col >> (7 - pos)) & 1 else '.'
+                for pos in range(8)
+            ))
+
         return rows
 
 

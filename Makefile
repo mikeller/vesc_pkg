@@ -17,4 +17,4 @@ clean: $(PKGS)
 $(PKGS):
 	$(MAKE) -C $@ $(MAKECMDGOALS)
 
-.PHONY: all clean $(PKGS)
+.PHONY: all clean test $(PKGS)
