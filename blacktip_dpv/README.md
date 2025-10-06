@@ -62,6 +62,26 @@ are reflected in the firmware before packaging.
 To explore the artwork locally you can use the helper CLI:
 
 - `python tools/preview_display.py --list` &mdash; enumerate the available frames
-	and rotations.
+  and rotations.
 - `python tools/preview_display.py --index 0` &mdash; print an ASCII preview of a
-	specific frame. Add `--output some.pgm` to export an image (PGM format).
+  specific frame. Add `--output some.pgm` to export an image (PGM format).
+- `python tools/preview_display.py --show-all-rotation 0` &mdash; preview all
+  screens for rotation 0 in one go.
+
+### Alternative: Load from external resource file
+
+If you prefer not to have large data arrays embedded in the main source file, you
+can generate a standalone resource file with `make resource` (or run
+`python tools/generate_lut_resource.py` directly). This creates
+`generated/display_lut_data.lisp` which defines `display-lut-data` and
+`brightness-lut-data` variables that can be loaded at runtime.
+
+To use the resource file approach:
+
+1. Run `make resource` to generate `generated/display_lut_data.lisp`
+2. In your firmware code, use `(import "generated/display_lut_data.lisp")` to load
+   the data (note: LispBM import support may vary by VESC firmware version)
+3. Replace references to `Displays` with `display-lut-data` and `brightness_bytes`
+   with `brightness-lut-data`
+
+This keeps the main source clean while still allowing CSV-driven artwork updates.

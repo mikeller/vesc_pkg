@@ -13,3 +13,4 @@ confxml.h
 *.settings
 
 blacktip_dpv/generated/
+**/__pycache__/
