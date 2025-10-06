@@ -286,7 +286,7 @@ system and **cannot be removed**:
     ...
     ; Copy 16 bytes from binary file to pixbuf
     (bufcpy pixbuf 0 display-lut-bin (+ 8 start_pos) 16)
-    
+
     ; Send pixbuf to display via I2C
     (i2c-tx-rx mpu-addr pixbuf)
 })
@@ -306,4 +306,4 @@ system and **cannot be removed**:
 
 ## Repository
 
-https://github.com/mikeller/vesc_pkg
+<https://github.com/mikeller/vesc_pkg>
