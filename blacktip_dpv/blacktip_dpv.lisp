@@ -123,8 +123,7 @@
     } {
         (debug_log "Motor: Safe start retries exhausted, stopping motor")
         (set_speed_safe SPEED_OFF)
-        (setvar 'sw_state STATE_COUNTING_CLICKS)
-        (spawn THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
+        (state_transition_to STATE_COUNTING_CLICKS "safe_start_abort" THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
         (foc-beep 250 0.15 5)
         (safe_start_reset_state)
     })
@@ -390,10 +389,169 @@
 (define THREAD_STACK_CLICK_BEEP 100)  ; Click beep playback - kept at 100 (already appropriate)
 
 ; State values
+(define STATE_UNINITIALIZED -1)
 (define STATE_OFF 0)
 (define STATE_COUNTING_CLICKS 1)
 (define STATE_PRESSED 2)
 (define STATE_GOING_OFF 3)
+
+; State machine instrumentation
+(define STATE_COUNT 4)
+(define state_transition_counts (list 0 0 0 0))
+(define state_time_accumulated (list 0 0 0 0))
+(define state_last_state STATE_UNINITIALIZED)
+(define state_last_change_time 0)
+(define state_transition_total 0)
+(define state_last_reason "")
+
+(defun state_index_for (state)
+{
+    (cond
+        ((= state STATE_OFF) 0)
+        ((= state STATE_COUNTING_CLICKS) 1)
+        ((= state STATE_PRESSED) 2)
+        ((= state STATE_GOING_OFF) 3)
+        (t -1))
+})
+
+(defun state_name_for (state)
+{
+    (cond
+        ((= state STATE_OFF) "Off")
+        ((= state STATE_COUNTING_CLICKS) "CountingClicks")
+        ((= state STATE_PRESSED) "Pressed")
+        ((= state STATE_GOING_OFF) "GoingOff")
+        ((= state STATE_UNINITIALIZED) "Init")
+        (t "Unknown"))
+})
+
+(defun state_metrics_reset ()
+{
+    (setvar 'state_transition_counts (list 0 0 0 0))
+    (setvar 'state_time_accumulated (list 0 0 0 0))
+    (setvar 'state_transition_total 0)
+    (setvar 'state_last_state STATE_UNINITIALIZED)
+    (setvar 'state_last_change_time (systime))
+    (setvar 'state_last_reason "startup")
+})
+
+(defun state_metrics_accumulate (state elapsed)
+{
+    (let ((index (state_index_for state)))
+    {
+        (if (>= index 0)
+        {
+            (setix state_time_accumulated index (+ (ix state_time_accumulated index) elapsed))
+        })
+    })
+})
+
+(defun state_record_transition (from_state to_state reason)
+{
+    (let ((now (systime)))
+    {
+        (if (and (!= state_last_state STATE_UNINITIALIZED) (!= from_state STATE_UNINITIALIZED))
+        {
+            (state_metrics_accumulate from_state (- now state_last_change_time))
+        })
+        (let ((to_index (state_index_for to_state)))
+        {
+            (if (>= to_index 0)
+            {
+                (setix state_transition_counts to_index (+ (ix state_transition_counts to_index) 1))
+            })
+        })
+        (setvar 'state_transition_total (+ state_transition_total 1))
+        (setvar 'state_last_state to_state)
+        (setvar 'state_last_change_time now)
+        (setvar 'state_last_reason reason)
+        (debug_log (str-merge "State: " (state_name_for from_state) " -> " (state_name_for to_state) " (" reason ")"))
+    })
+})
+
+(defun state_transition_to (new_state reason thread_stack handler)
+{
+    (let ((previous sw_state))
+    {
+        (let ((from_state (if (= state_last_state STATE_UNINITIALIZED)
+            {
+                STATE_UNINITIALIZED
+            }
+            {
+                previous
+            })))
+        {
+            (state_record_transition from_state new_state reason)
+        })
+        (setvar 'sw_state new_state)
+        (spawn thread_stack handler)
+    })
+})
+
+(defun state_instrumentation_summary ()
+{
+    (let ((total state_transition_total)
+          (now (systime))
+          (pending_index (state_index_for state_last_state)))
+    {
+        (let ((pending_elapsed (if (!= pending_index -1)
+            {
+                (- now state_last_change_time)
+            }
+            {
+                0
+            }))
+            (off_time (if (= pending_index 0)
+                {
+                    (+ (ix state_time_accumulated 0) pending_elapsed)
+                }
+                {
+                    (ix state_time_accumulated 0)
+                }))
+            (counting_time (if (= pending_index 1)
+                {
+                    (+ (ix state_time_accumulated 1) pending_elapsed)
+                }
+                {
+                    (ix state_time_accumulated 1)
+                }))
+            (pressed_time (if (= pending_index 2)
+                {
+                    (+ (ix state_time_accumulated 2) pending_elapsed)
+                }
+                {
+                    (ix state_time_accumulated 2)
+                }))
+            (going_off_time (if (= pending_index 3)
+                {
+                    (+ (ix state_time_accumulated 3) pending_elapsed)
+                }
+                {
+                    (ix state_time_accumulated 3)
+                })))
+        {
+            (puts (str-merge "State summary: total transitions=" (to-str total)))
+            (puts (str-merge "  Off=" (to-str (ix state_transition_counts 0))
+                             " time=" (to-str off_time) "s"))
+            (puts (str-merge "  CountingClicks=" (to-str (ix state_transition_counts 1))
+                             " time=" (to-str counting_time) "s"))
+            (puts (str-merge "  Pressed=" (to-str (ix state_transition_counts 2))
+                             " time=" (to-str pressed_time) "s"))
+            (puts (str-merge "  GoingOff=" (to-str (ix state_transition_counts 3))
+                             " time=" (to-str going_off_time) "s"))
+            (puts (str-merge "  Last state=" (state_name_for state_last_state)
+                             " reason=" state_last_reason))
+        })
+    })
+})
+
+(move-to-flash state_index_for)
+(move-to-flash state_name_for)
+(move-to-flash state_metrics_reset)
+(move-to-flash state_metrics_accumulate)
+(move-to-flash state_record_transition)
+(move-to-flash state_transition_to)
+(move-to-flash state_instrumentation_summary)
 
 ; Special speed values
 (define SPEED_OFF 99)                 ; Motor off indicator
@@ -529,6 +687,7 @@
 
 (defun setup_state_machine()
 {
+    (state_metrics_reset)
     (define sw_state 0)
     (define timer_start 0)
     (define timer_duration 0)
@@ -600,8 +759,7 @@
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_CLICK_WINDOW)
             (setvar 'clicks CLICKS_SINGLE)
-            (setvar 'sw_state STATE_COUNTING_CLICKS)
-            (spawn THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
+            (state_transition_to STATE_COUNTING_CLICKS "button_press" THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
             (break)
         })
     })
@@ -715,8 +873,7 @@
             (setvar 'disp_timer_start DISPLAY_TIMER_STOP) ; Stop Display in case its running
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_RELEASE_WINDOW)
-            (setvar 'sw_state STATE_GOING_OFF)
-            (spawn THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
+            (state_transition_to STATE_GOING_OFF "released" THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
             (break)
         })
 
@@ -735,8 +892,7 @@
             (debug_log (str-merge "State 1->2: Speed=" (to-str speed)))
             (setvar 'clicks 0)
             (setvar 'timer_duration TIMER_DISABLED)
-            (setvar 'sw_state STATE_PRESSED)
-            (spawn THREAD_STACK_STATE_MACHINE state_handler_pressed)
+            (state_transition_to STATE_PRESSED "click_window_expired" THREAD_STACK_STATE_MACHINE state_handler_pressed)
             (break)
         })
     })
@@ -780,8 +936,7 @@
             (debug_log "State 2->3: Released")
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_RELEASE_WINDOW)
-            (setvar 'sw_state STATE_GOING_OFF)
-            (spawn THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
+            (state_transition_to STATE_GOING_OFF "released" THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
             (break)
         })
     })
@@ -817,8 +972,7 @@
                 })
             )
 
-            (setvar 'sw_state STATE_COUNTING_CLICKS)
-            (spawn THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
+            (state_transition_to STATE_COUNTING_CLICKS "button_pressed" THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
             (break)
         })
 
@@ -834,8 +988,7 @@
                         (setvar 'new_start_speed start_speed)))
                 (set_speed_safe SPEED_OFF)
                 (setvar 'smart_cruise SMART_CRUISE_OFF) ; turn off Smart Cruise
-                (setvar 'sw_state STATE_OFF)
-                (spawn THREAD_STACK_STATE_TRANSITIONS state_handler_off)
+                (state_transition_to STATE_OFF "timeout_shutdown" THREAD_STACK_STATE_TRANSITIONS state_handler_off)
                 (break) ; SWST_OFF
             })
 
@@ -1394,7 +1547,7 @@
 
     (start_trigger_loop)
 
-    (spawn THREAD_STACK_STATE_TRANSITIONS state_handler_off) ; ***Start state machine running for first time
+    (state_transition_to STATE_OFF "startup" THREAD_STACK_STATE_TRANSITIONS state_handler_off) ; ***Start state machine running for first time
 
     (setvar 'disp_num 15) ; display startup screen, change bytes if you want a different one
     (setvar 'batt_disp_timer_start (systime)) ; turns battery display on for power on.
