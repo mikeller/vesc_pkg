@@ -331,7 +331,7 @@
                         (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
                         (setvar 'click_beep CLICKS_QUINTUPLE)
                         ; re command actual speed as reverification sets it to 0.8x
-                        (set-rpm (calculate_rpm speed 100))
+                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
                     })
                 })
             } {
@@ -492,7 +492,11 @@
 {
     (let ((total state_transition_total)
           (now (systime))
-          (pending_index (state_index_for state_last_state)))
+          (pending_index (state_index_for state_last_state))
+          (off_index (state_index_for STATE_OFF))
+          (counting_index (state_index_for STATE_COUNTING_CLICKS))
+          (pressed_index (state_index_for STATE_PRESSED))
+          (going_off_index (state_index_for STATE_GOING_OFF)))
     {
         (let ((pending_elapsed (if (!= pending_index -1)
             {
@@ -501,43 +505,99 @@
             {
                 0
             }))
-            (off_time (if (= pending_index 0)
-                {
-                    (+ (ix state_time_accumulated 0) pending_elapsed)
-                }
-                {
-                    (ix state_time_accumulated 0)
-                }))
-            (counting_time (if (= pending_index 1)
-                {
-                    (+ (ix state_time_accumulated 1) pending_elapsed)
-                }
-                {
-                    (ix state_time_accumulated 1)
-                }))
-            (pressed_time (if (= pending_index 2)
-                {
-                    (+ (ix state_time_accumulated 2) pending_elapsed)
-                }
-                {
-                    (ix state_time_accumulated 2)
-                }))
-            (going_off_time (if (= pending_index 3)
-                {
-                    (+ (ix state_time_accumulated 3) pending_elapsed)
-                }
-                {
-                    (ix state_time_accumulated 3)
-                })))
+            (off_count (if (>= off_index 0)
+            {
+                (ix state_transition_counts off_index)
+            }
+            {
+                0
+            }))
+            (counting_count (if (>= counting_index 0)
+            {
+                (ix state_transition_counts counting_index)
+            }
+            {
+                0
+            }))
+            (pressed_count (if (>= pressed_index 0)
+            {
+                (ix state_transition_counts pressed_index)
+            }
+            {
+                0
+            }))
+            (going_off_count (if (>= going_off_index 0)
+            {
+                (ix state_transition_counts going_off_index)
+            }
+            {
+                0
+            }))
+            (off_base_time (if (>= off_index 0)
+            {
+                (ix state_time_accumulated off_index)
+            }
+            {
+                0
+            }))
+            (counting_base_time (if (>= counting_index 0)
+            {
+                (ix state_time_accumulated counting_index)
+            }
+            {
+                0
+            }))
+            (pressed_base_time (if (>= pressed_index 0)
+            {
+                (ix state_time_accumulated pressed_index)
+            }
+            {
+                0
+            }))
+            (going_off_base_time (if (>= going_off_index 0)
+            {
+                (ix state_time_accumulated going_off_index)
+            }
+            {
+                0
+            }))
+            (off_time (if (and (>= off_index 0) (= pending_index off_index))
+            {
+                (+ off_base_time pending_elapsed)
+            }
+            {
+                off_base_time
+            }))
+            (counting_time (if (and (>= counting_index 0) (= pending_index counting_index))
+            {
+                (+ counting_base_time pending_elapsed)
+            }
+            {
+                counting_base_time
+            }))
+            (pressed_time (if (and (>= pressed_index 0) (= pending_index pressed_index))
+            {
+                (+ pressed_base_time pending_elapsed)
+            }
+            {
+                pressed_base_time
+            }))
+            (going_off_time (if (and (>= going_off_index 0) (= pending_index going_off_index))
+            {
+                (+ going_off_base_time pending_elapsed)
+            }
+            {
+                going_off_base_time
+            })))
         {
             (puts (str-merge "State summary: total transitions=" (to-str total)))
-            (puts (str-merge "  Off=" (to-str (ix state_transition_counts 0))
+            (puts (str-merge "  Off=" (to-str off_count)
                              " time=" (to-str off_time) "s"))
-            (puts (str-merge "  CountingClicks=" (to-str (ix state_transition_counts 1))
+            (puts (str-merge "  CountingClicks=" (to-str counting_count)
                              " time=" (to-str counting_time) "s"))
-            (puts (str-merge "  Pressed=" (to-str (ix state_transition_counts 2))
+            (puts (str-merge "  Pressed=" (to-str pressed_count)
                              " time=" (to-str pressed_time) "s"))
-            (puts (str-merge "  GoingOff=" (to-str (ix state_transition_counts 3))
+            (puts (str-merge "  GoingOff=" (to-str going_off_count)
                              " time=" (to-str going_off_time) "s"))
             (puts (str-merge "  Last state=" (state_name_for state_last_state)
                              " reason=" state_last_reason))
@@ -554,6 +614,8 @@
 (move-to-flash state_instrumentation_summary)
 
 ; Special speed values
+(define SPEED_REVERSE_2 0)            ; Reverse speed level 2 (strong reverse)
+(define SPEED_UNTANGLE 1)             ; Reverse speed level 1 / untangle assist
 (define SPEED_OFF 99)                 ; Motor off indicator
 (define SPEED_REVERSE_THRESHOLD 2)    ; Speeds below this are reverse
 (define SPEED_SOFT_START_SENTINEL 0.5) ; Sentinel value for soft start tracking
@@ -585,6 +647,9 @@
 (define MAX_CURRENT_CUDAX 46)
 (define MIN_CURRENT_BLACKTIP 1.7)
 (define MIN_CURRENT_CUDAX 0.35)
+
+; RPM scaling
+(define RPM_PERCENT_DENOMINATOR 100)
 
 ; Safe start parameters
 (define SAFE_START_DUTY 0.06)         ; Initial duty cycle for soft start
@@ -648,8 +713,8 @@
                     0
                 }
                 {
-                    (let ((max_index (- count 1))
-                          (clamped (clamp speed_index 0 max_index)))
+              (let ((max_index (- count 1))
+                  (clamped (clamp speed_index SPEED_REVERSE_2 max_index)))
                     {
                         (if (!= speed_index clamped)
                             (debug_log (str-merge "Speed: Index " (to-str speed_index) " clamped to " (to-str clamped) " for speed_set"))
@@ -704,7 +769,7 @@
 ; =============================================================================
 
 ; Helper function to safely set speed with bounds checking
-; Valid speeds: 0 (reverse 2), 1 (reverse 1/untangle), 2-max_speed_no (forward), 99 (off)
+; Valid speeds: SPEED_REVERSE_2, SPEED_UNTANGLE, 2-max_speed_no (forward), SPEED_OFF
 ; Returns the actual speed that was set after bounds checking
 (defun set_speed_safe (new_speed)
 {
@@ -716,9 +781,9 @@
             (debug_log "Speed: Set to OFF")
         } {
             ; Clamp to valid range
-            (if (< new_speed 0) {
-                (setvar 'clamped_speed 0)
-                (debug_log (str-merge "Speed: Clamped " (to-str new_speed) " to 0 (underflow)"))
+            (if (< new_speed SPEED_REVERSE_2) {
+                (setvar 'clamped_speed SPEED_REVERSE_2)
+                (debug_log (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_2) " (underflow)"))
             })
 
             (if (> clamped_speed max_speed_no) {
@@ -781,8 +846,8 @@
                 (cond
                     ((> speed SPEED_REVERSE_THRESHOLD)
                         (set_speed_safe (- speed 1)))
-                    ((= speed 0)
-                        (set_speed_safe 1)))
+                    ((= speed SPEED_REVERSE_2)
+                        (set_speed_safe SPEED_UNTANGLE)))
             })
         })
         ((= click_count CLICKS_DOUBLE)
@@ -797,9 +862,9 @@
                 (setvar 'click_beep CLICKS_DOUBLE)
                 (if (< speed max_speed_no)
                 {
-                    (if (> speed 1)
+                    (if (> speed SPEED_UNTANGLE)
                         (set_speed_safe (+ speed 1))
-                        (set_speed_safe 0))
+                        (set_speed_safe SPEED_REVERSE_2))
                 })
             })
         })
@@ -819,7 +884,7 @@
                 (if (!= speed SPEED_OFF)
                     (setvar 'click_beep CLICKS_QUADRUPLE)
                 )
-                (set_speed_safe 1)
+                (set_speed_safe SPEED_UNTANGLE)
             })
         })
         ((= click_count CLICKS_QUINTUPLE)
@@ -839,7 +904,7 @@
             (if (= smart_cruise SMART_CRUISE_FULLY_ENABLED) {
                 (debug_log "Smart Cruise: Fully enabled")
                 (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                (set-rpm (calculate_rpm speed 100))
+                (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
             })
         })
         (t
@@ -968,7 +1033,7 @@
                 (debug_log "State 3->0: Timeout, shutting down")
                 (setvar 'timer_duration TIMER_DISABLED)
                 (cond
-                    ((and (< speed start_speed) (> speed 1)) ; start at old speed if less than start speed
+                    ((and (< speed start_speed) (> speed SPEED_UNTANGLE)) ; start at old speed if less than start speed
                         (setvar 'new_start_speed speed))
                     ((>= speed start_speed)
                         (setvar 'new_start_speed start_speed)))
@@ -1054,7 +1119,7 @@
                             (safe_start_met_success_criteria rpm duty current))
                     {
                         (conf-set 'l-in-current-max (ix max_current scooter_type))
-                        (set-rpm (calculate_rpm speed 100))
+                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
                         (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
                         (safe_start_success)
                         (setvar 'last_speed speed)
