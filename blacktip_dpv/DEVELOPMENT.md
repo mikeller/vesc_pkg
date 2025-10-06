@@ -9,9 +9,29 @@ The project uses GNU Make for building the VESC package:
 ```bash
 make              # Build blacktip_dpv.vescpkg
 make clean        # Remove generated files
-make test         # Run code quality checks
+make test         # Run code quality checks and smoke tests
+make smoke-tests  # Run unit-style smoke tests only
 make binary       # Generate binary LUT files only
 ```
+
+### Test Suite
+
+The project includes smoke tests for pure functions to catch regressions before
+flashing hardware:
+
+```bash
+make smoke-tests  # Run 30+ unit tests for pure functions
+```
+
+**Tested functions:**
+- `clamp` - Value clamping (7 tests)
+- `validate_boolean` - Boolean validation (5 tests)
+- `state_name_for` - State name mapping (6 tests)
+- `speed_percentage_at` - Speed percentage lookup (5 tests)
+- `calculate_rpm` - RPM calculation (7 tests)
+
+Tests are implemented in Python (`tests/run_tests.py`) to mirror the LispBM
+implementations and verify correctness without needing hardware.
 
 ## Project Structure
 
@@ -185,6 +205,55 @@ unnecessary memory allocation and CPU cycles in hot paths.
 **Good** (only evaluates when debug is enabled):
 ```lisp
 (when-debug (str-merge "Speed: Set to " (to-str speed)))
+```
+
+## Testing Best Practices
+
+### Adding Tests for Pure Functions
+
+When adding new pure functions (functions without side effects), add corresponding
+tests to `tests/run_tests.py`:
+
+1. **Identify pure functions** - Functions that always return the same output for
+   the same input, with no side effects (no I/O, no state modification)
+
+2. **Implement Python equivalent** - Create a Python version that mirrors the
+   LispBM logic exactly
+
+3. **Write test cases** - Cover:
+   - Normal/expected inputs
+   - Boundary conditions (min, max, zero)
+   - Edge cases (negative, overflow, empty)
+   - Error conditions
+
+4. **Run tests before committing**:
+   ```bash
+   make test  # Runs whitespace checks + smoke tests
+   ```
+
+### What to Test
+
+✅ **Pure functions** - Calculations, validation, state mappings  
+✅ **Boundary conditions** - Min/max values, thresholds  
+✅ **Edge cases** - Empty lists, negative values, overflow  
+❌ **Hardware I/O** - Not feasible without full simulation  
+❌ **State machines** - Complex runtime behavior, test manually
+
+### Test Structure
+
+Each test function should:
+- Have a descriptive name (`test_function_name`)
+- Print a section header
+- Use `assert_eq` or `assert_near` for validation
+- Include descriptive test names explaining what's being tested
+
+Example:
+```python
+def test_new_function():
+    print("\n=== Testing new_function ===")
+    assert_eq(new_function(5), 10, "new_function: basic case")
+    assert_eq(new_function(0), 0, "new_function: zero input")
+    assert_eq(new_function(-1), 0, "new_function: negative clamped")
 ```
 
 ## Binary Loading Implementation

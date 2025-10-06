@@ -31,13 +31,17 @@ check-whitespace:
 		echo "✓ No trailing whitespace found"; \
 	fi
 
+smoke-tests:
+	@echo "Running smoke tests..."
+	@$(PYTHON) tests/run_tests.py
+
 binary: $(LUT_BINARY) $(BRIGHTNESS_BINARY)
 
-test: check-whitespace
+test: check-whitespace smoke-tests
 	@echo "All checks passed"
 
 clean:
 	rm -f blacktip_dpv.vescpkg
 	rm -rf $(GENERATED_DIR)
 
-.PHONY: all test clean check-whitespace binary
+.PHONY: all test clean check-whitespace smoke-tests binary
