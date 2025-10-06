@@ -139,6 +139,54 @@ make test  # Runs whitespace checks
 - Brace style: 1TBS (One True Brace Style)
 - See `.github/instructions/copilot-instructions.md` for full style guide
 
+## Logging Hygiene
+
+The firmware uses conditional debug logging to minimize memory pressure on the
+resource-constrained VESC hardware.
+
+### Debug Logging Functions
+
+Two mechanisms are available for debug logging:
+
+**`debug_log` function** - For static strings:
+```lisp
+(debug_log "Motor: Stopping motor")
+```
+
+**`when-debug` macro** - For dynamic strings with expensive operations:
+```lisp
+(when-debug (str-merge "Speed: Set to " (to-str clamped_speed)))
+```
+
+### When to Use `when-debug`
+
+Use the `when-debug` macro when logging requires:
+- String concatenation (`str-merge`)
+- Number-to-string conversion (`to-str`)
+- Any other expensive operations
+
+The macro only evaluates these expressions when `debug_enabled` is 1, preventing
+unnecessary memory allocation and CPU cycles in hot paths.
+
+### Hot Paths Requiring `when-debug`
+
+- `set_speed_safe` - Called every speed change (multiple times per second)
+- Motor control loop - Runs continuously
+- State machine handlers - Active during user interactions
+- Click action handlers - Called on every button press
+
+### Example
+
+**Bad** (evaluates `str-merge` even when debug is off):
+```lisp
+(debug_log (str-merge "Speed: Set to " (to-str speed)))
+```
+
+**Good** (only evaluates when debug is enabled):
+```lisp
+(when-debug (str-merge "Speed: Set to " (to-str speed)))
+```
+
 ## Binary Loading Implementation
 
 The firmware uses LispBM's `import` statement to load binary data at runtime:

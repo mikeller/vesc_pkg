@@ -272,6 +272,17 @@
 
 (move-to-flash debug_log)
 
+; Lightweight macro to conditionally evaluate debug logging expressions
+; Only evaluates the logging expression when debug_enabled is 1
+; This prevents expensive str-merge and to-str calls on memory-constrained targets
+(defmacro when-debug (expr)
+    `(if (and (not-eq debug_enabled nil) (= debug_enabled 1))
+        (puts ,expr)
+    )
+)
+
+(move-to-flash when-debug)
+
 (defun calculate-corrected-battery ()
     ; Calculate corrected battery percentage from raw battery reading
     (let ((raw-batt (get-batt)))
@@ -513,7 +524,7 @@
         (setvar 'state_last_state to_state)
         (setvar 'state_last_change_time now)
         (setvar 'state_last_reason reason)
-        (debug_log (str-merge "State: " (state_name_for from_state) " -> " (state_name_for to_state) " (" reason ")"))
+        (when-debug (str-merge "State: " (state_name_for from_state) " -> " (state_name_for to_state) " (" reason ")"))
     })
 })
 
@@ -757,7 +768,7 @@
         {
             (if (= count 0)
                 {
-                    (debug_log "Speed: speed_set empty, defaulting to 0%")
+                    (when-debug "Speed: speed_set empty, defaulting to 0%")
                     0
                 }
                 {
@@ -765,7 +776,7 @@
                   (clamped (clamp speed_index SPEED_REVERSE_2 max_index)))
                     {
                         (if (!= speed_index clamped)
-                            (debug_log (str-merge "Speed: Index " (to-str speed_index) " clamped to " (to-str clamped) " for speed_set"))
+                            (when-debug (str-merge "Speed: Index " (to-str speed_index) " clamped to " (to-str clamped) " for speed_set"))
                         )
                         (ix speed_set clamped)
                     })
@@ -826,27 +837,27 @@
         (if (= new_speed SPEED_OFF) {
             ; Speed 99 (OFF) is always valid
             (setvar 'speed SPEED_OFF)
-            (debug_log "Speed: Set to OFF")
+            (when-debug "Speed: Set to OFF")
         } {
             ; Clamp to valid range
             (if (< new_speed SPEED_REVERSE_2) {
                 (setvar 'clamped_speed SPEED_REVERSE_2)
-                (debug_log (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_2) " (underflow)"))
+                (when-debug (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_2) " (underflow)"))
             })
 
             (if (> clamped_speed max_speed_no) {
                 (setvar 'clamped_speed max_speed_no)
-                (debug_log (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str max_speed_no) " (overflow)"))
+                (when-debug (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str max_speed_no) " (overflow)"))
             })
 
             ; Check reverse enable
             (if (and (< clamped_speed SPEED_REVERSE_THRESHOLD) (= enable_reverse 0)) {
                 (setvar 'clamped_speed SPEED_REVERSE_THRESHOLD)
-                (debug_log (str-merge "Speed: Reverse disabled, clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_THRESHOLD)))
+                (when-debug (str-merge "Speed: Reverse disabled, clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_THRESHOLD)))
             })
 
             (setvar 'speed clamped_speed)
-            (debug_log (str-merge "Speed: Set to " (to-str clamped_speed)))
+            (when-debug (str-merge "Speed: Set to " (to-str clamped_speed)))
         })
         clamped_speed
     })
@@ -889,7 +900,7 @@
         {
             (if (!= speed SPEED_OFF)
             {
-                (debug_log "Click action: Single click (speed down)")
+                (when-debug "Click action: Single click (speed down)")
                 (setvar 'click_beep CLICKS_SINGLE)
                 (cond
                     ((> speed SPEED_REVERSE_THRESHOLD)
@@ -902,11 +913,11 @@
         {
             (if (= speed SPEED_OFF)
             {
-                (debug_log (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
+                (when-debug (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
                 (set_speed_safe new_start_speed)
             }
             {
-                (debug_log "Click action: Double click (speed up)")
+                (when-debug "Click action: Double click (speed up)")
                 (setvar 'click_beep CLICKS_DOUBLE)
                 (if (< speed max_speed_no)
                 {
@@ -918,7 +929,7 @@
         })
         ((= click_count CLICKS_TRIPLE)
         {
-            (debug_log (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
+            (when-debug (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
             (if (!= speed SPEED_OFF)
                 (setvar 'click_beep CLICKS_TRIPLE)
             )
@@ -928,7 +939,7 @@
         {
             (if (= enable_reverse 1)
             {
-                (debug_log "Click action: Quadruple click (untangle)")
+                (when-debug "Click action: Quadruple click (untangle)")
                 (if (!= speed SPEED_OFF)
                     (setvar 'click_beep CLICKS_QUADRUPLE)
                 )
@@ -937,26 +948,26 @@
         })
         ((= click_count CLICKS_QUINTUPLE)
         {
-            (debug_log (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
+            (when-debug (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
             (setvar 'click_beep CLICKS_QUINTUPLE)
             (if (and (!= speed SPEED_OFF) (> enable_smart_cruise 0) (< smart_cruise SMART_CRUISE_FULLY_ENABLED))
                 (setvar 'smart_cruise (+ 1 smart_cruise))
             )
 
             (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
-                (debug_log "Smart Cruise: Half-enabled (waiting for confirmation)")
+                (when-debug "Smart Cruise: Half-enabled (waiting for confirmation)")
                 (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
                 (setvar 'last_disp_num DISPLAY_SENTINEL)
             })
 
             (if (= smart_cruise SMART_CRUISE_FULLY_ENABLED) {
-                (debug_log "Smart Cruise: Fully enabled")
+                (when-debug "Smart Cruise: Fully enabled")
                 (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
                 (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
             })
         })
         (t
-            (debug_log (str-merge "Click action: Unsupported count " (to-str click_count))))
+            (when-debug (str-merge "Click action: Unsupported count " (to-str click_count))))
     )
 })
 
@@ -967,7 +978,7 @@
 
 (defun state_handler_counting_clicks ()
 {
-    (debug_log (str-merge "State 1: Counting clicks=" (to-str clicks)))
+    (when-debug (str-merge "State 1: Counting clicks=" (to-str clicks)))
     (loopwhile (= sw_state STATE_COUNTING_CLICKS) {
         (sleep SLEEP_STATE_MACHINE)
 
@@ -982,13 +993,13 @@
 
         ; Timer Expiry
         (if (> (secs-since timer_start) timer_duration) {
-            (debug_log (str-merge "State 1: Timer expired, clicks=" (to-str clicks)))
+            (when-debug (str-merge "State 1: Timer expired, clicks=" (to-str clicks)))
 
             ; Process click actions
             (apply_click_action clicks)
 
             ; End of Click Actions
-            (debug_log (str-merge "State 1->2: Speed=" (to-str speed)))
+            (when-debug (str-merge "State 1->2: Speed=" (to-str speed)))
             (setvar 'clicks 0)
             (setvar 'timer_duration TIMER_DISABLED)
             (state_transition_to STATE_PRESSED "click_window_expired" THREAD_STACK_STATE_MACHINE state_handler_pressed)
@@ -1128,11 +1139,11 @@
         (loopwhile-thd THREAD_STACK_MOTOR t {
             (sleep SLEEP_MOTOR_CONTROL)
             (loopwhile (!= speed last_speed) {
-            (debug_log (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
+            (when-debug (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
             (sleep SLEEP_MOTOR_SPEED_CHANGE)
             ; turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isn't received every second from the Switch_State program
             (if (= speed SPEED_OFF) {
-                (debug_log "Motor: Stopping motor")
+                (when-debug "Motor: Stopping motor")
                 (set-current 0)
                 (setvar 'batt_disp_timer_start (systime)) ; Start trigger for Battery Display
                 (setvar 'disp_num DISPLAY_OFF) ; Turn on Off display. (off display is needed to ensure restart triggers a new display number)
@@ -1143,7 +1154,7 @@
             (if (!= speed SPEED_OFF) {
                 ; Soft Start section for all speeds, makes start less juddering
                 (if (= last_speed SPEED_OFF) {
-                    (debug_log "Motor: Soft start initiated")
+                    (when-debug "Motor: Soft start initiated")
                     (conf-set 'l-in-current-max (ix min_current scooter_type))
                     (safe_start_begin speed)
                     (setvar 'last_speed SPEED_SOFT_START_SENTINEL)
