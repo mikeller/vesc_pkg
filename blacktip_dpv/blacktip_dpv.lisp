@@ -447,16 +447,45 @@
 ; RPM Calculation Helper
 ; =============================================================================
 
+(defun speed_percentage_at (speed_index)
+{
+    (if (= speed_index SPEED_OFF)
+        0
+        (let ((count (length speed_set)))
+        {
+            (if (= count 0)
+                {
+                    (debug_log "Speed: speed_set empty, defaulting to 0%")
+                    0
+                }
+                {
+                    (let ((max_index (- count 1))
+                          (clamped (clamp speed_index 0 max_index)))
+                    {
+                        (if (!= speed_index clamped)
+                            (debug_log (str-merge "Speed: Index " (to-str speed_index) " clamped to " (to-str clamped) " for speed_set"))
+                        )
+                        (ix speed_set clamped)
+                    })
+                })
+        })
+    )
+})
+
 (defun calculate_rpm (speed_index divisor)
 {
-    (let ((base_rpm (* (/ (ix max_erpm scooter_type) divisor) (ix speed_set speed_index))))
+    (let ((speed_percent (speed_percentage_at speed_index)))
     {
-        (if (< speed_index SPEED_REVERSE_THRESHOLD)
-            (- 0 base_rpm)
-            base_rpm)
+        (let ((base_rpm (* (/ (ix max_erpm scooter_type) divisor) speed_percent)))
+        {
+            (if (< speed_index SPEED_REVERSE_THRESHOLD)
+                (- 0 base_rpm)
+                base_rpm)
+        })
     })
 })
 
+(move-to-flash speed_percentage_at)
 (move-to-flash calculate_rpm)
 
 ; =============================================================================
