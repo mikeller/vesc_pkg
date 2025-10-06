@@ -48,6 +48,91 @@
 })
 
 
+; =============================================================================
+; Safe Start Helpers
+; =============================================================================
+
+(defun safe_start_reset_state ()
+{
+    (setvar 'safe_start_timer 0)
+    (setvar 'safe_start_attempt_speed SPEED_OFF)
+    (setvar 'safe_start_failures 0)
+    (setvar 'safe_start_status 'idle)
+})
+
+(defun safe_start_begin (target_speed)
+{
+    (setvar 'safe_start_timer (systime))
+    (setvar 'safe_start_attempt_speed target_speed)
+    (setvar 'safe_start_status 'running)
+    (debug_log (str-merge "Motor: Safe start attempt " (to-str (+ safe_start_failures 1)) " targeting speed " (to-str target_speed)))
+})
+
+(defun safe_start_success ()
+{
+    (setvar 'safe_start_timer 0)
+    (setvar 'safe_start_attempt_speed SPEED_OFF)
+    (setvar 'safe_start_failures 0)
+    (setvar 'safe_start_status 'success)
+})
+
+(defun safe_start_increment_failure (reason)
+{
+    (setvar 'safe_start_failures (+ safe_start_failures 1))
+    (setvar 'safe_start_status 'failed)
+    (debug_log (str-merge "Motor: Safe start attempt " (to-str safe_start_failures) "/" (to-str SAFE_START_MAX_RETRIES) " failed (" reason ")"))
+})
+
+(defun safe_start_should_retry ()
+{
+    (< safe_start_failures SAFE_START_MAX_RETRIES)
+})
+
+(defun safe_start_abort_with_reason (reason)
+{
+    (safe_start_increment_failure reason)
+    (if (safe_start_should_retry) {
+        (sleep SAFE_START_RETRY_BACKOFF)
+        (safe_start_begin safe_start_attempt_speed)
+    } {
+        (debug_log "Motor: Safe start retries exhausted, stopping motor")
+        (set_speed_safe SPEED_OFF)
+        (setvar 'sw_state STATE_COUNTING_CLICKS)
+        (spawn THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
+        (foc-beep 250 0.15 5)
+        (safe_start_reset_state)
+    })
+})
+
+(defun safe_start_value_valid (value max_abs)
+{
+    (and (= value value) (< (abs value) max_abs))
+})
+
+(defun safe_start_telemetry_valid (rpm duty current)
+{
+    (and (safe_start_value_valid rpm 20000)
+         (safe_start_value_valid duty 1.0)
+         (safe_start_value_valid current 200))
+})
+(move-to-flash safe_start_value_valid)
+
+(defun safe_start_met_success_criteria (rpm duty current)
+{
+    (and (> (abs rpm) SAFE_START_MIN_RPM)
+         (> (abs duty) SAFE_START_MIN_DUTY)
+         (< (abs current) SAFE_START_MAX_CURRENT))
+})
+
+(move-to-flash safe_start_reset_state)
+(move-to-flash safe_start_begin)
+(move-to-flash safe_start_success)
+(move-to-flash safe_start_increment_failure)
+(move-to-flash safe_start_should_retry)
+(move-to-flash safe_start_abort_with_reason)
+(move-to-flash safe_start_telemetry_valid)
+(move-to-flash safe_start_met_success_criteria)
+
 (defun update_settings() ; Program that reads eeprom and writes to variables
 {
     (define max_speed_no (eeprom-read-i 10))
@@ -315,10 +400,13 @@
 ; Safe start parameters
 (define SAFE_START_DUTY 0.06)         ; Initial duty cycle for soft start
 (define SAFE_START_TIMEOUT 0.5)       ; Timeout for safe start checks
+(define SAFE_START_TIMEOUT_GRACE 0.1) ; Additional grace period before aborting (seconds)
 (define SAFE_START_MIN_RPM 350)       ; Minimum RPM for safe start success
 (define SAFE_START_MIN_DUTY 0.05)     ; Minimum duty for safe start check
 (define SAFE_START_MAX_CURRENT 5)     ; Maximum current during safe start spin-up
 (define SAFE_START_FAIL_CURRENT 8)    ; Current threshold for safe start failure
+(define SAFE_START_MAX_RETRIES 3)     ; Max safe start retries before shutting down
+(define SAFE_START_RETRY_BACKOFF 0.2) ; Delay before retrying safe start (seconds)
 
 ; Smart Cruise speed adjustment (slowdown to 80%)
 (define SMART_CRUISE_SLOWDOWN_DIVISOR 125) ; Divide by 125 instead of 100 for 80%
@@ -714,11 +802,16 @@
     (debug_log "Motor: Starting motor speed loop")
     (define speed SPEED_OFF) ; 99 is off speed
     (define safe_start_timer 0)
+    (define safe_start_attempt_speed SPEED_OFF)
+    (define safe_start_failures 0)
+    (define safe_start_status 'idle)
     (define max_erpm (list MAX_ERPM_BLACKTIP MAX_ERPM_CUDAX)) ; 1st no is Blacktip, second is CudaX
 
+    (safe_start_reset_state)
+
     (let ((last_speed SPEED_OFF)
-        (max_current (list MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)) ; 1st no is Blacktip, second is CudaX
-        (min_current (list MIN_CURRENT_BLACKTIP MIN_CURRENT_CUDAX))) { ; 1st no is Blacktip, second is CudaX
+          (max_current (list MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)) ; 1st no is Blacktip, second is CudaX
+          (min_current (list MIN_CURRENT_BLACKTIP MIN_CURRENT_CUDAX))) { ; 1st no is Blacktip, second is CudaX
 
         (loopwhile-thd THREAD_STACK_MOTOR t {
             (sleep SLEEP_MOTOR_CONTROL)
@@ -731,7 +824,7 @@
                 (set-current 0)
                 (setvar 'batt_disp_timer_start (systime)) ; Start trigger for Battery Display
                 (setvar 'disp_num DISPLAY_OFF) ; Turn on Off display. (off display is needed to ensure restart triggers a new display number)
-                (setvar 'safe_start_timer 0) ; unlock speed changes and disable safe start timer
+                (safe_start_reset_state) ; unlock speed changes and disable safe start timer
                 (setvar 'last_speed speed)
                 })
 
@@ -740,7 +833,7 @@
                 (if (= last_speed SPEED_OFF) {
                     (debug_log "Motor: Soft start initiated")
                     (conf-set 'l-in-current-max (ix min_current scooter_type))
-                    (setvar 'safe_start_timer (systime))
+                    (safe_start_begin speed)
                     (setvar 'last_speed SPEED_SOFT_START_SENTINEL)
                     (if (< speed SPEED_REVERSE_THRESHOLD)
                         (set-duty (- 0 SAFE_START_DUTY))
@@ -749,29 +842,45 @@
                 })
 
                 ; Set Actual Speeds section
-                (if (and (> (secs-since safe_start_timer) SAFE_START_TIMEOUT) (or (= use_safe_start 0) (!= last_speed SPEED_SOFT_START_SENTINEL) (and (> (abs (get-rpm)) SAFE_START_MIN_RPM) (> (abs (get-duty)) SAFE_START_MIN_DUTY) (< (abs (get-current)) SAFE_START_MAX_CURRENT)))) {
-                (conf-set 'l-in-current-max (ix max_current scooter_type))
+            (let ((elapsed (secs-since safe_start_timer))
+                (rpm (get-rpm))
+                (duty (get-duty))
+                (current (get-current))) {
+                    (if (and (= use_safe_start 1) (not (safe_start_telemetry_valid rpm duty current)))
+                        (safe_start_abort_with_reason "invalid telemetry")
+                    )
 
-                (set-rpm (calculate_rpm speed 100))
+                    (if (or (= use_safe_start 0)
+                            (!= last_speed SPEED_SOFT_START_SENTINEL)
+                            (safe_start_met_success_criteria rpm duty current))
+                    {
+                        (conf-set 'l-in-current-max (ix max_current scooter_type))
+                        (set-rpm (calculate_rpm speed 100))
+                        (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
+                        (safe_start_success)
+                        (setvar 'last_speed speed)
+                    } {
+                        (if (and (= use_safe_start 1)
+                                 (= last_speed SPEED_SOFT_START_SENTINEL)
+                                 (> elapsed (+ SAFE_START_TIMEOUT SAFE_START_TIMEOUT_GRACE)))
+                            (safe_start_abort_with_reason "timeout")
+                        )
 
-                (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
-                ; Maybe causing issues with timing? (setvar 'timer_start (systime)) ; set state timer so that repeat display timing works in state 2
-                (setvar 'safe_start_timer 0) ; unlock speed changes and disable safe start timer
-                (setvar 'last_speed speed)
-                } {
-                ; If safe start conditions not met yet but last_speed is still 0.5, update it to speed to exit the inner loop
-                (if (= last_speed SPEED_SOFT_START_SENTINEL) {
-                    (setvar 'last_speed speed)
-                })
-                })
+                        ; If safe start conditions not met yet but last_speed is still sentinel, update to speed to exit inner loop after abort
+                        (if (and (= last_speed SPEED_SOFT_START_SENTINEL)
+                                 (!= safe_start_status 'running))
+                            (setvar 'last_speed speed)
+                        )
+                    })
 
-                ; exit and stop motor if safestart hasn't cleared in 0.5 seconds and rpm is less than 500.
-                (if (and (> (secs-since safe_start_timer) SAFE_START_TIMEOUT) (> (abs (get-current)) SAFE_START_FAIL_CURRENT) (< (abs (get-rpm)) SAFE_START_MIN_RPM) (= use_safe_start 1) (= last_speed SPEED_SOFT_START_SENTINEL)) {
-                (debug_log "Motor: Safe start failed, stopping motor")
-                (set_speed_safe SPEED_OFF)
-                (setvar 'sw_state STATE_COUNTING_CLICKS)
-                (spawn THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
-                (foc-beep 250 0.15 5)
+                    ; Detect high-current stall during safe start
+                    (if (and (= use_safe_start 1)
+                             (= last_speed SPEED_SOFT_START_SENTINEL)
+                             (> elapsed SAFE_START_TIMEOUT)
+                             (> (abs current) SAFE_START_FAIL_CURRENT)
+                             (< (abs rpm) SAFE_START_MIN_RPM))
+                        (safe_start_abort_with_reason "high current stall")
+                    )
                 })
                 })
           })
