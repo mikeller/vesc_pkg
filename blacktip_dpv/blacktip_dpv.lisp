@@ -559,126 +559,10 @@
             (state_record_transition from_state new_state reason)
         })
         (setvar 'sw_state new_state)
-        (spawn thread_stack (identity handler))
+        (spawn thread_stack handler)
     })
 })
 
-(defun state_instrumentation_summary ()
-{
-    (let ((total state_transition_total)
-          (now (systime))
-          (pending_index (state_index_for state_last_state))
-          (off_index (state_index_for STATE_OFF))
-          (counting_index (state_index_for STATE_COUNTING_CLICKS))
-          (pressed_index (state_index_for STATE_PRESSED))
-          (going_off_index (state_index_for STATE_GOING_OFF)))
-    {
-        (let ((pending_elapsed (if (!= pending_index -1)
-            {
-                (- now state_last_change_time)
-            }
-            {
-                0
-            }))
-            (off_count (if (>= off_index 0)
-            {
-                (ix state_transition_counts off_index)
-            }
-            {
-                0
-            }))
-            (counting_count (if (>= counting_index 0)
-            {
-                (ix state_transition_counts counting_index)
-            }
-            {
-                0
-            }))
-            (pressed_count (if (>= pressed_index 0)
-            {
-                (ix state_transition_counts pressed_index)
-            }
-            {
-                0
-            }))
-            (going_off_count (if (>= going_off_index 0)
-            {
-                (ix state_transition_counts going_off_index)
-            }
-            {
-                0
-            }))
-            (off_base_time (if (>= off_index 0)
-            {
-                (ix state_time_accumulated off_index)
-            }
-            {
-                0
-            }))
-            (counting_base_time (if (>= counting_index 0)
-            {
-                (ix state_time_accumulated counting_index)
-            }
-            {
-                0
-            }))
-            (pressed_base_time (if (>= pressed_index 0)
-            {
-                (ix state_time_accumulated pressed_index)
-            }
-            {
-                0
-            }))
-            (going_off_base_time (if (>= going_off_index 0)
-            {
-                (ix state_time_accumulated going_off_index)
-            }
-            {
-                0
-            }))
-            (off_time (if (and (>= off_index 0) (= pending_index off_index))
-            {
-                (+ off_base_time pending_elapsed)
-            }
-            {
-                off_base_time
-            }))
-            (counting_time (if (and (>= counting_index 0) (= pending_index counting_index))
-            {
-                (+ counting_base_time pending_elapsed)
-            }
-            {
-                counting_base_time
-            }))
-            (pressed_time (if (and (>= pressed_index 0) (= pending_index pressed_index))
-            {
-                (+ pressed_base_time pending_elapsed)
-            }
-            {
-                pressed_base_time
-            }))
-            (going_off_time (if (and (>= going_off_index 0) (= pending_index going_off_index))
-            {
-                (+ going_off_base_time pending_elapsed)
-            }
-            {
-                going_off_base_time
-            })))
-        {
-            (puts (str-merge "State summary: total transitions=" (to-str total)))
-            (puts (str-merge "  Off=" (to-str off_count)
-                             " time=" (to-str off_time) "s"))
-            (puts (str-merge "  CountingClicks=" (to-str counting_count)
-                             " time=" (to-str counting_time) "s"))
-            (puts (str-merge "  Pressed=" (to-str pressed_count)
-                             " time=" (to-str pressed_time) "s"))
-            (puts (str-merge "  GoingOff=" (to-str going_off_count)
-                             " time=" (to-str going_off_time) "s"))
-            (puts (str-merge "  Last state=" (state_name_for state_last_state)
-                             " reason=" state_last_reason))
-        })
-    })
-})
 
 (move-to-flash state_index_for)
 (move-to-flash state_name_for)
@@ -686,7 +570,6 @@
 (move-to-flash state_metrics_accumulate)
 (move-to-flash state_record_transition)
 (move-to-flash state_transition_to)
-(move-to-flash state_instrumentation_summary)
 
 ; Special speed values
 (define SPEED_REVERSE_2 0)            ; Reverse speed level 2 (strong reverse)
