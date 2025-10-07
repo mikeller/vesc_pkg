@@ -37,12 +37,18 @@
 ; Initialize brightness LUT (returns number of levels or nil on error)
 (define brightness-num-levels (validate-lut-header brightness-lut-bin 0x4C555442u32 1))
 
-; Verify LUTs loaded successfully
+; Verify LUTs loaded successfully - halt if validation fails
 (if (not display-num-frames)
-    (print "FATAL: Failed to load display LUT")
+    {
+        (print "FATAL: Failed to load display LUT - halting")
+        (exit-error "LUT validation failed")
+    }
 )
 (if (not brightness-num-levels)
-    (print "FATAL: Failed to load brightness LUT")
+    {
+        (print "FATAL: Failed to load brightness LUT - halting")
+        (exit-error "LUT validation failed")
+    }
 )
 
 (defun eeprom_set_defaults ()
@@ -102,7 +108,8 @@
 {
     (let ((current (eeprom-read-i address)))
     {
-        (if (!= current desired_value) {
+        ; Treat nil (uninitialized EEPROM) as needing update
+        (if (or (eq current nil) (!= current desired_value)) {
             (setvar 'eeprom_corrections (+ eeprom_corrections 1))
             (debug_log (str-merge "EEPROM: " name " corrected from " (to-str current) " to " (to-str desired_value)))
             (eeprom-store-i address desired_value)
@@ -325,9 +332,18 @@
         (send-data setbuf)
         (free setbuf)
     } {
-        (looprange i 0 EEPROM_SETTINGS_COUNT
-            (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
-        (update_settings) ; updates actual settings in lisp
+        ; For non-handshake messages, validate buffer size
+        (if (< (buflen data) EEPROM_SETTINGS_COUNT) {
+            (debug_log (str-merge "Error: Received data buffer too small: " (to-str (buflen data)) " < " (to-str EEPROM_SETTINGS_COUNT)))
+            nil ; Return early on invalid data
+        } {
+            (debug_log "Receiving settings from external source, validating...")
+            (looprange i 0 EEPROM_SETTINGS_COUNT
+                (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
+            (update_settings) ; updates actual settings in lisp (with validation)
+            (gc) ; Force garbage collection to free memory from validation strings
+            (debug_log "Settings updated and validated")
+        })
     })
 })
 
@@ -543,7 +559,7 @@
             (state_record_transition from_state new_state reason)
         })
         (setvar 'sw_state new_state)
-        (spawn thread_stack handler)
+        (spawn thread_stack (identity handler))
     })
 })
 
@@ -866,7 +882,7 @@
 (move-to-flash set_speed_safe)
 
 
-(defun state_handler_off ()
+(defun state_handler_off()
 {
     ; xxxx State "0" Off
     (debug_log "State 0: Off")
@@ -890,6 +906,7 @@
 })
 
 (move-to-flash state_handler_off)
+
 
 
 ; Encapsulated click action handler
