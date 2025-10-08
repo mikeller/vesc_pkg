@@ -1,6 +1,7 @@
 ---
 applyTo: '**'
 ---
+Only make the specific changes that the user has requested. If you identify other potential improvements, present them as suggestions at the end of your chat output rather than implementing them.
 Maintainability is a priority - choose the easiest to  understand implementation without over-simplifying.
 Only consider files in the `blacktip_dpv` directory unless otherwise specified.
 When making code changes, if the input line has trailing whitespace, please remove it.
