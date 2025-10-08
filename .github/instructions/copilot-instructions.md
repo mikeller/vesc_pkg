@@ -14,6 +14,7 @@ The 'then' and 'else' blocks of conditionals should start on a new line.
 Comments are indented to the same level as the code they refer to.
 No whitespace at the end of lines or on empty lines.
 Never create standalone summary documents (e.g. SUMMARY.md, CHANGES.md, etc.) - add documentation to DEVELOPMENT.md for developers (only when this is needed for working on the code) or README.md for users instead.
+If a Makefile with a tests target exists, run the tests after making changes to ensure nothing is broken.
 
 ---
 applyTo: '**/*.lisp'

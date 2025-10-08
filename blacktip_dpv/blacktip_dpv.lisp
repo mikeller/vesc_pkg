@@ -451,9 +451,9 @@
 
 (defun state_transition_to (new_state reason thread_stack handler)
 {
-    (state_record_transition 
+    (state_record_transition
         (if (= state_last_state STATE_UNINITIALIZED) STATE_UNINITIALIZED sw_state)
-        new_state 
+        new_state
         reason)
     (setvar 'sw_state new_state)
     (spawn thread_stack handler)
