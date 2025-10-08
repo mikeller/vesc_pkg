@@ -16,6 +16,8 @@ Item {
     anchors.fill: parent
     anchors.margins: 10
 
+    readonly property int const_RELOAD_DELAY_MS: 1000
+
     property Commands mCommands: VescIf.commands()
     property ConfigParams mMcConf: VescIf.mcConfig()
     property ConfigParams mInfoConf: VescIf.infoConfig()
@@ -648,7 +650,7 @@ Item {
     // handshake timmer to initiate first transfer of values from lisp
     Timer {
         repeat: true
-        interval: 1000
+        interval: const_RELOAD_DELAY_MS
         running: true
 
         onTriggered: {
@@ -729,7 +731,7 @@ Item {
 
                 mCommands.reboot()
 
-                delay(1000, function () {
+                delay(const_RELOAD_DELAY_MS, function () {
                     read_settings()
                 })
             })
