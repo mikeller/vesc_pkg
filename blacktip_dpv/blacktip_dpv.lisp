@@ -954,7 +954,7 @@
         (loopwhile-thd THREAD_STACK_MOTOR t {
             (sleep SLEEP_MOTOR_CONTROL)
             (loopwhile (!= speed last_speed) {
-            (debug_log_macro (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
+            (debug_log_macro (str-merge "Motor: Speed change " (to-str (to-i last_speed)) "->" (to-str (to-i speed))))
             (sleep SLEEP_MOTOR_SPEED_CHANGE)
             ; turn off motor if speed is 99
             (if (= speed SPEED_OFF) {
