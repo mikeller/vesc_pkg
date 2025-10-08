@@ -1,33 +1,33 @@
 ; Import display and brightness lookup tables from binary files
 ; These files are generated at build time from CSV sources
-(import "generated/display_lut.bin" 'display-lut-bin)
-(import "generated/brightness_lut.bin" 'brightness-lut-bin)
+(import "generated/display_lut.bin" 'display_lut_bin)
+(import "generated/brightness_lut.bin" 'brightness_lut_bin)
 
 ; Display LUT binary format helpers (init-only, not moved to flash)
-(defun validate-lut-header (data magic expected-version)
+(defun validate_lut_header (data magic expected_version)
 {
-    (let ((file-magic (bufget-u32 data 0 'little-endian))
-          (file-version (bufget-u16 data 4 'little-endian))
-          (num-items (bufget-u16 data 6 'little-endian)))
+    (let ((file_magic (bufget-u32 data 0 'little-endian))
+          (file_version (bufget-u16 data 4 'little-endian))
+          (num_items (bufget-u16 data 6 'little-endian)))
     {
-        (if (!= file-magic magic)
+        (if (!= file_magic magic)
             nil
-            (if (!= file-version expected-version)
+            (if (!= file_version expected_version)
                 nil
-                num-items))
+                num_items))
     })
 })
 
 ; Initialize display LUT (returns number of frames or nil on error)
-(define display-num-frames (validate-lut-header display-lut-bin 0x4C555444u32 1))
+(define display_num_frames (validate_lut_header display_lut_bin 0x4C555444u32 1))
 
 ; Initialize brightness LUT (returns number of levels or nil on error)
-(define brightness-num-levels (validate-lut-header brightness-lut-bin 0x4C555442u32 1))
+(define brightness_num_levels (validate_lut_header brightness_lut_bin 0x4C555442u32 1))
 
 ; Verify LUTs loaded successfully - halt if validation fails
-(if (not display-num-frames)
+(if (not display_num_frames)
     (exit-error "LUT validation failed: display"))
-(if (not brightness-num-levels)
+(if (not brightness_num_levels)
     (exit-error "LUT validation failed: brightness"))
 
 ; EEPROM initialization (init-only, not moved to flash)
@@ -105,6 +105,7 @@
     (setvar 'safe_start_failures 0)
     (setvar 'safe_start_status 'idle)
 })
+
 (move-to-flash safe_start_reset_state)
 
 (defun safe_start_begin (target_speed)
@@ -114,6 +115,7 @@
     (setvar 'safe_start_status 'running)
     (debug_log (str-merge "Motor: Safe start attempt " (to-str (+ safe_start_failures 1)) " targeting speed " (to-str target_speed)))
 })
+
 (move-to-flash safe_start_begin)
 
 (defun safe_start_success ()
@@ -123,6 +125,7 @@
     (setvar 'safe_start_failures 0)
     (setvar 'safe_start_status 'success)
 })
+
 (move-to-flash safe_start_success)
 
 (defun safe_start_increment_failure (reason)
@@ -131,12 +134,14 @@
     (setvar 'safe_start_status 'failed)
     (debug_log (str-merge "Motor: Safe start attempt " (to-str safe_start_failures) "/" (to-str SAFE_START_MAX_RETRIES) " failed (" reason ")"))
 })
+
 (move-to-flash safe_start_increment_failure)
 
 (defun safe_start_should_retry ()
 {
     (< safe_start_failures SAFE_START_MAX_RETRIES)
 })
+
 (move-to-flash safe_start_should_retry)
 
 (defun safe_start_abort_with_reason (reason)
@@ -153,12 +158,14 @@
         (safe_start_reset_state)
     })
 })
+
 (move-to-flash safe_start_abort_with_reason)
 
 (defun safe_start_value_valid (value max_abs)
 {
     (and (= value value) (< (abs value) max_abs))
 })
+
 (move-to-flash safe_start_value_valid)
 
 (defun safe_start_telemetry_valid (rpm duty current)
@@ -167,6 +174,7 @@
          (safe_start_value_valid duty 1.0)
          (safe_start_value_valid current 200))
 })
+
 (move-to-flash safe_start_telemetry_valid)
 
 (defun safe_start_met_success_criteria (rpm duty current)
@@ -175,6 +183,7 @@
          (> (abs duty) SAFE_START_MIN_DUTY)
          (< (abs current) SAFE_START_MAX_CURRENT))
 })
+
 (move-to-flash safe_start_met_success_criteria)
 
 ; Settings initialization (init-only, not moved to flash)
@@ -234,6 +243,7 @@
         (puts msg)
     )
 })
+
 (move-to-flash debug_log)
 
 ; Lightweight macro to conditionally evaluate debug logging expressions
@@ -244,18 +254,20 @@
         (puts ,expr)
     )
 ))
+
 (move-to-flash debug_log_macro)
 
-(defun calculate-corrected-battery ()
+(defun calculate_corrected_battery ()
     ; Calculate corrected battery percentage from raw battery reading
-    (let ((raw-batt (get-batt)))
-        (+ (* BATTERY_COEFF_4 raw-batt raw-batt raw-batt raw-batt)
-           (* BATTERY_COEFF_3 raw-batt raw-batt raw-batt)
-           (* BATTERY_COEFF_2 raw-batt raw-batt)
-           (* BATTERY_COEFF_1 raw-batt))))
-(move-to-flash calculate-corrected-battery)
+    (let ((raw_batt (get-batt)))
+        (+ (* BATTERY_COEFF_4 raw_batt raw_batt raw_batt raw_batt)
+           (* BATTERY_COEFF_3 raw_batt raw_batt raw_batt)
+           (* BATTERY_COEFF_2 raw_batt raw_batt)
+           (* BATTERY_COEFF_1 raw_batt))))
 
-(defun calculate-ah-based-battery ()
+(move-to-flash calculate_corrected_battery)
+
+(defun calculate_ah_based_battery ()
     ; Calculate battery percentage based on ampere-hours used vs total capacity
     (let ((total-capacity (conf-get 'si-battery-ah))
           (used-ah (get-ah))
@@ -263,14 +275,16 @@
         (if (and (> total-capacity 0) (> remaining_capacity 0))
             remaining_capacity
             0.0)))
-(move-to-flash calculate-ah-based-battery)
 
-(defun get-battery-level ()
+(move-to-flash calculate_ah_based_battery)
+
+(defun get_battery_level ()
     ; Get battery level using the configured calculation method
     (if (= battery_calculation_method 1)
-        (calculate-ah-based-battery)
-        (calculate-corrected-battery)))
-(move-to-flash get-battery-level)
+        (calculate_ah_based_battery)
+        (calculate_corrected_battery)))
+
+(move-to-flash get_battery_level)
 
 (defun my_data_recv_prog (data)
 {
@@ -296,12 +310,13 @@
         })
     })
 })
+
 (move-to-flash my_data_recv_prog)
 
 ; Setup functions (init-only, not moved to flash)
 (defun setup_event_handler()
 {
-    (defun event-handler ()
+    (defun event_handler ()
     {
         (loopwhile t
             (recv
@@ -310,7 +325,7 @@
         )
     })
 
-    (event-register-handler (spawn event-handler))
+    (event-register-handler (spawn event_handler))
     (event-enable 'event-data-rx)
 })
 
@@ -458,6 +473,7 @@
     (setvar 'sw_state new_state)
     (spawn thread_stack handler)
 })
+
 (move-to-flash state_index_for)
 (move-to-flash state_name_for)
 (move-to-flash state_metrics_reset)
@@ -560,6 +576,7 @@
         ((> value max_val) max_val)
         (t value))
 })
+
 (move-to-flash clamp)
 
 (defun speed_percentage_at (speed_index)
@@ -586,12 +603,17 @@
         })
     )
 })
+
 (move-to-flash speed_percentage_at)
 
 (defun calculate_rpm (speed_index divisor)
 {
     (let ((speed_percent (speed_percentage_at speed_index))
-          (max_rpm (if (= scooter_type SCOOTER_BLACKTIP) MAX_ERPM_BLACKTIP MAX_ERPM_CUDAX)))
+         (max_rpm (cond
+             ((= scooter_type SCOOTER_BLACKTIP) MAX_ERPM_BLACKTIP)
+             ((= scooter_type SCOOTER_CUDAX) MAX_ERPM_CUDAX)
+             (t (debug_log "Invalid scooter_type, defaulting to Blacktip") MAX_ERPM_BLACKTIP)
+         )))
     {
         (let ((base_rpm (* (/ max_rpm divisor) speed_percent)))
         {
@@ -601,6 +623,7 @@
         })
     })
 })
+
 (move-to-flash calculate_rpm)
 
 ; =============================================================================
@@ -662,6 +685,7 @@
         clamped_speed
     })
 })
+
 (move-to-flash set_speed_safe)
 
 (defun state_handler_off()
@@ -671,13 +695,13 @@
     (loopwhile (= sw_state STATE_OFF) {
         (sleep SLEEP_STATE_MACHINE)
         ; Calculate corrected batt %, only needed when scooter is off in state 0
-        (setvar 'actual_batt (get-battery-level))
+        (setvar 'actual_batt (get_battery_level))
 
         ; Pressed
         (if (= sw_pressed 1) {
             (debug_log "State 0->1: Button pressed")
             (setvar 'batt_disp_timer_start 0) ; Stop Battery Display in case its running
-            (setvar 'disp_timer_start DISPLAY_TIMER_STOP) ; Stop Display in case its running
+            (setvar 'disp_timer_start 0) ; Stop Display in case its running
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_CLICK_WINDOW)
             (setvar 'clicks CLICKS_SINGLE)
@@ -686,6 +710,7 @@
         })
     })
 })
+
 (move-to-flash state_handler_off)
 
 ; Encapsulated click action handler
@@ -766,6 +791,7 @@
             (debug_log_macro (str-merge "Click action: Unsupported count " (to-str click_count))))
     )
 })
+
 (move-to-flash apply_click_action)
 
 ; xxxx STATE 1 Counting clicks
@@ -777,7 +803,7 @@
 
         ; Released
         (if (= sw_pressed 0) {
-            (setvar 'disp_timer_start DISPLAY_TIMER_STOP) ; Stop Display in case its running
+            (setvar 'disp_timer_start 0) ; Stop Display in case its running
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_RELEASE_WINDOW)
             (state_transition_to STATE_GOING_OFF "released" THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
@@ -800,6 +826,7 @@
         })
     })
 })
+
 (move-to-flash state_handler_counting_clicks)
 
 ; xxxx State 2 "Pressed"
@@ -842,6 +869,7 @@
         })
     })
 })
+
 (move-to-flash state_handler_pressed)
 
 ; xxxx State 3 "Going Off"
@@ -904,6 +932,7 @@
         }) ; end Timer expiry
     }) ; end state
 })
+
 (move-to-flash state_handler_going_off)
 
 (defun start_motor_speed_loop()
@@ -993,6 +1022,7 @@
         })
     })
 })
+
 (move-to-flash start_motor_speed_loop)
 
 ; Init-only function (not moved to flash)
@@ -1007,7 +1037,7 @@
         (sleep SLEEP_BATTERY_STABILIZE)
         ; Calculate battery % using the configured method
         ; Set thirds_total to current battery level
-        (setvar 'thirds_total (get-battery-level))
+        (setvar 'thirds_total (get_battery_level))
         (debug_log (str-merge "Battery: Initial level=" (to-str thirds_total)))
         (setvar 'warning_counter 0)
     })
@@ -1041,32 +1071,33 @@
                 (if (!= disp_num last_disp_num) {
                 (if (= scooter_type 1) { ; For cuda X second screen
                     (if (= cudax_flip 1)
-                        (setvar 'mpu-addr 0x70)
-                        (setvar 'mpu-addr 0x71)
+                        (setvar 'mpu_addr 0x70)
+                        (setvar 'mpu_addr 0x71)
                     )
                     (if (or (= disp_num 0) (= disp_num 1) (= disp_num 2) (= disp_num 3) (> disp_num 17) )
                         (if (= cudax_flip 1)
-                            (setvar 'mpu-addr 0x71)
-                            (setvar 'mpu-addr 0x70)
+                            (setvar 'mpu_addr 0x71)
+                            (setvar 'mpu_addr 0x70)
                         )
                     )
                 })
                 (setvar 'disp_timer_start (systime))
-                (if (= mpu-addr 0x70)
+                (if (= mpu_addr 0x70)
                     (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation))) ; define the correct start position in the array for the display
                     (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation2)))
                     )
                 (bufclear pixbuf)
                 ; Copy display data from binary LUT (8 byte header + frame data)
-                (bufcpy pixbuf 0 display-lut-bin (+ 8 start_pos) 16) ; copy the required display from binary LUT to "pixbuf"
-                (i2c-tx-rx mpu-addr pixbuf) ; send display characters
-                (i2c-tx-rx mpu-addr (list 0x81)) ; Turn on display
+                (bufcpy pixbuf 0 display_lut_bin (+ 8 start_pos) 16) ; copy the required display from binary LUT to "pixbuf"
+                (i2c-tx-rx mpu_addr pixbuf) ; send display characters
+                (i2c-tx-rx mpu_addr (list 0x81)) ; Turn on display
                 (setvar 'last_disp_num disp_num)
-                (setvar 'mpu-addr 0x70)
+                (setvar 'mpu_addr 0x70)
                     })
         })
     })
 })
+
 (move-to-flash start_display_output_loop)
 
  ; **** Program that triggers the display to show battery status ****
@@ -1162,6 +1193,7 @@
     })
     )
 })
+
 (move-to-flash start_display_battery_loop)
 
 (defun beeper (beeps)
@@ -1170,6 +1202,7 @@
        (foc-beep 350 0.5 beeps_vol)
       (setvar 'beeps (- beeps 1))
     }))
+
 (move-to-flash beeper)
 
 ; xxxx warbler Program xxxx"
@@ -1181,6 +1214,7 @@
          (foc-beep Tone Time beeps_vol)
          (foc-beep (- Tone 200) Time beeps_vol)
          })
+
 (move-to-flash warbler)
 
 ; ***** Program that beeps trigger clicks
@@ -1213,6 +1247,7 @@
     })
     )
 })
+
 (move-to-flash start_beeper_loop)
 
 ; Init-only function (not moved to flash)
@@ -1228,15 +1263,15 @@
                     (i2c-start 'rate-400k 'pin-tx 'pin-rx) ; tested on HW 410 Tested: SN 189, SN 1691
                     (nil))))
 
-        (define mpu-addr 0x70) ; I2C Address for the screen
+        (define mpu_addr 0x70) ; I2C Address for the screen
 
         (i2c-tx-rx 0x70 (list 0x21)) ; start the oscillator
         ; Get brightness byte from binary LUT (8 byte header + brightness data)
-        (i2c-tx-rx 0x70 (list (bufget-u8 brightness-lut-bin (+ 8 disp_brightness)))) ; set brightness
+        (i2c-tx-rx 0x70 (list (bufget-u8 brightness_lut_bin (+ 8 disp_brightness)))) ; set brightness
 
         (if (= scooter_type 1) { ; For cuda X setup second screen
                 (i2c-tx-rx 0x71 (list 0x21)) ; start the oscillator
-                (i2c-tx-rx 0x71 (list (bufget-u8 brightness-lut-bin (+ 8 disp_brightness)))) ; set brightness
+                (i2c-tx-rx 0x71 (list (bufget-u8 brightness_lut_bin (+ 8 disp_brightness)))) ; set brightness
         })
 })
 
