@@ -230,10 +230,10 @@
     )
 
     ; Log configuration on startup
-    (debug_log (str-merge "Config loaded: HW=" (to-str hardware_configuration)
+    (debug_log (str-merge "Config loaded: HW=" (to-str (to-i hardware_configuration))
                      " Type=" (to-str scooter_type)
-                     " Debug=" (to-str debug_enabled)
-                     " BattCalc=" (to-str battery_calculation_method)))
+                     " Debug=" (to-str (to-i debug_enabled))
+                     " BattCalc=" (to-str (to-i battery_calculation_method))))
 })
 
 ; Debug logging helper function
@@ -670,7 +670,7 @@
 
             (if (> clamped_speed max_speed_no) {
                 (setvar 'clamped_speed max_speed_no)
-                (debug_log_macro (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str max_speed_no) " (overflow)"))
+                (debug_log_macro (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str (to-i max_speed_no)) " (overflow)"))
             })
 
             ; Check reverse enable
@@ -750,7 +750,7 @@
         })
         ((= click_count CLICKS_TRIPLE)
         {
-            (debug_log_macro (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
+            (debug_log_macro (str-merge "Click action: Triple click (jump to speed " (to-str (to-i jump_speed)) ")"))
             (if (!= speed SPEED_OFF)
                 (setvar 'click_beep CLICKS_TRIPLE)
             )
@@ -1121,17 +1121,25 @@
             (if (= thirds_total 0) {
                 (cond
                     ((> actual_batt 0.75)
+                    {
                         (setvar 'disp_num 3)
-                        (spawn beeper 4))
+                        (spawn beeper 4)
+                    })
                     ((> actual_batt 0.5)
+                    {
                         (setvar 'disp_num 2)
-                        (spawn beeper 3))
+                        (spawn beeper 3)
+                    })
                     ((> actual_batt 0.25)
+                    {
                         (setvar 'disp_num 1)
-                        (spawn beeper 2))
+                        (spawn beeper 2)
+                    })
                     (t
+                    {
                         (setvar 'disp_num 0)
-                        (spawn beeper 1)))
+                        (spawn beeper 1)
+                    }))
             })
 
             ; Section for 1/3rds display
