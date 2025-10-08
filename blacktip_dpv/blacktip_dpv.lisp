@@ -38,51 +38,60 @@
         (puts "EEPROM: Initializing defaults for 1.0.0")
         ; Check for current version marker (blacktip_dpv release 1.0.0)
         ; New settings added in version 1.0.0
-        (eeprom-store-i 25 0) ; Enable Auto-Engage Smart Cruise. 1=On 0=Off
-        (eeprom-store-i 26 10) ; Auto-Engage Time in seconds (5-30 seconds)
-        (eeprom-store-i 27 0) ; Enable Thirds warning on from power-up. 1=On 0=Off
-        (eeprom-store-i 28 0) ; Battery calculation method: 0=Voltage-based, 1=Ampere-hour based
-        (eeprom-store-i 29 0) ; Enable Debug Logging. 1=On 0=Off
+        (eeprom_store_i_if_changed 25 0) ; Enable Auto-Engage Smart Cruise. 1=On 0=Off
+        (eeprom_store_i_if_changed 26 10) ; Auto-Engage Time in seconds (5-30 seconds)
+        (eeprom_store_i_if_changed 27 0) ; Enable Thirds warning on from power-up. 1=On 0=Off
+        (eeprom_store_i_if_changed 28 0) ; Battery calculation method: 0=Voltage-based, 1=Ampere-hour based
+        (eeprom_store_i_if_changed 29 0) ; Enable Debug Logging. 1=On 0=Off
 
         (if (not-eq (eeprom-read-i 127) (to-i32 150)) {
             (puts "EEPROM: No previous version detected, setting all defaults")
             ; Check for previous version marker (Dive Xtras V1.50 'Poseidon')
             ; User speeds, ie 1 thru 8 are only used in the GUI, this lisp code uses speeds 0-9 with 0 & 1 being the 2 reverse speeds.
             ; 99 is used as the "off" speed
-            (eeprom-store-i 0 45) ; Reverse Speed 2 %
-            (eeprom-store-i 1 20) ; Untangle Speed 1 %
-            (eeprom-store-i 2 30) ; Speed 1 %
-            (eeprom-store-i 3 38) ; Speed 2 %
-            (eeprom-store-i 4 46) ; Speed 3 %
-            (eeprom-store-i 5 54) ; Speed 4 %
-            (eeprom-store-i 6 62) ; Speed 5 %
-            (eeprom-store-i 7 70) ; Speed 6 %
-            (eeprom-store-i 8 78) ; Speed 7 %
-            (eeprom-store-i 9 100) ; Speed 8 %
-            (eeprom-store-i 10 9) ; Maximum number of Speeds to use, must be greater or equal to start_speed (actual speed #, not user speed)
-            (eeprom-store-i 11 4) ; Speed the scooter starts in. Range 2-9, must be less or equal to the max_speed_no (actual speed #, not user speed)
-            (eeprom-store-i 12 7) ; Speed to jump to on triple click, (actual speed #, not user speed)
-            (eeprom-store-i 13 1) ; Turn safe start on or off 1=On 0=Off
-            (eeprom-store-i 14 0) ; Enable Reverse speed. 1=On 0=Off
-            (eeprom-store-i 15 0) ; Enable 5 click Smart Cruise. 1=On 0=Off
-            (eeprom-store-i 16 60) ; How long before Smart Cruise times out and requires reactivation in sec.
-            (eeprom-store-i 17 0) ; rotation of Display, 0-3 . Each number rotates display 90 deg.
-            (eeprom-store-i 18 5) ; Display Brighness 0-5
-            (eeprom-store-i 19 0) ; Hardware configuration, 0 = Blacktip HW60 + Ble, 1 = Blacktip HW60 - Ble, 2 = Blacktip HW410 - Ble, 3 = Cuda-X HW60 + Ble, 4 = Cuda-X HW60 - Ble
-            (eeprom-store-i 20 0) ; Battery Beeps
-            (eeprom-store-i 21 3) ; Beep Volume
-            (eeprom-store-i 22 0) ; CudaX Flip Screens
-            (eeprom-store-i 23 0) ; 2nd Screen rotation of Display, 0-3 . Each number rotates display 90 deg.
-            (eeprom-store-i 24 0) ; Trigger Click Beeps
+            (eeprom_store_i_if_changed 0 45) ; Reverse Speed 2 %
+            (eeprom_store_i_if_changed 1 20) ; Untangle Speed 1 %
+            (eeprom_store_i_if_changed 2 30) ; Speed 1 %
+            (eeprom_store_i_if_changed 3 38) ; Speed 2 %
+            (eeprom_store_i_if_changed 4 46) ; Speed 3 %
+            (eeprom_store_i_if_changed 5 54) ; Speed 4 %
+            (eeprom_store_i_if_changed 6 62) ; Speed 5 %
+            (eeprom_store_i_if_changed 7 70) ; Speed 6 %
+            (eeprom_store_i_if_changed 8 78) ; Speed 7 %
+            (eeprom_store_i_if_changed 9 100) ; Speed 8 %
+            (eeprom_store_i_if_changed 10 9) ; Maximum number of Speeds to use, must be greater or equal to start_speed (actual speed #, not user speed)
+            (eeprom_store_i_if_changed 11 4) ; Speed the scooter starts in. Range 2-9, must be less or equal to the max_speed_no (actual speed #, not user speed)
+            (eeprom_store_i_if_changed 12 7) ; Speed to jump to on triple click, (actual speed #, not user speed)
+            (eeprom_store_i_if_changed 13 1) ; Turn safe start on or off 1=On 0=Off
+            (eeprom_store_i_if_changed 14 0) ; Enable Reverse speed. 1=On 0=Off
+            (eeprom_store_i_if_changed 15 0) ; Enable 5 click Smart Cruise. 1=On 0=Off
+            (eeprom_store_i_if_changed 16 60) ; How long before Smart Cruise times out and requires reactivation in sec.
+            (eeprom_store_i_if_changed 17 0) ; rotation of Display, 0-3 . Each number rotates display 90 deg.
+            (eeprom_store_i_if_changed 18 5) ; Display Brighness 0-5
+            (eeprom_store_i_if_changed 19 0) ; Hardware configuration, 0 = Blacktip HW60 + Ble, 1 = Blacktip HW60 - Ble, 2 = Blacktip HW410 - Ble, 3 = Cuda-X HW60 + Ble, 4 = Cuda-X HW60 - Ble
+            (eeprom_store_i_if_changed 20 0) ; Battery Beeps
+            (eeprom_store_i_if_changed 21 3) ; Beep Volume
+            (eeprom_store_i_if_changed 22 0) ; CudaX Flip Screens
+            (eeprom_store_i_if_changed 23 0) ; 2nd Screen rotation of Display, 0-3 . Each number rotates display 90 deg.
+            (eeprom_store_i_if_changed 24 0) ; Trigger Click Beeps
         })
         ; Mark as initialised for 1.0.0
-        (eeprom-store-i 127 1) ; indicate that the defaults have been applied
+        (eeprom_store_i_if_changed 127 1) ; indicate that the defaults have been applied
         (puts "EEPROM: Defaults initialized successfully")
     })
 })
 
-; EEPROM correction tracking (minimal)
-(define eeprom_corrections 0)
+
+; Helper function to reduce EEPROM wear by only writing when value changes
+(defun eeprom_store_i_if_changed (addr new_val)
+{
+    (let ((current_val (eeprom-read-i addr)))
+    {
+        (if (!= current_val new_val)
+            (eeprom-store-i addr new_val))
+    })
+})
+
 
 ; =============================================================================
 ; Safe Start Helpers
@@ -216,11 +225,6 @@
                      " Type=" (to-str scooter_type)
                      " Debug=" (to-str debug_enabled)
                      " BattCalc=" (to-str battery_calculation_method)))
-
-    (if (> eeprom_corrections 0)
-        (puts (str-merge "EEPROM: Sanity check corrected " (to-str eeprom_corrections) " value(s)"))
-        (debug_log "EEPROM: Sanity check passed with no corrections")
-    )
 })
 
 ; Debug logging helper function
@@ -235,12 +239,12 @@
 ; Lightweight macro to conditionally evaluate debug logging expressions
 ; Only evaluates the logging expression when debug_enabled is 1
 ; This prevents expensive str-merge and to-str calls on memory-constrained targets
-(define when-debug (macro (expr)
+(define debug_log_macro (macro (expr)
     `(if (and (not-eq debug_enabled nil) (= debug_enabled 1))
         (puts ,expr)
     )
 ))
-(move-to-flash when-debug)
+(move-to-flash debug_log_macro)
 
 (defun calculate-corrected-battery ()
     ; Calculate corrected battery percentage from raw battery reading
@@ -285,7 +289,7 @@
         } {
             (debug_log "Receiving settings from external source, validating...")
             (looprange i 0 EEPROM_SETTINGS_COUNT
-                (eeprom-store-i i (bufget-u8 data i))) ; writes settings to eeprom
+                (eeprom_store_i_if_changed i (bufget-u8 data i))) ; writes settings to eeprom
             (update_settings) ; updates actual settings in lisp (with validation)
             (gc) ; Force garbage collection to free memory from validation strings
             (debug_log "Settings updated and validated")
@@ -442,7 +446,7 @@
     (setvar 'state_last_state to_state)
     (setvar 'state_last_change_time (systime))
     (setvar 'state_last_reason reason)
-    (when-debug (str-merge "State: " (to-str from_state) "->" (to-str to_state) " " reason))
+    (debug_log_macro (str-merge "State: " (to-str from_state) "->" (to-str to_state) " " reason))
 })
 
 (defun state_transition_to (new_state reason thread_stack handler)
@@ -566,7 +570,7 @@
         {
             (if (= count 0)
                 {
-                    (when-debug "Speed: speed_set empty, defaulting to 0%")
+                    (debug_log "Speed: speed_set empty, defaulting to 0%")
                     0
                 }
                 {
@@ -574,7 +578,7 @@
                   (clamped (clamp speed_index SPEED_REVERSE_2 max_index)))
                     {
                         (if (!= speed_index clamped)
-                            (when-debug (str-merge "Speed: Index " (to-str speed_index) " clamped to " (to-str clamped) " for speed_set"))
+                            (debug_log_macro (str-merge "Speed: Index " (to-str speed_index) " clamped to " (to-str clamped) " for speed_set"))
                         )
                         (ix speed_set clamped)
                     })
@@ -633,27 +637,27 @@
         (if (= new_speed SPEED_OFF) {
             ; Speed 99 (OFF) is always valid
             (setvar 'speed SPEED_OFF)
-            (when-debug "Speed: Set to OFF")
+            (debug_log "Speed: Set to OFF")
         } {
             ; Clamp to valid range
             (if (< new_speed SPEED_REVERSE_2) {
                 (setvar 'clamped_speed SPEED_REVERSE_2)
-                (when-debug (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_2) " (underflow)"))
+                (debug_log_macro (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_2) " (underflow)"))
             })
 
             (if (> clamped_speed max_speed_no) {
                 (setvar 'clamped_speed max_speed_no)
-                (when-debug (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str max_speed_no) " (overflow)"))
+                (debug_log_macro (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str max_speed_no) " (overflow)"))
             })
 
             ; Check reverse enable
             (if (and (< clamped_speed SPEED_REVERSE_THRESHOLD) (= enable_reverse 0)) {
                 (setvar 'clamped_speed SPEED_REVERSE_THRESHOLD)
-                (when-debug (str-merge "Speed: Reverse disabled, clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_THRESHOLD)))
+                (debug_log_macro (str-merge "Speed: Reverse disabled, clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_THRESHOLD)))
             })
 
             (setvar 'speed clamped_speed)
-            (when-debug (str-merge "Speed: Set to " (to-str clamped_speed)))
+            (debug_log_macro (str-merge "Speed: Set to " (to-str clamped_speed)))
         })
         clamped_speed
     })
@@ -692,7 +696,7 @@
         {
             (if (!= speed SPEED_OFF)
             {
-                (when-debug "Click action: Single click (speed down)")
+                (debug_log "Click action: Single click (speed down)")
                 (setvar 'click_beep CLICKS_SINGLE)
                 (cond
                     ((> speed SPEED_REVERSE_THRESHOLD)
@@ -705,11 +709,11 @@
         {
             (if (= speed SPEED_OFF)
             {
-                (when-debug (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
+                (debug_log_macro (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
                 (set_speed_safe new_start_speed)
             }
             {
-                (when-debug "Click action: Double click (speed up)")
+                (debug_log "Click action: Double click (speed up)")
                 (setvar 'click_beep CLICKS_DOUBLE)
                 (if (< speed max_speed_no)
                 {
@@ -721,7 +725,7 @@
         })
         ((= click_count CLICKS_TRIPLE)
         {
-            (when-debug (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
+            (debug_log_macro (str-merge "Click action: Triple click (jump to speed " (to-str jump_speed) ")"))
             (if (!= speed SPEED_OFF)
                 (setvar 'click_beep CLICKS_TRIPLE)
             )
@@ -731,7 +735,7 @@
         {
             (if (= enable_reverse 1)
             {
-                (when-debug "Click action: Quadruple click (untangle)")
+                (debug_log "Click action: Quadruple click (untangle)")
                 (if (!= speed SPEED_OFF)
                     (setvar 'click_beep CLICKS_QUADRUPLE)
                 )
@@ -740,26 +744,26 @@
         })
         ((= click_count CLICKS_QUINTUPLE)
         {
-            (when-debug (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
+            (debug_log_macro (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
             (setvar 'click_beep CLICKS_QUINTUPLE)
             (if (and (!= speed SPEED_OFF) (> enable_smart_cruise 0) (< smart_cruise SMART_CRUISE_FULLY_ENABLED))
                 (setvar 'smart_cruise (+ 1 smart_cruise))
             )
 
             (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
-                (when-debug "Smart Cruise: Half-enabled (waiting for confirmation)")
+                (debug_log "Smart Cruise: Half-enabled (waiting for confirmation)")
                 (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
                 (setvar 'last_disp_num DISPLAY_SENTINEL)
             })
 
             (if (= smart_cruise SMART_CRUISE_FULLY_ENABLED) {
-                (when-debug "Smart Cruise: Fully enabled")
+                (debug_log "Smart Cruise: Fully enabled")
                 (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
                 (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
             })
         })
         (t
-            (when-debug (str-merge "Click action: Unsupported count " (to-str click_count))))
+            (debug_log_macro (str-merge "Click action: Unsupported count " (to-str click_count))))
     )
 })
 (move-to-flash apply_click_action)
@@ -767,7 +771,7 @@
 ; xxxx STATE 1 Counting clicks
 (defun state_handler_counting_clicks ()
 {
-    (when-debug (str-merge "State 1: Counting clicks=" (to-str clicks)))
+    (debug_log_macro (str-merge "State 1: Counting clicks=" (to-str clicks)))
     (loopwhile (= sw_state STATE_COUNTING_CLICKS) {
         (sleep SLEEP_STATE_MACHINE)
 
@@ -782,13 +786,13 @@
 
         ; Timer Expiry
         (if (> (secs-since timer_start) timer_duration) {
-            (when-debug (str-merge "State 1: Timer expired, clicks=" (to-str clicks)))
+            (debug_log_macro (str-merge "State 1: Timer expired, clicks=" (to-str clicks)))
 
             ; Process click actions
             (apply_click_action clicks)
 
             ; End of Click Actions
-            (when-debug (str-merge "State 1->2: Speed=" (to-str speed)))
+            (debug_log_macro (str-merge "State 1->2: Speed=" (to-str speed)))
             (setvar 'clicks 0)
             (setvar 'timer_duration TIMER_DISABLED)
             (state_transition_to STATE_PRESSED "click_window_expired" THREAD_STACK_STATE_MACHINE state_handler_pressed)
@@ -802,7 +806,7 @@
 (defun state_handler_pressed()
 {
     (debug_log "State 2: Pressed")
-   (loopwhile (= sw_state STATE_PRESSED) {
+    (loopwhile (= sw_state STATE_PRESSED) {
      (sleep SLEEP_STATE_MACHINE)
         (timeout-reset) ; keeps motor running
 
@@ -918,11 +922,11 @@
         (loopwhile-thd THREAD_STACK_MOTOR t {
             (sleep SLEEP_MOTOR_CONTROL)
             (loopwhile (!= speed last_speed) {
-            (when-debug (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
+            (debug_log_macro (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
             (sleep SLEEP_MOTOR_SPEED_CHANGE)
             ; turn off motor if speed is 99
             (if (= speed SPEED_OFF) {
-                (when-debug "Motor: Stopping motor")
+                (debug_log "Motor: Stopping motor")
                 (set-current 0)
                 (setvar 'batt_disp_timer_start (systime)) ; Start trigger for Battery Display
                 (setvar 'disp_num DISPLAY_OFF) ; Turn on Off display. (off display is needed to ensure restart triggers a new display number)
@@ -933,7 +937,7 @@
             (if (!= speed SPEED_OFF) {
                 ; Soft Start section for all speeds
                 (if (= last_speed SPEED_OFF) {
-                    (when-debug "Motor: Soft start initiated")
+                    (debug_log "Motor: Soft start initiated")
                     (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MIN_CURRENT_BLACKTIP MIN_CURRENT_CUDAX))
                     (safe_start_begin speed)
                     (setvar 'last_speed SPEED_SOFT_START_SENTINEL)
@@ -1268,7 +1272,7 @@
     (setvar 'batt_disp_timer_start (systime)) ; turns battery display on for power on.
 
     ; Log this irrespective of logging setting
-    (puts "Startup complete")
+    (debug_log "Startup complete")
 })
 
 (main)
