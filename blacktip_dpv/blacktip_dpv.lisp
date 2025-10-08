@@ -419,11 +419,6 @@
 (define STATE_PRESSED 2)
 (define STATE_GOING_OFF 3)
 
-; State machine tracking (minimal for memory conservation)
-(define state_last_state STATE_UNINITIALIZED)
-(define state_last_change_time 0)
-(define state_last_reason "")
-
 (defun state_index_for (state)
 {
     (cond
@@ -447,6 +442,11 @@
 
 (defun state_metrics_reset ()
 {
+    ; State machine tracking (minimal for memory conservation)
+    (define state_last_state STATE_UNINITIALIZED)
+    (define state_last_change_time 0)
+    (define state_last_reason "")
+
     (setvar 'state_last_state STATE_UNINITIALIZED)
     (setvar 'state_last_change_time (systime))
     (setvar 'state_last_reason "startup")
@@ -855,16 +855,18 @@
         )
 
         ; Extra Long Press Commands when off (10 seconds)
-        (if (and (> (secs-since timer_start) TIMER_LONG_PRESS) (= speed SPEED_OFF) (= thirds_total 0)) {
+        (if (and (> (secs-since timer_start) TIMER_LONG_PRESS) (= speed SPEED_OFF) (= thirds_warning_latched 0)) {
             (debug_log "Battery: Thirds warning enabled")
             (setvar 'thirds_total actual_batt)
             (spawn warbler WARBLER_FREQUENCY WARBLER_DURATION 0)
             (setvar 'warning_counter 0)
+            (setvar 'thirds_warning_latched 1)
         })
 
         ; Released
         (if (= sw_pressed 0) {
             (debug_log "State 2->3: Released")
+            (setvar 'thirds_warning_latched 0)
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_RELEASE_WINDOW)
             (state_transition_to STATE_GOING_OFF "released" THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
@@ -1033,6 +1035,7 @@
 {
     (define thirds_total 0)
     (define warning_counter 0) ; Count how many times the 3rds warnings have been triggered.
+    (define thirds_warning_latched 0) ; Prevents repeated long-press activation
 
     (if (> enable_thirds_warning_startup 0) {
         (debug_log "Battery: Thirds warning enabled at startup")
@@ -1143,7 +1146,7 @@
                         (setvar 'disp_num 0)
                         (spawn beeper 1)
                     }))
-            })
+            }
 
             ; Section for 1/3rds display
             (cond
@@ -1170,6 +1173,7 @@
                         (setvar 'warning_counter (+ warning_counter 1))
                     })
                 }))
+            )
 
             (setvar 'batt_disp_state 1)
             (setvar 'last_batt_disp_num disp_num)
