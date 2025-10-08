@@ -87,10 +87,12 @@
 {
     (let ((current_val (eeprom-read-i addr)))
     {
-        (if (!= current_val new_val)
+        (if (or (eq current_val nil) (!= current_val new_val))
             (eeprom-store-i addr new_val))
     })
 })
+
+(move-to-flash eeprom_store_i_if_changed)
 
 
 ; =============================================================================
