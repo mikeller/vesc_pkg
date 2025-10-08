@@ -853,7 +853,8 @@
         )
 
         ; Extra Long Press Commands when off (10 seconds)
-        (if (and (> (secs-since timer_start) TIMER_LONG_PRESS) (= speed SPEED_OFF)) {
+        (if (and (> (secs-since timer_start) TIMER_LONG_PRESS) (= speed SPEED_OFF) (= thirds_total 0)) {
+            (debug_log "Battery: Thirds warning enabled")
             (setvar 'thirds_total actual_batt)
             (spawn warbler WARBLER_FREQUENCY WARBLER_DURATION 0)
             (setvar 'warning_counter 0)
