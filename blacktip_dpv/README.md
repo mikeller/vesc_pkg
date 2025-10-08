@@ -69,6 +69,7 @@ As the scooter starts, it only accelerates to full speed and torque if nothing i
 ## Configuration
 
 All settings can be adjusted through the VESC mobile app or VESC Tool:
+
 - Speed settings and jump speed
 - Reverse enable/disable
 - Smart Cruise behavior
@@ -80,7 +81,7 @@ All settings can be adjusted through the VESC mobile app or VESC Tool:
 ## Support
 
 For issues, questions, or contributions, visit the project repository:
-https://github.com/mikeller/vesc_pkg
+<https://github.com/mikeller/vesc_pkg>
 
 ## Developer Information
 
