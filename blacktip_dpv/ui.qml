@@ -728,6 +728,10 @@ Item {
                 console.log("Rebooting..." )
 
                 mCommands.reboot()
+
+                delay(1000, function () {
+                    read_settings()
+                })
             })
         })
     }
