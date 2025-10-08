@@ -559,7 +559,12 @@
             (state_record_transition from_state new_state reason)
         })
         (setvar 'sw_state new_state)
-        (spawn thread_stack handler)
+        ; TODO: Remove the extra logging for `spawn`
+        (let ((spawn_result (spawn thread_stack handler)))
+        {
+            (when-debug (str-merge "Spawn: Handler for " (state_name_for new_state) " returned " (to-str spawn_result)))
+            spawn_result
+        })
     })
 })
 
