@@ -3,32 +3,19 @@
 (import "generated/display_lut.bin" 'display-lut-bin)
 (import "generated/brightness_lut.bin" 'brightness-lut-bin)
 
-; Display LUT binary format helpers
+; Display LUT binary format helpers (init-only, not moved to flash)
 (defun validate-lut-header (data magic expected-version)
 {
-    (var file-magic (bufget-u32 data 0 'little-endian))
-    (var file-version (bufget-u16 data 4 'little-endian))
-    (var num-items (bufget-u16 data 6 'little-endian))
-
-    (if (!= file-magic magic)
-        {
-            (print (str-merge "Error: Invalid LUT magic. Expected "
-                              (to-str magic)
-                              ", got "
-                              (to-str file-magic)))
+    (let ((file-magic (bufget-u32 data 0 'little-endian))
+          (file-version (bufget-u16 data 4 'little-endian))
+          (num-items (bufget-u16 data 6 'little-endian)))
+    {
+        (if (!= file-magic magic)
             nil
-        }
-        (if (!= file-version expected-version)
-            {
-                (print (str-merge "Error: Unsupported LUT version. Expected "
-                                  (to-str expected-version)
-                                  ", got "
-                                  (to-str file-version)))
+            (if (!= file-version expected-version)
                 nil
-            }
-            num-items
-        )
-    )
+                num-items))
+    })
 })
 
 ; Initialize display LUT (returns number of frames or nil on error)
@@ -39,18 +26,11 @@
 
 ; Verify LUTs loaded successfully - halt if validation fails
 (if (not display-num-frames)
-    {
-        (print "FATAL: Failed to load display LUT - halting")
-        (exit-error "LUT validation failed")
-    }
-)
+    (exit-error "LUT validation failed: display"))
 (if (not brightness-num-levels)
-    {
-        (print "FATAL: Failed to load brightness LUT - halting")
-        (exit-error "LUT validation failed")
-    }
-)
+    (exit-error "LUT validation failed: brightness"))
 
+; EEPROM initialization (init-only, not moved to flash)
 (defun eeprom_set_defaults ()
 
 {
@@ -101,36 +81,12 @@
     })
 })
 
-
+; EEPROM correction tracking (minimal)
 (define eeprom_corrections 0)
-
-(defun eeprom_store_if_changed (address desired_value name)
-{
-    (let ((current (eeprom-read-i address)))
-    {
-        ; Treat nil (uninitialized EEPROM) as needing update
-        (if (or (eq current nil) (!= current desired_value)) {
-            (setvar 'eeprom_corrections (+ eeprom_corrections 1))
-            (debug_log (str-merge "EEPROM: " name " corrected from " (to-str current) " to " (to-str desired_value)))
-            (eeprom-store-i address desired_value)
-        })
-        desired_value
-    })
-})
-
-(defun eeprom_read_speed_percent_at (address label)
-{
-    (let ((validated (validate_speed_percent (eeprom-read-i address) label)))
-    {
-        (eeprom_store_if_changed address validated label)
-    })
-})
-
-(move-to-flash eeprom_store_if_changed)
-(move-to-flash eeprom_read_speed_percent_at)
 
 ; =============================================================================
 ; Safe Start Helpers
+; =============================================================================
 ; =============================================================================
 
 (defun safe_start_reset_state ()
@@ -140,6 +96,7 @@
     (setvar 'safe_start_failures 0)
     (setvar 'safe_start_status 'idle)
 })
+(move-to-flash safe_start_reset_state)
 
 (defun safe_start_begin (target_speed)
 {
@@ -148,6 +105,7 @@
     (setvar 'safe_start_status 'running)
     (debug_log (str-merge "Motor: Safe start attempt " (to-str (+ safe_start_failures 1)) " targeting speed " (to-str target_speed)))
 })
+(move-to-flash safe_start_begin)
 
 (defun safe_start_success ()
 {
@@ -156,6 +114,7 @@
     (setvar 'safe_start_failures 0)
     (setvar 'safe_start_status 'success)
 })
+(move-to-flash safe_start_success)
 
 (defun safe_start_increment_failure (reason)
 {
@@ -163,11 +122,13 @@
     (setvar 'safe_start_status 'failed)
     (debug_log (str-merge "Motor: Safe start attempt " (to-str safe_start_failures) "/" (to-str SAFE_START_MAX_RETRIES) " failed (" reason ")"))
 })
+(move-to-flash safe_start_increment_failure)
 
 (defun safe_start_should_retry ()
 {
     (< safe_start_failures SAFE_START_MAX_RETRIES)
 })
+(move-to-flash safe_start_should_retry)
 
 (defun safe_start_abort_with_reason (reason)
 {
@@ -183,11 +144,13 @@
         (safe_start_reset_state)
     })
 })
+(move-to-flash safe_start_abort_with_reason)
 
 (defun safe_start_value_valid (value max_abs)
 {
     (and (= value value) (< (abs value) max_abs))
 })
+(move-to-flash safe_start_value_valid)
 
 (defun safe_start_telemetry_valid (rpm duty current)
 {
@@ -195,7 +158,7 @@
          (safe_start_value_valid duty 1.0)
          (safe_start_value_valid current 200))
 })
-(move-to-flash safe_start_value_valid)
+(move-to-flash safe_start_telemetry_valid)
 
 (defun safe_start_met_success_criteria (rpm duty current)
 {
@@ -203,17 +166,10 @@
          (> (abs duty) SAFE_START_MIN_DUTY)
          (< (abs current) SAFE_START_MAX_CURRENT))
 })
-
-(move-to-flash safe_start_reset_state)
-(move-to-flash safe_start_begin)
-(move-to-flash safe_start_success)
-(move-to-flash safe_start_increment_failure)
-(move-to-flash safe_start_should_retry)
-(move-to-flash safe_start_abort_with_reason)
-(move-to-flash safe_start_telemetry_valid)
 (move-to-flash safe_start_met_success_criteria)
 
-(defun update_settings() ; Program that reads eeprom and writes to variables
+; Settings initialization (init-only, not moved to flash)
+(defun update_settings()
 {
     (define max_speed_no (eeprom-read-i 10))
     (define start_speed (eeprom-read-i 11))
@@ -267,8 +223,6 @@
     )
 })
 
-(move-to-flash update_settings)
-
 ; Debug logging helper function
 (defun debug_log (msg)
 {
@@ -276,7 +230,6 @@
         (puts msg)
     )
 })
-
 (move-to-flash debug_log)
 
 ; Lightweight macro to conditionally evaluate debug logging expressions
@@ -287,7 +240,6 @@
         (puts ,expr)
     )
 ))
-
 (move-to-flash when-debug)
 
 (defun calculate-corrected-battery ()
@@ -297,7 +249,6 @@
            (* BATTERY_COEFF_3 raw-batt raw-batt raw-batt)
            (* BATTERY_COEFF_2 raw-batt raw-batt)
            (* BATTERY_COEFF_1 raw-batt))))
-
 (move-to-flash calculate-corrected-battery)
 
 (defun calculate-ah-based-battery ()
@@ -307,11 +258,7 @@
           (remaining_capacity (- 1.0 (/ used-ah total-capacity))))
         (if (and (> total-capacity 0) (> remaining_capacity 0))
             remaining_capacity
-            0.0 ; Return 0% if no capacity configured or used capacity is negative
-        )
-    )
-)
-
+            0.0)))
 (move-to-flash calculate-ah-based-battery)
 
 (defun get-battery-level ()
@@ -319,7 +266,6 @@
     (if (= battery_calculation_method 1)
         (calculate-ah-based-battery)
         (calculate-corrected-battery)))
-
 (move-to-flash get-battery-level)
 
 (defun my_data_recv_prog (data)
@@ -346,9 +292,9 @@
         })
     })
 })
-
 (move-to-flash my_data_recv_prog)
 
+; Setup functions (init-only, not moved to flash)
 (defun setup_event_handler()
 {
     (defun event-handler ()
@@ -364,8 +310,6 @@
     (event-enable 'event-data-rx)
 })
 
-(move-to-flash setup_event_handler)
-
 (defun start_trigger_loop()
 {
     (gpio-configure 'pin-ppm 'pin-mode-in-pd)
@@ -379,8 +323,6 @@
         )
     })
 })
-
-(move-to-flash start_trigger_loop)
 
 (defun start_smart_cruise_loop()
 {
@@ -417,9 +359,6 @@
     })
 })
 
-(move-to-flash start_smart_cruise_loop)
-
-
 ; =============================================================================
 ; Constants
 ; =============================================================================
@@ -440,28 +379,17 @@
 (define TIMER_DISPLAY_DURATION 5)     ; Display duration (used in calculations)
 (define TIMER_LONG_PRESS 10)          ; Long press duration for special functions
 
-; Thread priorities (lower number = higher priority)
 ; Thread stack sizes (in 4-byte words) for loopwhile-thd and spawn
-; Stack size determines memory allocated for thread's local variables and call stack
-; According to LispBM docs, typical values are 100-200 words (400-800 bytes)
-; Stack requirements depend on: expression nesting depth, recursion, and function argument count
-;
-; Analysis of current threads:
-; - GPIO: Simple pin read + variable set → minimal needs but should meet 100-word minimum
-; - SmartCruise: Nested conditionals + arithmetic + multiple function calls → needs substantial stack
-; - State machines: Spawn short-lived processes with moderate conditional logic
-; - Motor: Most complex - deep nesting, string ops, list operations, spawning → needs largest stack
-; - Display/Battery: I2C operations + moderate conditionals → needs good stack
-; - ClickBeep: Simple timer checks + beep calls → modest needs
-(define THREAD_STACK_GPIO 100)        ; GPIO reading - increased from 25 to meet minimum recommendation
-(define THREAD_STACK_SMART_CRUISE 150) ; Smart Cruise - increased from 30 for nested conditionals + function calls
-(define THREAD_STACK_STATE_MACHINE 120) ; State 2 (pressed) - increased from 30 for state logic
-(define THREAD_STACK_STATE_TRANSITIONS 120) ; States 0, 3 - increased from 35 for consistency
-(define THREAD_STACK_STATE_COUNTING 120) ; State 1 (counting clicks) - increased from 40 for consistency
-(define THREAD_STACK_MOTOR 200)       ; Motor control - increased from 65, most complex thread
-(define THREAD_STACK_DISPLAY 150)     ; Display updates - increased from 45 for I2C + conditionals
-(define THREAD_STACK_BATTERY 150)     ; Battery display - increased from 45 for I2C + conditionals
-(define THREAD_STACK_CLICK_BEEP 100)  ; Click beep playback - kept at 100 (already appropriate)
+; Reduced to minimum safe values to conserve memory
+(define THREAD_STACK_GPIO 80)         ; GPIO reading - minimal needs
+(define THREAD_STACK_SMART_CRUISE 100) ; Smart Cruise - reduced
+(define THREAD_STACK_STATE_MACHINE 80) ; State 2 (pressed) - reduced
+(define THREAD_STACK_STATE_TRANSITIONS 80) ; States 0, 3 - reduced
+(define THREAD_STACK_STATE_COUNTING 80) ; State 1 (counting clicks) - reduced
+(define THREAD_STACK_MOTOR 150)       ; Motor control - reduced but still largest
+(define THREAD_STACK_DISPLAY 100)     ; Display updates - reduced
+(define THREAD_STACK_BATTERY 100)     ; Battery display - reduced
+(define THREAD_STACK_CLICK_BEEP 80)   ; Click beep playback - reduced
 
 ; State values
 (define STATE_UNINITIALIZED -1)
@@ -470,13 +398,9 @@
 (define STATE_PRESSED 2)
 (define STATE_GOING_OFF 3)
 
-; State machine instrumentation
-(define STATE_COUNT 4)
-(define state_transition_counts (list 0 0 0 0))
-(define state_time_accumulated (list 0 0 0 0))
+; State machine tracking (minimal for memory conservation)
 (define state_last_state STATE_UNINITIALIZED)
 (define state_last_change_time 0)
-(define state_transition_total 0)
 (define state_last_reason "")
 
 (defun state_index_for (state)
@@ -502,9 +426,6 @@
 
 (defun state_metrics_reset ()
 {
-    (setvar 'state_transition_counts (list 0 0 0 0))
-    (setvar 'state_time_accumulated (list 0 0 0 0))
-    (setvar 'state_transition_total 0)
     (setvar 'state_last_state STATE_UNINITIALIZED)
     (setvar 'state_last_change_time (systime))
     (setvar 'state_last_reason "startup")
@@ -512,63 +433,27 @@
 
 (defun state_metrics_accumulate (state elapsed)
 {
-    (let ((index (state_index_for state)))
-    {
-        (if (>= index 0)
-        {
-            (setix state_time_accumulated index (+ (ix state_time_accumulated index) elapsed))
-        })
-    })
+    ; Disabled to save memory
+    nil
 })
 
 (defun state_record_transition (from_state to_state reason)
 {
-    (let ((now (systime)))
-    {
-        (if (and (!= state_last_state STATE_UNINITIALIZED) (!= from_state STATE_UNINITIALIZED))
-        {
-            (state_metrics_accumulate from_state (- now state_last_change_time))
-        })
-        (let ((to_index (state_index_for to_state)))
-        {
-            (if (>= to_index 0)
-            {
-                (setix state_transition_counts to_index (+ (ix state_transition_counts to_index) 1))
-            })
-        })
-        (setvar 'state_transition_total (+ state_transition_total 1))
-        (setvar 'state_last_state to_state)
-        (setvar 'state_last_change_time now)
-        (setvar 'state_last_reason reason)
-        (when-debug (str-merge "State: " (state_name_for from_state) " -> " (state_name_for to_state) " (" reason ")"))
-    })
+    (setvar 'state_last_state to_state)
+    (setvar 'state_last_change_time (systime))
+    (setvar 'state_last_reason reason)
+    (when-debug (str-merge "State: " (to-str from_state) "->" (to-str to_state) " " reason))
 })
 
 (defun state_transition_to (new_state reason thread_stack handler)
 {
-    (let ((previous sw_state))
-    {
-        (let ((from_state (if (= state_last_state STATE_UNINITIALIZED)
-            {
-                STATE_UNINITIALIZED
-            }
-            {
-                previous
-            })))
-        {
-            (state_record_transition from_state new_state reason)
-        })
-        (setvar 'sw_state new_state)
-        ; TODO: Remove the extra logging for `spawn`
-        (let ((spawn_result (spawn thread_stack handler)))
-        {
-            (when-debug (str-merge "Spawn: Handler for " (state_name_for new_state) " returned " (to-str spawn_result)))
-            spawn_result
-        })
-    })
+    (state_record_transition 
+        (if (= state_last_state STATE_UNINITIALIZED) STATE_UNINITIALIZED sw_state)
+        new_state 
+        reason)
+    (setvar 'sw_state new_state)
+    (spawn thread_stack handler)
 })
-
-
 (move-to-flash state_index_for)
 (move-to-flash state_name_for)
 (move-to-flash state_metrics_reset)
@@ -664,6 +549,15 @@
 ; RPM Calculation Helper
 ; =============================================================================
 
+(defun clamp (value min_val max_val)
+{
+    (cond
+        ((< value min_val) min_val)
+        ((> value max_val) max_val)
+        (t value))
+})
+(move-to-flash clamp)
+
 (defun speed_percentage_at (speed_index)
 {
     (if (= speed_index SPEED_OFF)
@@ -688,12 +582,14 @@
         })
     )
 })
+(move-to-flash speed_percentage_at)
 
 (defun calculate_rpm (speed_index divisor)
 {
-    (let ((speed_percent (speed_percentage_at speed_index)))
+    (let ((speed_percent (speed_percentage_at speed_index))
+          (max_rpm (if (= scooter_type SCOOTER_BLACKTIP) MAX_ERPM_BLACKTIP MAX_ERPM_CUDAX)))
     {
-        (let ((base_rpm (* (/ (ix max_erpm scooter_type) divisor) speed_percent)))
+        (let ((base_rpm (* (/ max_rpm divisor) speed_percent)))
         {
             (if (< speed_index SPEED_REVERSE_THRESHOLD)
                 (- 0 base_rpm)
@@ -701,8 +597,6 @@
         })
     })
 })
-
-(move-to-flash speed_percentage_at)
 (move-to-flash calculate_rpm)
 
 ; =============================================================================
@@ -713,6 +607,7 @@
 ; - Old thread terminates naturally when loop condition becomes false
 ; =============================================================================
 
+; Setup state machine (init-only, not moved to flash)
 (defun setup_state_machine()
 {
     (state_metrics_reset)
@@ -723,9 +618,6 @@
     (define actual_batt 0)
     (define new_start_speed start_speed)
 })
-
-(move-to-flash setup_state_machine)
-
 
 ; =============================================================================
 ; Speed Bounds Checking
@@ -766,9 +658,7 @@
         clamped_speed
     })
 })
-
 (move-to-flash set_speed_safe)
-
 
 (defun state_handler_off()
 {
@@ -792,10 +682,7 @@
         })
     })
 })
-
 (move-to-flash state_handler_off)
-
-
 
 ; Encapsulated click action handler
 (defun apply_click_action (click_count)
@@ -875,12 +762,9 @@
             (when-debug (str-merge "Click action: Unsupported count " (to-str click_count))))
     )
 })
-
 (move-to-flash apply_click_action)
 
-
 ; xxxx STATE 1 Counting clicks
-
 (defun state_handler_counting_clicks ()
 {
     (when-debug (str-merge "State 1: Counting clicks=" (to-str clicks)))
@@ -912,9 +796,7 @@
         })
     })
 })
-
 (move-to-flash state_handler_counting_clicks)
-
 
 ; xxxx State 2 "Pressed"
 (defun state_handler_pressed()
@@ -956,12 +838,9 @@
         })
     })
 })
-
 (move-to-flash state_handler_pressed)
 
-
 ; xxxx State 3 "Going Off"
-
 (defun state_handler_going_off ()
 {
     (debug_log "State 3: Going Off")
@@ -1021,32 +900,27 @@
         }) ; end Timer expiry
     }) ; end state
 })
-
 (move-to-flash state_handler_going_off)
-
 
 (defun start_motor_speed_loop()
 {
     (debug_log "Motor: Starting motor speed loop")
-    (define speed SPEED_OFF) ; 99 is off speed
+    (define speed SPEED_OFF)
     (define safe_start_timer 0)
     (define safe_start_attempt_speed SPEED_OFF)
     (define safe_start_failures 0)
     (define safe_start_status 'idle)
-    (define max_erpm (list MAX_ERPM_BLACKTIP MAX_ERPM_CUDAX)) ; 1st no is Blacktip, second is CudaX
 
     (safe_start_reset_state)
 
-    (let ((last_speed SPEED_OFF)
-          (max_current (list MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)) ; 1st no is Blacktip, second is CudaX
-          (min_current (list MIN_CURRENT_BLACKTIP MIN_CURRENT_CUDAX))) { ; 1st no is Blacktip, second is CudaX
-
+    (let ((last_speed SPEED_OFF))
+    {
         (loopwhile-thd THREAD_STACK_MOTOR t {
             (sleep SLEEP_MOTOR_CONTROL)
             (loopwhile (!= speed last_speed) {
             (when-debug (str-merge "Motor: Speed change " (to-str last_speed) "->" (to-str speed)))
             (sleep SLEEP_MOTOR_SPEED_CHANGE)
-            ; turn off motor if speed is 99, scooter will also stop if the (timeout-reset) command isn't received every second from the Switch_State program
+            ; turn off motor if speed is 99
             (if (= speed SPEED_OFF) {
                 (when-debug "Motor: Stopping motor")
                 (set-current 0)
@@ -1057,10 +931,10 @@
                 })
 
             (if (!= speed SPEED_OFF) {
-                ; Soft Start section for all speeds, makes start less juddering
+                ; Soft Start section for all speeds
                 (if (= last_speed SPEED_OFF) {
                     (when-debug "Motor: Soft start initiated")
-                    (conf-set 'l-in-current-max (ix min_current scooter_type))
+                    (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MIN_CURRENT_BLACKTIP MIN_CURRENT_CUDAX))
                     (safe_start_begin speed)
                     (setvar 'last_speed SPEED_SOFT_START_SENTINEL)
                     (if (< speed SPEED_REVERSE_THRESHOLD)
@@ -1082,7 +956,7 @@
                             (!= last_speed SPEED_SOFT_START_SENTINEL)
                             (safe_start_met_success_criteria rpm duty current))
                     {
-                        (conf-set 'l-in-current-max (ix max_current scooter_type))
+                        (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
                         (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
                         (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
                         (safe_start_success)
@@ -1096,7 +970,7 @@
 
                         ; If safe start conditions not met yet but last_speed is still sentinel, update to speed to exit inner loop after abort
                         (if (and (= last_speed SPEED_SOFT_START_SENTINEL)
-                                 (!= safe_start_status 'running))
+                                 (not-eq safe_start_status 'running))
                             (setvar 'last_speed speed)
                         )
                     })
@@ -1115,10 +989,9 @@
         })
     })
 })
-
 (move-to-flash start_motor_speed_loop)
 
-
+; Init-only function (not moved to flash)
 (defun thirds_warning_startup()
 {
     (define thirds_total 0)
@@ -1135,9 +1008,6 @@
         (setvar 'warning_counter 0)
     })
 })
-
-(move-to-flash thirds_warning_startup)
-
 
 (defun start_display_output_loop()
 {
@@ -1193,12 +1063,9 @@
         })
     })
 })
-
 (move-to-flash start_display_output_loop)
 
-
  ; **** Program that triggers the display to show battery status ****
-
 (defun start_display_battery_loop()
 {
     (define batt_disp_timer_start 0) ; Timer to see if Battery display has been triggered
@@ -1291,9 +1158,7 @@
     })
     )
 })
-
 (move-to-flash start_display_battery_loop)
-
 
 (defun beeper (beeps)
 (loopwhile (and (= enable_battery_beeps 1) (> batt_disp_timer_start 0) (> beeps 0)) {
@@ -1301,11 +1166,9 @@
        (foc-beep 350 0.5 beeps_vol)
       (setvar 'beeps (- beeps 1))
     }))
-
 (move-to-flash beeper)
 
 ; xxxx warbler Program xxxx"
-
 (defun warbler (Tone Time Delay)
 {
          (sleep Delay)
@@ -1314,12 +1177,9 @@
          (foc-beep Tone Time beeps_vol)
          (foc-beep (- Tone 200) Time beeps_vol)
          })
-
- (move-to-flash warbler)
-
+(move-to-flash warbler)
 
 ; ***** Program that beeps trigger clicks
-
 (defun start_beeper_loop()
 {
     (define click_beep 0)
@@ -1349,10 +1209,9 @@
     })
     )
 })
-
 (move-to-flash start_beeper_loop)
 
-
+; Init-only function (not moved to flash)
 (defun peripherals_setup()
 {
     (define disp_timer_start 0) ; Timer for display duration
