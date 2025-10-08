@@ -1230,22 +1230,28 @@
             ; Section for 1/3rds display
             (cond
                 ((and (> actual_batt (* thirds_total 0.66)) (= warning_counter 0))
+                {
                     (debug_log "Battery: 2/3rds warning triggered")
-                    (setvar 'disp_num 20))
+                    (setvar 'disp_num 20)
+                })
                 ((and (> actual_batt (* thirds_total 0.33)) (< warning_counter 3))
+                {
                     (debug_log "Battery: 1/3rd warning triggered")
                     (setvar 'disp_num 19)
                     (if (< warning_counter 2) {
                         (spawn warbler 350 0.5 0.5)
                         (setvar 'warning_counter (+ warning_counter 1))
-                    }))
+                    })
+                })
                 (t
+                {
                     (debug_log "Battery: Critical warning triggered")
                     (setvar 'disp_num 18)
                     (if (< warning_counter 4) {
                         (spawn warbler 350 0.5 0.5)
                         (setvar 'warning_counter (+ warning_counter 1))
-                    })))
+                    })
+                }))
 
             (setvar 'batt_disp_state 1)
             (setvar 'last_batt_disp_num disp_num)
