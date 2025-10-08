@@ -18,8 +18,10 @@ Never create standalone summary documents (e.g. SUMMARY.md, CHANGES.md, etc.) - 
 applyTo: '**/*.lisp'
 ---
 Use snake_case for variable and function names (e.g. my_variable_name, my_function_name).
-Use `!=` for inequality comparisons.
-Use `=` for equality comparisons.
+Use `=` for numeric equality comparisons.
+Use `!=` for numeric inequality comparisons.
+Use `eq` for symbol/identity equality comparisons.
+Use `not-eq` for symbol/identity inequality comparisons.
 Use `and` for logical AND.
 Use `or` for logical OR.
 Use `not` for logical NOT.
