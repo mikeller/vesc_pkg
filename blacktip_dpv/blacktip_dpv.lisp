@@ -1,7 +1,126 @@
-; Import display and brightness lookup tables from binary files
-; These files are generated at build time from CSV sources
-(import "generated/display_lut.bin" 'display_lut_bin)
-(import "generated/brightness_lut.bin" 'brightness_lut_bin)
+; =============================================================================
+; Constants
+; =============================================================================
+
+; Sleep intervals (seconds) - controls loop frequencies
+(define SLEEP_STATE_MACHINE 0.02)     ; 50Hz - button state polling
+(define SLEEP_MOTOR_CONTROL 0.04)     ; 25Hz - motor/GPIO polling
+(define SLEEP_MOTOR_SPEED_CHANGE 0.25) ; 4Hz - motor speed transitions
+(define SLEEP_UI_UPDATE 0.25)         ; 4Hz - display/beeper updates
+(define SLEEP_BACKGROUND_CHECK 0.5)   ; 2Hz - Smart Cruise checking
+(define SLEEP_BATTERY_STABILIZE 1.0)  ; 1Hz - one-time battery reading delay
+
+; Timer durations (seconds)
+(define TIMER_DISABLED 86400)         ; 24 hours - effectively infinite for scooter operation
+(define TIMER_CLICK_WINDOW 0.3)       ; Click detection window
+(define TIMER_RELEASE_WINDOW 0.5)     ; Release detection window
+(define TIMER_SMART_CRUISE_TIMEOUT 5) ; Smart Cruise half-enable timeout
+(define TIMER_DISPLAY_DURATION 5)     ; Display duration (used in calculations)
+(define TIMER_LONG_PRESS 10)          ; Long press duration for special functions
+
+; Thread stack sizes (in 4-byte words) for loopwhile-thd and spawn
+; Reduced to minimum safe values to conserve memory
+(define THREAD_STACK_GPIO 80)         ; GPIO reading - minimal needs
+(define THREAD_STACK_SMART_CRUISE 100) ; Smart Cruise - reduced
+(define THREAD_STACK_STATE_MACHINE 80) ; State 2 (pressed) - reduced
+(define THREAD_STACK_STATE_TRANSITIONS 80) ; States 0, 3 - reduced
+(define THREAD_STACK_STATE_COUNTING 80) ; State 1 (counting clicks) - reduced
+(define THREAD_STACK_MOTOR 150)       ; Motor control - reduced but still largest
+(define THREAD_STACK_DISPLAY 100)     ; Display updates - reduced
+(define THREAD_STACK_BATTERY 100)     ; Battery display - reduced
+(define THREAD_STACK_CLICK_BEEP 80)   ; Click beep playback - reduced
+
+; State values
+(define STATE_UNINITIALIZED -1)
+(define STATE_OFF 0)
+(define STATE_COUNTING_CLICKS 1)
+(define STATE_PRESSED 2)
+(define STATE_GOING_OFF 3)
+
+; Special speed values
+(define SPEED_REVERSE_2 0)            ; Reverse speed level 2 (strong reverse)
+(define SPEED_UNTANGLE 1)             ; Reverse speed level 1 / untangle assist
+(define SPEED_OFF 99)                 ; Motor off indicator
+(define SPEED_REVERSE_THRESHOLD 2)    ; Speeds below this are reverse
+(define SPEED_SOFT_START_SENTINEL 0.5) ; Sentinel value for soft start tracking
+
+; Click counts
+(define CLICKS_SINGLE 1)
+(define CLICKS_DOUBLE 2)
+(define CLICKS_TRIPLE 3)
+(define CLICKS_QUADRUPLE 4)
+(define CLICKS_QUINTUPLE 5)
+
+; Smart Cruise states
+(define SMART_CRUISE_OFF 0)
+(define SMART_CRUISE_HALF_ENABLED 1)
+(define SMART_CRUISE_FULLY_ENABLED 2)
+(define SMART_CRUISE_AUTO_ENGAGED 3)
+
+; Hardware configuration thresholds
+(define HARDWARE_BLACKTIP_MAX 2)      ; Hardware configs 0-2 are Blacktip
+
+; Scooter types (indices into hardware lists)
+(define SCOOTER_BLACKTIP 0)
+(define SCOOTER_CUDAX 1)
+
+; Motor control constants
+(define MAX_ERPM_BLACKTIP 4100)
+(define MAX_ERPM_CUDAX 7100)
+(define MAX_CURRENT_BLACKTIP 22.8)
+(define MAX_CURRENT_CUDAX 46)
+(define MIN_CURRENT_BLACKTIP 1.7)
+(define MIN_CURRENT_CUDAX 0.35)
+
+; RPM scaling
+(define RPM_PERCENT_DENOMINATOR 100)
+
+; Safe start parameters
+(define SAFE_START_DUTY 0.06)         ; Initial duty cycle for soft start
+(define SAFE_START_TIMEOUT 0.5)       ; Timeout for safe start checks
+(define SAFE_START_TIMEOUT_GRACE 0.1) ; Additional grace period before aborting (seconds)
+(define SAFE_START_MIN_RPM 350)       ; Minimum RPM for safe start success
+(define SAFE_START_MIN_DUTY 0.05)     ; Minimum duty for safe start check
+(define SAFE_START_MAX_CURRENT 5)     ; Maximum current during safe start spin-up
+(define SAFE_START_FAIL_CURRENT 8)    ; Current threshold for safe start failure
+(define SAFE_START_MAX_RETRIES 3)     ; Max safe start retries before shutting down
+(define SAFE_START_RETRY_BACKOFF 0.2) ; Delay before retrying safe start (seconds)
+
+; Smart Cruise speed adjustment (slowdown to 80%)
+(define SMART_CRUISE_SLOWDOWN_DIVISOR 125) ; Divide by 125 instead of 100 for 80%
+
+; Display offset (speed value to display number mapping)
+(define DISPLAY_SPEED_OFFSET 4)
+
+; Display numbers for special screens
+(define DISPLAY_OFF 14)
+(define DISPLAY_SMART_CRUISE_HALF 16)
+(define DISPLAY_SMART_CRUISE_FULL 17)
+(define DISPLAY_SENTINEL 99)          ; Sentinel for "no previous display"
+
+; Warbler beep parameters
+(define WARBLER_FREQUENCY 450)
+(define WARBLER_DURATION 0.2)
+
+; Display timing calculations (from State 2 repeat display)
+(define DISPLAY_REPEAT_FIRST 6)       ; display duration + 1
+(define DISPLAY_REPEAT_SECOND 12)     ; 2 * display duration + 2
+
+; EEPROM settings buffer size
+(define EEPROM_SETTINGS_COUNT 30)
+
+; Battery polynomial coefficients (for voltage-based calculation)
+(define BATTERY_COEFF_4 4.3867)
+(define BATTERY_COEFF_3 -6.7072)
+(define BATTERY_COEFF_2 2.4021)
+(define BATTERY_COEFF_1 1.3619)
+
+; Data receive handshake code
+(define HANDSHAKE_CODE 255)
+
+; Display timer stop value
+(define DISPLAY_TIMER_STOP 2)
+
 
 ; Display LUT binary format helpers (init-only, not moved to flash)
 (defun validate_lut_header (data magic expected_version)
@@ -18,21 +137,28 @@
     })
 })
 
-; Initialize display LUT (returns number of frames or nil on error)
-(define display_num_frames (validate_lut_header display_lut_bin 0x4C555444u32 1))
+(defun load_lookup_tables ()
+{
+    ; Import display and brightness lookup tables from binary files
+    ; These files are generated at build time from CSV sources
+    (import "generated/display_lut.bin" 'display_lut_bin)
+    (import "generated/brightness_lut.bin" 'brightness_lut_bin)
 
-; Initialize brightness LUT (returns number of levels or nil on error)
-(define brightness_num_levels (validate_lut_header brightness_lut_bin 0x4C555442u32 1))
+    ; Initialize display LUT (returns number of frames or nil on error)
+    (setvar 'display_num_frames (validate_lut_header display_lut_bin 0x4C555444u32 1))
 
-; Verify LUTs loaded successfully - halt if validation fails
-(if (not display_num_frames)
-    (exit-error "LUT validation failed: display"))
-(if (not brightness_num_levels)
-    (exit-error "LUT validation failed: brightness"))
+    ; Initialize brightness LUT (returns number of levels or nil on error)
+    (setvar 'brightness_num_levels (validate_lut_header brightness_lut_bin 0x4C555442u32 1))
+
+    ; Verify LUTs loaded successfully - halt if validation fails
+    (if (not display_num_frames)
+        (exit-error "LUT validation failed: display"))
+    (if (not brightness_num_levels)
+        (exit-error "LUT validation failed: brightness"))
+})
 
 ; EEPROM initialization (init-only, not moved to flash)
 (defun eeprom_set_defaults ()
-
 {
     (if (not-eq (eeprom-read-i 127) (to-i32 1)) {
         (puts "EEPROM: Initializing defaults for 1.0.0")
@@ -191,28 +317,28 @@
 ; Settings initialization (init-only, not moved to flash)
 (defun update_settings()
 {
-    (define max_speed_no (eeprom-read-i 10))
-    (define start_speed (eeprom-read-i 11))
-    (define jump_speed (eeprom-read-i 12))
-    (define use_safe_start (eeprom-read-i 13))
-    (define enable_reverse (eeprom-read-i 14))
-    (define enable_smart_cruise (eeprom-read-i 15))
-    (define smart_cruise_timeout (eeprom-read-i 16))
-    (define rotation (eeprom-read-i 17))
-    (define disp_brightness (eeprom-read-i 18))
-    (define hardware_configuration (eeprom-read-i 19))
-    (define enable_battery_beeps (eeprom-read-i 20))
-    (define beeps_vol (eeprom-read-i 21))
-    (define cudax_flip (eeprom-read-i 22))
-    (define rotation2 (eeprom-read-i 23))
-    (define enable_trigger_beeps (eeprom-read-i 24))
-    (define enable_smart_cruise_auto_engage (eeprom-read-i 25))
-    (define smart_cruise_auto_engage_time (eeprom-read-i 26))
-    (define enable_thirds_warning_startup (eeprom-read-i 27))
-    (define battery_calculation_method (eeprom-read-i 28))
-    (define debug_enabled (eeprom-read-i 29))
+    (setvar 'max_speed_no (eeprom-read-i 10))
+    (setvar 'start_speed (eeprom-read-i 11))
+    (setvar 'jump_speed (eeprom-read-i 12))
+    (setvar 'use_safe_start (eeprom-read-i 13))
+    (setvar 'enable_reverse (eeprom-read-i 14))
+    (setvar 'enable_smart_cruise (eeprom-read-i 15))
+    (setvar 'smart_cruise_timeout (eeprom-read-i 16))
+    (setvar 'rotation (eeprom-read-i 17))
+    (setvar 'disp_brightness (eeprom-read-i 18))
+    (setvar 'hardware_configuration (eeprom-read-i 19))
+    (setvar 'enable_battery_beeps (eeprom-read-i 20))
+    (setvar 'beeps_vol (eeprom-read-i 21))
+    (setvar 'cudax_flip (eeprom-read-i 22))
+    (setvar 'rotation2 (eeprom-read-i 23))
+    (setvar 'enable_trigger_beeps (eeprom-read-i 24))
+    (setvar 'enable_smart_cruise_auto_engage (eeprom-read-i 25))
+    (setvar 'smart_cruise_auto_engage_time (eeprom-read-i 26))
+    (setvar 'enable_thirds_warning_startup (eeprom-read-i 27))
+    (setvar 'battery_calculation_method (eeprom-read-i 28))
+    (setvar 'debug_enabled (eeprom-read-i 29))
 
-    (define speed_set (list
+    (setvar 'speed_set (list
         (eeprom-read-i 0) ; Reverse Speed 2 %
         (eeprom-read-i 1) ; Untangle Speed 1 %
         (eeprom-read-i 2) ; Speed 1 %
@@ -227,8 +353,8 @@
 
     ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
     (if (<= hardware_configuration HARDWARE_BLACKTIP_MAX)
-        (define scooter_type SCOOTER_BLACKTIP)
-        (define scooter_type SCOOTER_CUDAX)
+        (setvar 'scooter_type SCOOTER_BLACKTIP)
+        (setvar 'scooter_type SCOOTER_CUDAX)
     )
 
     ; Log configuration on startup
@@ -291,12 +417,13 @@
 (defun my_data_recv_prog (data)
 {
     (if (= (bufget-u8 data 0) HANDSHAKE_CODE) { ; Handshake to trigger data send if not yet received.
-        (define setbuf (array-create EEPROM_SETTINGS_COUNT)) ; create a temp array to store setting
-        (bufclear setbuf) ; clear the buffer
-        (looprange i 0 EEPROM_SETTINGS_COUNT
-            (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
-        (send-data setbuf)
-        (free setbuf)
+        (let ((setbuf (array-create EEPROM_SETTINGS_COUNT))) { ; create a temp array to store setting
+            (bufclear setbuf) ; clear the buffer
+            (looprange i 0 EEPROM_SETTINGS_COUNT
+                (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
+            (send-data setbuf)
+            (free setbuf)
+        })
     } {
         ; For non-handshake messages, validate buffer size
         (if (< (buflen data) EEPROM_SETTINGS_COUNT) {
@@ -334,7 +461,6 @@
 (defun start_trigger_loop()
 {
     (gpio-configure 'pin-ppm 'pin-mode-in-pd)
-    (define sw_pressed 0)
 
     (loopwhile-thd THREAD_STACK_GPIO t {
         (sleep SLEEP_MOTOR_CONTROL)
@@ -348,7 +474,6 @@
 (defun start_smart_cruise_loop()
 {
     (debug_log "Smart Cruise: Starting loop")
-    (define smart_cruise SMART_CRUISE_OFF) ; variable to control Smart Cruise on 5 clicks
 
     (let ((speed_setting_timer 0) ; Timer for auto-engage functionality
           (last_speed_setting SPEED_OFF)) { ; Track last speed setting for auto-engage
@@ -380,65 +505,6 @@
     })
 })
 
-; =============================================================================
-; Constants
-; =============================================================================
-
-; Sleep intervals (seconds) - controls loop frequencies
-(define SLEEP_STATE_MACHINE 0.02)     ; 50Hz - button state polling
-(define SLEEP_MOTOR_CONTROL 0.04)     ; 25Hz - motor/GPIO polling
-(define SLEEP_MOTOR_SPEED_CHANGE 0.25) ; 4Hz - motor speed transitions
-(define SLEEP_UI_UPDATE 0.25)         ; 4Hz - display/beeper updates
-(define SLEEP_BACKGROUND_CHECK 0.5)   ; 2Hz - Smart Cruise checking
-(define SLEEP_BATTERY_STABILIZE 1.0)  ; 1Hz - one-time battery reading delay
-
-; Timer durations (seconds)
-(define TIMER_DISABLED 86400)         ; 24 hours - effectively infinite for scooter operation
-(define TIMER_CLICK_WINDOW 0.3)       ; Click detection window
-(define TIMER_RELEASE_WINDOW 0.5)     ; Release detection window
-(define TIMER_SMART_CRUISE_TIMEOUT 5) ; Smart Cruise half-enable timeout
-(define TIMER_DISPLAY_DURATION 5)     ; Display duration (used in calculations)
-(define TIMER_LONG_PRESS 10)          ; Long press duration for special functions
-
-; Thread stack sizes (in 4-byte words) for loopwhile-thd and spawn
-; Reduced to minimum safe values to conserve memory
-(define THREAD_STACK_GPIO 80)         ; GPIO reading - minimal needs
-(define THREAD_STACK_SMART_CRUISE 100) ; Smart Cruise - reduced
-(define THREAD_STACK_STATE_MACHINE 80) ; State 2 (pressed) - reduced
-(define THREAD_STACK_STATE_TRANSITIONS 80) ; States 0, 3 - reduced
-(define THREAD_STACK_STATE_COUNTING 80) ; State 1 (counting clicks) - reduced
-(define THREAD_STACK_MOTOR 150)       ; Motor control - reduced but still largest
-(define THREAD_STACK_DISPLAY 100)     ; Display updates - reduced
-(define THREAD_STACK_BATTERY 100)     ; Battery display - reduced
-(define THREAD_STACK_CLICK_BEEP 80)   ; Click beep playback - reduced
-
-; State values
-(define STATE_UNINITIALIZED -1)
-(define STATE_OFF 0)
-(define STATE_COUNTING_CLICKS 1)
-(define STATE_PRESSED 2)
-(define STATE_GOING_OFF 3)
-
-(defun state_index_for (state)
-{
-    (cond
-        ((= state STATE_OFF) 0)
-        ((= state STATE_COUNTING_CLICKS) 1)
-        ((= state STATE_PRESSED) 2)
-        ((= state STATE_GOING_OFF) 3)
-        (t -1))
-})
-
-(defun state_name_for (state)
-{
-    (cond
-        ((= state STATE_OFF) "Off")
-        ((= state STATE_COUNTING_CLICKS) "CountingClicks")
-        ((= state STATE_PRESSED) "Pressed")
-        ((= state STATE_GOING_OFF) "GoingOff")
-        ((= state STATE_UNINITIALIZED) "Init")
-        (t "Unknown"))
-})
 
 (defun state_metrics_reset ()
 {
@@ -450,12 +516,6 @@
     (setvar 'state_last_state STATE_UNINITIALIZED)
     (setvar 'state_last_change_time (systime))
     (setvar 'state_last_reason "startup")
-})
-
-(defun state_metrics_accumulate (state elapsed)
-{
-    ; Disabled to save memory
-    nil
 })
 
 (defun state_record_transition (from_state to_state reason)
@@ -476,96 +536,9 @@
     (spawn thread_stack handler)
 })
 
-(move-to-flash state_index_for)
-(move-to-flash state_name_for)
 (move-to-flash state_metrics_reset)
-(move-to-flash state_metrics_accumulate)
 (move-to-flash state_record_transition)
 (move-to-flash state_transition_to)
-
-; Special speed values
-(define SPEED_REVERSE_2 0)            ; Reverse speed level 2 (strong reverse)
-(define SPEED_UNTANGLE 1)             ; Reverse speed level 1 / untangle assist
-(define SPEED_OFF 99)                 ; Motor off indicator
-(define SPEED_REVERSE_THRESHOLD 2)    ; Speeds below this are reverse
-(define SPEED_SOFT_START_SENTINEL 0.5) ; Sentinel value for soft start tracking
-
-; Click counts
-(define CLICKS_SINGLE 1)
-(define CLICKS_DOUBLE 2)
-(define CLICKS_TRIPLE 3)
-(define CLICKS_QUADRUPLE 4)
-(define CLICKS_QUINTUPLE 5)
-
-; Smart Cruise states
-(define SMART_CRUISE_OFF 0)
-(define SMART_CRUISE_HALF_ENABLED 1)
-(define SMART_CRUISE_FULLY_ENABLED 2)
-(define SMART_CRUISE_AUTO_ENGAGED 3)
-
-; Hardware configuration thresholds
-(define HARDWARE_BLACKTIP_MAX 2)      ; Hardware configs 0-2 are Blacktip
-
-; Scooter types (indices into hardware lists)
-(define SCOOTER_BLACKTIP 0)
-(define SCOOTER_CUDAX 1)
-
-; Motor control constants
-(define MAX_ERPM_BLACKTIP 4100)
-(define MAX_ERPM_CUDAX 7100)
-(define MAX_CURRENT_BLACKTIP 22.8)
-(define MAX_CURRENT_CUDAX 46)
-(define MIN_CURRENT_BLACKTIP 1.7)
-(define MIN_CURRENT_CUDAX 0.35)
-
-; RPM scaling
-(define RPM_PERCENT_DENOMINATOR 100)
-
-; Safe start parameters
-(define SAFE_START_DUTY 0.06)         ; Initial duty cycle for soft start
-(define SAFE_START_TIMEOUT 0.5)       ; Timeout for safe start checks
-(define SAFE_START_TIMEOUT_GRACE 0.1) ; Additional grace period before aborting (seconds)
-(define SAFE_START_MIN_RPM 350)       ; Minimum RPM for safe start success
-(define SAFE_START_MIN_DUTY 0.05)     ; Minimum duty for safe start check
-(define SAFE_START_MAX_CURRENT 5)     ; Maximum current during safe start spin-up
-(define SAFE_START_FAIL_CURRENT 8)    ; Current threshold for safe start failure
-(define SAFE_START_MAX_RETRIES 3)     ; Max safe start retries before shutting down
-(define SAFE_START_RETRY_BACKOFF 0.2) ; Delay before retrying safe start (seconds)
-
-; Smart Cruise speed adjustment (slowdown to 80%)
-(define SMART_CRUISE_SLOWDOWN_DIVISOR 125) ; Divide by 125 instead of 100 for 80%
-
-; Display offset (speed value to display number mapping)
-(define DISPLAY_SPEED_OFFSET 4)
-
-; Display numbers for special screens
-(define DISPLAY_OFF 14)
-(define DISPLAY_SMART_CRUISE_HALF 16)
-(define DISPLAY_SMART_CRUISE_FULL 17)
-(define DISPLAY_SENTINEL 99)          ; Sentinel for "no previous display"
-
-; Warbler beep parameters
-(define WARBLER_FREQUENCY 450)
-(define WARBLER_DURATION 0.2)
-
-; Display timing calculations (from State 2 repeat display)
-(define DISPLAY_REPEAT_FIRST 6)       ; display duration + 1
-(define DISPLAY_REPEAT_SECOND 12)     ; 2 * display duration + 2
-
-; EEPROM settings buffer size
-(define EEPROM_SETTINGS_COUNT 30)
-
-; Battery polynomial coefficients (for voltage-based calculation)
-(define BATTERY_COEFF_4 4.3867)
-(define BATTERY_COEFF_3 -6.7072)
-(define BATTERY_COEFF_2 2.4021)
-(define BATTERY_COEFF_1 1.3619)
-
-; Data receive handshake code
-(define HANDSHAKE_CODE 255)
-
-; Display timer stop value
-(define DISPLAY_TIMER_STOP 2)
 
 ; =============================================================================
 ; RPM Calculation Helper
@@ -635,18 +608,6 @@
 ; - The loop condition prevents race conditions by ensuring old handler exits
 ; - Old thread terminates naturally when loop condition becomes false
 ; =============================================================================
-
-; Setup state machine (init-only, not moved to flash)
-(defun setup_state_machine()
-{
-    (state_metrics_reset)
-    (define sw_state 0)
-    (define timer_start 0)
-    (define timer_duration 0)
-    (define clicks 0)
-    (define actual_batt 0)
-    (define new_start_speed start_speed)
-})
 
 ; =============================================================================
 ; Speed Bounds Checking
@@ -943,11 +904,6 @@
 (defun start_motor_speed_loop()
 {
     (debug_log "Motor: Starting motor speed loop")
-    (define speed SPEED_OFF)
-    (define safe_start_timer 0)
-    (define safe_start_attempt_speed SPEED_OFF)
-    (define safe_start_failures 0)
-    (define safe_start_status 'idle)
 
     (safe_start_reset_state)
 
@@ -1033,10 +989,6 @@
 ; Init-only function (not moved to flash)
 (defun thirds_warning_startup()
 {
-    (define thirds_total 0)
-    (define warning_counter 0) ; Count how many times the 3rds warnings have been triggered.
-    (define thirds_warning_latched 0) ; Prevents repeated long-press activation
-
     (if (> enable_thirds_warning_startup 0) {
         (debug_log "Battery: Thirds warning enabled at startup")
         ; Wait a bit for battery reading to stabilize
@@ -1051,55 +1003,53 @@
 
 (defun start_display_output_loop()
 {
-    (define disp_num 1) ; variable used to define the display screen you are accesing 0-X
-    (define last_disp_num 1) ; variable used to track last display screen show
-
     (let ((start_pos 0) ; variable used to define start position in the array of diferent display screens
-          (pixbuf (array-create 16))) ; create a temp array to store display bytes in
-        {
+        (pixbuf (array-create 16)) ; create a temp array to store display bytes in
+        (display_mpu_addr 0x70)) { ; I2C Address for the screen
         (bufclear pixbuf) ; clear the buffer
         (loopwhile-thd THREAD_STACK_DISPLAY t {
             (sleep SLEEP_UI_UPDATE)
             ; xxxx Timer section to turn display off, gets reset by each new request to display
-            (if (> disp_timer_start 1) ; check to see if display is on. don't want to run i2c commands continuously
-            (if (> (secs-since disp_timer_start) TIMER_DISPLAY_DURATION) { ; check timer to see if its longer than display duration and display needs turning off, new display commands will keep adding time
-            (if (= scooter_type SCOOTER_BLACKTIP) ; For Blacktip Turn off the display
-                    (if (!= last_disp_num DISPLAY_SMART_CRUISE_FULL) ; if last display was the Smart Cruise, don't disable display
-                        (i2c-tx-rx 0x70 (list 0x80))))
-            ; For Cuda X make sure it doesn't get stuck on displaying B1 or B2 error, so switch back to last battery.
-            (if (and (= scooter_type SCOOTER_CUDAX) (> last_disp_num 20) )
-                (setvar 'disp_num last_batt_disp_num))
+            (if (and (> disp_timer_start 1) ; check to see if display is on. don't want to run i2c commands continuously
+                (> (secs-since disp_timer_start) TIMER_DISPLAY_DURATION)) { ; check timer to see if its longer than display duration and display needs turning off, new display commands will keep adding time
+                (if (and (= scooter_type SCOOTER_BLACKTIP) ; For Blacktip Turn off the display
+                    (!= last_disp_num DISPLAY_SMART_CRUISE_FULL)) ; if last display was the Smart Cruise, don't disable display
+                    (i2c-tx-rx 0x70 (list 0x80))
+                )
+                ; For Cuda X make sure it doesn't get stuck on displaying B1 or B2 error, so switch back to last battery.
+                (if (and (= scooter_type SCOOTER_CUDAX) (> last_disp_num 20))
+                    (setvar 'disp_num last_batt_disp_num))
 
-            (setvar 'disp_timer_start 0)
-            }))
+                (setvar 'disp_timer_start 0)
+            })
             ; xxxx End of timer section
 
-                (if (!= disp_num last_disp_num) {
+            (if (!= disp_num last_disp_num) {
                 (if (= scooter_type 1) { ; For cuda X second screen
                     (if (= cudax_flip 1)
-                        (setvar 'mpu_addr 0x70)
-                        (setvar 'mpu_addr 0x71)
+                        (setvar 'display_mpu_addr 0x70)
+                        (setvar 'display_mpu_addr 0x71)
                     )
-                    (if (or (= disp_num 0) (= disp_num 1) (= disp_num 2) (= disp_num 3) (> disp_num 17) )
+                    (if (or (= disp_num 0) (= disp_num 1) (= disp_num 2) (= disp_num 3) (> disp_num 17))
                         (if (= cudax_flip 1)
-                            (setvar 'mpu_addr 0x71)
-                            (setvar 'mpu_addr 0x70)
+                            (setvar 'display_mpu_addr 0x71)
+                            (setvar 'display_mpu_addr 0x70)
                         )
                     )
                 })
                 (setvar 'disp_timer_start (systime))
-                (if (= mpu_addr 0x70)
+                (if (= display_mpu_addr 0x70)
                     (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation))) ; define the correct start position in the array for the display
                     (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation2)))
-                    )
+                )
                 (bufclear pixbuf)
                 ; Copy display data from binary LUT (8 byte header + frame data)
                 (bufcpy pixbuf 0 display_lut_bin (+ 8 start_pos) 16) ; copy the required display from binary LUT to "pixbuf"
-                (i2c-tx-rx mpu_addr pixbuf) ; send display characters
-                (i2c-tx-rx mpu_addr (list 0x81)) ; Turn on display
+                (i2c-tx-rx display_mpu_addr pixbuf) ; send display characters
+                (i2c-tx-rx display_mpu_addr (list 0x81)) ; Turn on display
                 (setvar 'last_disp_num disp_num)
-                (setvar 'mpu_addr 0x70)
-                    })
+                (setvar 'display_mpu_addr 0x70)
+            })
         })
     })
 })
@@ -1109,9 +1059,6 @@
  ; **** Program that triggers the display to show battery status ****
 (defun start_display_battery_loop()
 {
-    (define batt_disp_timer_start 0) ; Timer to see if Battery display has been triggered
-    (define last_batt_disp_num 3) ; variable used to track last display screen show
-
     (let ((batt_disp_state 0))
     (loopwhile-thd THREAD_STACK_BATTERY t {
        (sleep SLEEP_UI_UPDATE)
@@ -1234,31 +1181,30 @@
 ; ***** Program that beeps trigger clicks
 (defun start_beeper_loop()
 {
-    (define click_beep 0)
-
     (let ((click_beep_timer 0))
-    (loopwhile-thd THREAD_STACK_CLICK_BEEP t {
-        (sleep SLEEP_UI_UPDATE)
+        (loopwhile-thd THREAD_STACK_CLICK_BEEP t {
+            (sleep SLEEP_UI_UPDATE)
 
-        (if (and (> (secs-since click_beep_timer) SLEEP_UI_UPDATE) (!= click_beep_timer 0)) {
-        (foc-play-stop)
-        (setvar 'click_beep_timer 0)
+            (if (and (> (secs-since click_beep_timer) SLEEP_UI_UPDATE) (!= click_beep_timer 0)) {
+                (foc-play-stop)
+                (setvar 'click_beep_timer 0)
+            })
+
+            (if (> click_beep 0) {
+                (if (and (= click_beep CLICKS_QUINTUPLE) (> enable_smart_cruise 0) (!= speed SPEED_OFF))
+                    (foc-play-tone 1 1500 beeps_vol)
+                )
+                (if (= enable_trigger_beeps 1) {
+                    (if (= click_beep CLICKS_SINGLE)(foc-play-tone 1 2500 beeps_vol))
+                    (if (= click_beep CLICKS_DOUBLE)(foc-play-tone 1 3000 beeps_vol))
+                    (if (= click_beep CLICKS_TRIPLE)(foc-play-tone 1 3500 beeps_vol))
+                    (if (= click_beep CLICKS_QUADRUPLE)(foc-play-tone 1 4000 beeps_vol))
+                })
+
+                (setvar 'click_beep_timer (systime))
+                (setvar 'click_beep 0)
+            })
         })
-
-        (if (> click_beep 0) {
-        (if (and (= click_beep CLICKS_QUINTUPLE) (> enable_smart_cruise 0)(!= speed SPEED_OFF)) (foc-play-tone 1 1500 beeps_vol))
-        (if (= enable_trigger_beeps 1) {
-        (if (= click_beep CLICKS_SINGLE)(foc-play-tone 1 2500 beeps_vol))
-        (if (= click_beep CLICKS_DOUBLE)(foc-play-tone 1 3000 beeps_vol))
-        (if (= click_beep CLICKS_TRIPLE)(foc-play-tone 1 3500 beeps_vol))
-        (if (= click_beep CLICKS_QUADRUPLE)(foc-play-tone 1 4000 beeps_vol))
-        })
-
-        (setvar 'click_beep_timer (systime))
-        (setvar 'click_beep 0)
-        })
-
-    })
     )
 })
 
@@ -1267,8 +1213,6 @@
 ; Init-only function (not moved to flash)
 (defun peripherals_setup()
 {
-    (define disp_timer_start 0) ; Timer for display duration
-
     (if (or (= 0 hardware_configuration) (= 3 hardware_configuration)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
             (i2c-start 'rate-400k 'pin-swdio 'pin-swclk) ; Works HW 60 with screen on SWD Connector. Screen SDA pin to Vesc SWDIO (2), Screen SCL pin to Vesc SWCLK (4)
             (if (or (= 1 hardware_configuration) ( = 4 hardware_configuration)) ; 1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth
@@ -1277,41 +1221,101 @@
                     (i2c-start 'rate-400k 'pin-tx 'pin-rx) ; tested on HW 410 Tested: SN 189, SN 1691
                     (nil))))
 
-        (define mpu_addr 0x70) ; I2C Address for the screen
+    (i2c-tx-rx 0x70 (list 0x21)) ; start the oscillator
+    ; Get brightness byte from binary LUT (8 byte header + brightness data)
+    (i2c-tx-rx 0x70 (list (bufget-u8 brightness_lut_bin (+ 8 disp_brightness)))) ; set brightness
 
-        (i2c-tx-rx 0x70 (list 0x21)) ; start the oscillator
-        ; Get brightness byte from binary LUT (8 byte header + brightness data)
-        (i2c-tx-rx 0x70 (list (bufget-u8 brightness_lut_bin (+ 8 disp_brightness)))) ; set brightness
-
-        (if (= scooter_type 1) { ; For cuda X setup second screen
-                (i2c-tx-rx 0x71 (list 0x21)) ; start the oscillator
-                (i2c-tx-rx 0x71 (list (bufget-u8 brightness_lut_bin (+ 8 disp_brightness)))) ; set brightness
-        })
+    (if (= scooter_type 1) { ; For cuda X setup second screen
+            (i2c-tx-rx 0x71 (list 0x21)) ; start the oscillator
+            (i2c-tx-rx 0x71 (list (bufget-u8 brightness_lut_bin (+ 8 disp_brightness)))) ; set brightness
+    })
 })
 
 (defun main()
 {
+    (define display_num_frames 0)
+    (define brightness_num_levels 0)
+
+    (load_lookup_tables)
+
     (eeprom_set_defaults)
 
+    (define max_speed_no 0)
+    (define start_speed 0)
+    (define jump_speed 0)
+    (define use_safe_start 0)
+    (define enable_reverse 0)
+    (define enable_smart_cruise 0)
+    (define smart_cruise_timeout 0)
+    (define rotation 0)
+    (define disp_brightness 0)
+    (define hardware_configuration 0)
+    (define enable_battery_beeps 0)
+    (define beeps_vol 0)
+    (define cudax_flip 0)
+    (define rotation2 0)
+    (define enable_trigger_beeps 0)
+    (define enable_smart_cruise_auto_engage 0)
+    (define smart_cruise_auto_engage_time 0)
+    (define enable_thirds_warning_startup 0)
+    (define battery_calculation_method 0)
+    (define debug_enabled 0)
+    (define speed_set 0)
+    (define scooter_type 0)
+
     (update_settings) ; creates all settings variables
+
+    (define thirds_total 0)
+    (define warning_counter 0) ; Count how many times the 3rds warnings have been triggered.
+    (define thirds_warning_latched 0) ; Prevents repeated long-press activation
 
     (thirds_warning_startup)
 
     (setup_event_handler)
 
-    (setup_state_machine)
+    (define sw_state 0)
+    (define timer_start 0)
+    (define timer_duration 0)
+    (define clicks 0)
+    (define actual_batt 0)
+    (define new_start_speed start_speed)
+    (define state_last_state STATE_UNINITIALIZED)
+    (define state_last_change_time 0)
+    (define state_last_reason "")
+
+    (state_metrics_reset)
+
+    (define speed SPEED_OFF)
+    (define safe_start_timer 0)
+    (define safe_start_attempt_speed SPEED_OFF)
+    (define safe_start_failures 0)
+    (define safe_start_status 'idle)
 
     (start_motor_speed_loop)
 
+    (define click_beep 0)
+
     (start_beeper_loop)
+
+    (define disp_timer_start 0) ; Timer for display duration
 
     (peripherals_setup)
 
+    (define disp_num 1) ; variable used to define the display screen you are accesing 0-X
+    (define last_disp_num 1) ; variable used to track last display screen show
+
     (start_display_output_loop)
+
+    (define batt_disp_timer_start 0) ; Timer to see if Battery display has been triggered
+    (define last_batt_disp_num 3) ; variable used to track last display screen show
 
     (start_display_battery_loop)
 
+    (define smart_cruise SMART_CRUISE_OFF)
+
     (start_smart_cruise_loop)
+
+    (define sw_pressed 0)
 
     (start_trigger_loop)
 
