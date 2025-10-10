@@ -125,16 +125,16 @@
 ; Display LUT binary format helpers (init-only, not moved to flash)
 (defun validate_lut_header (data magic expected_version)
 {
-    (let ((file_magic (bufget-u32 data 0 'little-endian))
-          (file_version (bufget-u16 data 4 'little-endian))
-          (num_items (bufget-u16 data 6 'little-endian)))
-    {
-        (if (!= file_magic magic)
+    (var file_magic (bufget-u32 data 0 'little-endian))
+    (var file_version (bufget-u16 data 4 'little-endian))
+    (var num_items (bufget-u16 data 6 'little-endian))
+    (if (!= file_magic magic)
+        nil
+        (if (!= file_version expected_version)
             nil
-            (if (!= file_version expected_version)
-                nil
-                num_items))
-    })
+            num_items
+        )
+    )
 })
 
 (defun load_lookup_tables ()
@@ -211,11 +211,10 @@
 ; Helper function to reduce EEPROM wear by only writing when value changes
 (defun eeprom_store_i_if_changed (addr new_val)
 {
-    (let ((current_val (eeprom-read-i addr)))
-    {
-        (if (or (eq current_val nil) (!= current_val new_val))
-            (eeprom-store-i addr new_val))
-    })
+    (var current_val (eeprom-read-i addr))
+    (if (or (eq current_val nil) (!= current_val new_val))
+        (eeprom-store-i addr new_val)
+    )
 })
 
 (move-to-flash eeprom_store_i_if_changed)
@@ -386,23 +385,29 @@
 (move-to-flash debug_log_macro)
 
 (defun calculate_corrected_battery ()
+{
     ; Calculate corrected battery percentage from raw battery reading
-    (let ((raw_batt (get-batt)))
-        (+ (* BATTERY_COEFF_4 raw_batt raw_batt raw_batt raw_batt)
-           (* BATTERY_COEFF_3 raw_batt raw_batt raw_batt)
-           (* BATTERY_COEFF_2 raw_batt raw_batt)
-           (* BATTERY_COEFF_1 raw_batt))))
+    (var raw_batt (get-batt))
+    (+ (* BATTERY_COEFF_4 raw_batt raw_batt raw_batt raw_batt)
+        (* BATTERY_COEFF_3 raw_batt raw_batt raw_batt)
+        (* BATTERY_COEFF_2 raw_batt raw_batt)
+        (* BATTERY_COEFF_1 raw_batt)
+    )
+})
 
 (move-to-flash calculate_corrected_battery)
 
 (defun calculate_ah_based_battery ()
+{
     ; Calculate battery percentage based on ampere-hours used vs total capacity
-    (let ((total-capacity (conf-get 'si-battery-ah))
-          (used-ah (get-ah))
-          (remaining_capacity (- 1.0 (/ used-ah total-capacity))))
-        (if (and (> total-capacity 0) (> remaining_capacity 0))
-            remaining_capacity
-            0.0)))
+    (var total-capacity (conf-get 'si-battery-ah))
+    (var used-ah (get-ah))
+    (var remaining_capacity (- 1.0 (/ used-ah total-capacity)))
+    (if (and (> total-capacity 0) (> remaining_capacity 0))
+        remaining_capacity
+        0.0
+    )
+})
 
 (move-to-flash calculate_ah_based_battery)
 
@@ -410,32 +415,29 @@
     ; Get battery level using the configured calculation method
     (if (= battery_calculation_method 1)
         (calculate_ah_based_battery)
-        (calculate_corrected_battery)))
+        (calculate_corrected_battery)
+    )
+)
 
 (move-to-flash get_battery_level)
 
 (defun my_data_recv_prog (data)
 {
     (if (= (bufget-u8 data 0) HANDSHAKE_CODE) { ; Handshake to trigger data send if not yet received.
-        (let ((setbuf (array-create EEPROM_SETTINGS_COUNT))) { ; create a temp array to store setting
-            (bufclear setbuf) ; clear the buffer
-            (looprange i 0 EEPROM_SETTINGS_COUNT
-                (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
-            (send-data setbuf)
-            (free setbuf)
-        })
+        (var setbuf (array-create EEPROM_SETTINGS_COUNT)) ; create a temp array to store setting
+        (looprange i 0 EEPROM_SETTINGS_COUNT
+            (bufset-i8 setbuf i (or (eeprom-read-i i) 0)))
+        (send-data setbuf)
     } {
         ; For non-handshake messages, validate buffer size
         (if (< (buflen data) EEPROM_SETTINGS_COUNT) {
             (debug_log (str-merge "Error: Received data buffer too small: " (to-str (buflen data)) " < " (to-str EEPROM_SETTINGS_COUNT)))
             nil ; Return early on invalid data
         } {
-            (debug_log "Receiving settings from external source, validating...")
             (looprange i 0 EEPROM_SETTINGS_COUNT
                 (eeprom_store_i_if_changed i (bufget-u8 data i))) ; writes settings to eeprom
-            (update_settings) ; updates actual settings in lisp (with validation)
-            (gc) ; Force garbage collection to free memory from validation strings
-            (debug_log "Settings updated and validated")
+            (update_settings) ; updates actual settings in lisp
+            (debug_log "Settings updated")
         })
     })
 })
@@ -475,32 +477,31 @@
 {
     (debug_log "Smart Cruise: Starting loop")
 
-    (let ((speed_setting_timer 0) ; Timer for auto-engage functionality
-          (last_speed_setting SPEED_OFF)) { ; Track last speed setting for auto-engage
+    (var speed_setting_timer 0) ; Timer for auto-engage functionality
+    (var last_speed_setting SPEED_OFF) ; Track last speed setting for auto-engage
 
-        (loopwhile-thd THREAD_STACK_SMART_CRUISE t {
-            (sleep SLEEP_BACKGROUND_CHECK)
-            (if (and (> enable_smart_cruise 0) (> enable_smart_cruise_auto_engage 0) (= sw_state STATE_PRESSED) (= smart_cruise SMART_CRUISE_OFF) (!= speed SPEED_OFF) (>= speed SPEED_REVERSE_THRESHOLD)) {
-                ; Check if speed setting has changed
-                (if (!= speed last_speed_setting) {
-                    (setvar 'last_speed_setting speed)
-                    (setvar 'speed_setting_timer (systime))
-                } {
-                    ; Speed setting hasn't changed, check if timer expired
-                    (if (> (secs-since speed_setting_timer) smart_cruise_auto_engage_time) {
-                        (debug_log "Smart Cruise: Auto-engaged")
-                        (setvar 'smart_cruise SMART_CRUISE_AUTO_ENGAGED)
-                        (setvar 'timer_start (systime))
-                        (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                        (setvar 'click_beep CLICKS_QUINTUPLE)
-                        ; re command actual speed as reverification sets it to 0.8x
-                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
-                    })
-                })
-            } {
-                ; Not in the right state for auto-engage, reset timer
+    (loopwhile-thd THREAD_STACK_SMART_CRUISE t {
+        (sleep SLEEP_BACKGROUND_CHECK)
+        (if (and (> enable_smart_cruise 0) (> enable_smart_cruise_auto_engage 0) (= sw_state STATE_PRESSED) (= smart_cruise SMART_CRUISE_OFF) (!= speed SPEED_OFF) (>= speed SPEED_REVERSE_THRESHOLD)) {
+            ; Check if speed setting has changed
+            (if (!= speed last_speed_setting) {
+                (setvar 'last_speed_setting speed)
                 (setvar 'speed_setting_timer (systime))
+            } {
+                ; Speed setting hasn't changed, check if timer expired
+                (if (> (secs-since speed_setting_timer) smart_cruise_auto_engage_time) {
+                    (debug_log "Smart Cruise: Auto-engaged")
+                    (setvar 'smart_cruise SMART_CRUISE_AUTO_ENGAGED)
+                    (setvar 'timer_start (systime))
+                    (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+                    (setvar 'click_beep CLICKS_QUINTUPLE)
+                    ; re command actual speed as reverification sets it to 0.8x
+                    (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                })
             })
+        } {
+            ; Not in the right state for auto-engage, reset timer
+            (setvar 'speed_setting_timer (systime))
         })
     })
 })
@@ -556,47 +557,39 @@
 
 (defun speed_percentage_at (speed_index)
 {
-    (if (= speed_index SPEED_OFF)
+    (if (= speed_index SPEED_OFF) {
         0
-        (let ((count (length speed_set)))
-        {
-            (if (= count 0)
-                {
-                    (debug_log "Speed: speed_set empty, defaulting to 0%")
-                    0
-                }
-                {
-              (let ((max_index (- count 1))
-                  (clamped (clamp speed_index SPEED_REVERSE_2 max_index)))
-                    {
-                        (if (!= speed_index clamped)
-                            (debug_log_macro (str-merge "Speed: Index " (to-str speed_index) " clamped to " (to-str clamped) " for speed_set"))
-                        )
-                        (ix speed_set clamped)
-                    })
-                })
+    } {
+        (var count (length speed_set))
+        (if (= count 0) {
+            (debug_log "Speed: speed_set empty, defaulting to 0%")
+            0
+        } {
+            (var max_index (- count 1))
+            (var clamped (clamp speed_index SPEED_REVERSE_2 max_index))
+            (if (!= speed_index clamped)
+                (debug_log_macro (str-merge "Speed: Index " (to-str speed_index) " clamped to " (to-str clamped) " for speed_set"))
+            )
+            (ix speed_set clamped)
         })
-    )
+    })
 })
 
 (move-to-flash speed_percentage_at)
 
 (defun calculate_rpm (speed_index divisor)
 {
-    (let ((speed_percent (speed_percentage_at speed_index))
-         (max_rpm (cond
-             ((= scooter_type SCOOTER_BLACKTIP) MAX_ERPM_BLACKTIP)
-             ((= scooter_type SCOOTER_CUDAX) MAX_ERPM_CUDAX)
-             (t (debug_log "Invalid scooter_type, defaulting to Blacktip") MAX_ERPM_BLACKTIP)
-         )))
-    {
-        (let ((base_rpm (* (/ max_rpm divisor) speed_percent)))
-        {
-            (if (< speed_index SPEED_REVERSE_THRESHOLD)
-                (- 0 base_rpm)
-                base_rpm)
-        })
-    })
+    (var speed_percent (speed_percentage_at speed_index))
+    (var max_rpm (cond
+        ((= scooter_type SCOOTER_BLACKTIP) MAX_ERPM_BLACKTIP)
+        ((= scooter_type SCOOTER_CUDAX) MAX_ERPM_CUDAX)
+        (t (debug_log "Invalid scooter_type, defaulting to Blacktip") MAX_ERPM_BLACKTIP)
+    ))
+    (var base_rpm (* (/ max_rpm divisor) speed_percent))
+    (if (< speed_index SPEED_REVERSE_THRESHOLD)
+        (- 0 base_rpm)
+        base_rpm
+    )
 })
 
 (move-to-flash calculate_rpm)
@@ -618,35 +611,33 @@
 ; Returns the actual speed that was set after bounds checking
 (defun set_speed_safe (new_speed)
 {
-    (let ((clamped_speed new_speed))
-    {
-        (if (= new_speed SPEED_OFF) {
-            ; Speed 99 (OFF) is always valid
-            (setvar 'speed SPEED_OFF)
-            (debug_log "Speed: Set to OFF")
-        } {
-            ; Clamp to valid range
-            (if (< new_speed SPEED_REVERSE_2) {
-                (setvar 'clamped_speed SPEED_REVERSE_2)
-                (debug_log_macro (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_2) " (underflow)"))
-            })
-
-            (if (> clamped_speed max_speed_no) {
-                (setvar 'clamped_speed max_speed_no)
-                (debug_log_macro (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str (to-i max_speed_no)) " (overflow)"))
-            })
-
-            ; Check reverse enable
-            (if (and (< clamped_speed SPEED_REVERSE_THRESHOLD) (= enable_reverse 0)) {
-                (setvar 'clamped_speed SPEED_REVERSE_THRESHOLD)
-                (debug_log_macro (str-merge "Speed: Reverse disabled, clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_THRESHOLD)))
-            })
-
-            (setvar 'speed clamped_speed)
-            (debug_log_macro (str-merge "Speed: Set to " (to-str clamped_speed)))
+    (var clamped_speed new_speed)
+    (if (= new_speed SPEED_OFF) {
+        ; Speed 99 (OFF) is always valid
+        (setvar 'speed SPEED_OFF)
+        (debug_log "Speed: Set to OFF")
+    } {
+        ; Clamp to valid range
+        (if (< new_speed SPEED_REVERSE_2) {
+            (setvar 'clamped_speed SPEED_REVERSE_2)
+            (debug_log_macro (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_2) " (underflow)"))
         })
-        clamped_speed
+
+        (if (> clamped_speed max_speed_no) {
+            (setvar 'clamped_speed max_speed_no)
+            (debug_log_macro (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str (to-i max_speed_no)) " (overflow)"))
+        })
+
+        ; Check reverse enable
+        (if (and (< clamped_speed SPEED_REVERSE_THRESHOLD) (= enable_reverse 0)) {
+            (setvar 'clamped_speed SPEED_REVERSE_THRESHOLD)
+            (debug_log_macro (str-merge "Speed: Reverse disabled, clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_THRESHOLD)))
+        })
+
+        (setvar 'speed clamped_speed)
+        (debug_log_macro (str-merge "Speed: Set to " (to-str clamped_speed)))
     })
+    clamped_speed
 })
 
 (move-to-flash set_speed_safe)
@@ -907,13 +898,15 @@
 
     (safe_start_reset_state)
 
-    (let ((last_speed SPEED_OFF))
-    {
-        (loopwhile-thd THREAD_STACK_MOTOR t {
-            (sleep SLEEP_MOTOR_CONTROL)
-            (loopwhile (!= speed last_speed) {
+    (var last_speed SPEED_OFF)
+
+    (loopwhile-thd THREAD_STACK_MOTOR t {
+        (sleep SLEEP_MOTOR_CONTROL)
+
+        (loopwhile (!= speed last_speed) {
             (debug_log_macro (str-merge "Motor: Speed change " (to-str (to-i last_speed)) "->" (to-str (to-i speed))))
             (sleep SLEEP_MOTOR_SPEED_CHANGE)
+
             ; turn off motor if speed is 99
             (if (= speed SPEED_OFF) {
                 (debug_log "Motor: Stopping motor")
@@ -922,7 +915,7 @@
                 (setvar 'disp_num DISPLAY_OFF) ; Turn on Off display. (off display is needed to ensure restart triggers a new display number)
                 (safe_start_reset_state) ; unlock speed changes and disable safe start timer
                 (setvar 'last_speed speed)
-                })
+            })
 
             (if (!= speed SPEED_OFF) {
                 ; Soft Start section for all speeds
@@ -938,48 +931,36 @@
                 })
 
                 ; Set Actual Speeds section
-            (let ((elapsed (secs-since safe_start_timer))
-                (rpm (get-rpm))
-                (duty (get-duty))
-                (current (get-current))) {
-                    (if (and (= use_safe_start 1) (not (safe_start_telemetry_valid rpm duty current)))
-                        (safe_start_abort_with_reason "invalid telemetry")
+                (var elapsed (secs-since safe_start_timer))
+                (var rpm (get-rpm))
+                (var duty (get-duty))
+                (var current (get-current))
+                (if (and (= use_safe_start 1) (not (safe_start_telemetry_valid rpm duty current)))
+                    (safe_start_abort_with_reason "invalid telemetry")
+                )
+
+                (if (or (= use_safe_start 0) (!= last_speed SPEED_SOFT_START_SENTINEL) (safe_start_met_success_criteria rpm duty current)) {
+                    (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
+                    (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                    (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
+                    (safe_start_success)
+                    (setvar 'last_speed speed)
+                } {
+                    (if (and (= use_safe_start 1) (= last_speed SPEED_SOFT_START_SENTINEL) (> elapsed (+ SAFE_START_TIMEOUT SAFE_START_TIMEOUT_GRACE)))
+                        (safe_start_abort_with_reason "timeout")
                     )
 
-                    (if (or (= use_safe_start 0)
-                            (!= last_speed SPEED_SOFT_START_SENTINEL)
-                            (safe_start_met_success_criteria rpm duty current))
-                    {
-                        (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
-                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
-                        (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
-                        (safe_start_success)
+                    ; If safe start conditions not met yet but last_speed is still sentinel, update to speed to exit inner loop after abort
+                    (if (and (= last_speed SPEED_SOFT_START_SENTINEL) (not-eq safe_start_status 'running))
                         (setvar 'last_speed speed)
-                    } {
-                        (if (and (= use_safe_start 1)
-                                 (= last_speed SPEED_SOFT_START_SENTINEL)
-                                 (> elapsed (+ SAFE_START_TIMEOUT SAFE_START_TIMEOUT_GRACE)))
-                            (safe_start_abort_with_reason "timeout")
-                        )
-
-                        ; If safe start conditions not met yet but last_speed is still sentinel, update to speed to exit inner loop after abort
-                        (if (and (= last_speed SPEED_SOFT_START_SENTINEL)
-                                 (not-eq safe_start_status 'running))
-                            (setvar 'last_speed speed)
-                        )
-                    })
-
-                    ; Detect high-current stall during safe start
-                    (if (and (= use_safe_start 1)
-                             (= last_speed SPEED_SOFT_START_SENTINEL)
-                             (> elapsed SAFE_START_TIMEOUT)
-                             (> (abs current) SAFE_START_FAIL_CURRENT)
-                             (< (abs rpm) SAFE_START_MIN_RPM))
-                        (safe_start_abort_with_reason "high current stall")
                     )
                 })
-                })
-          })
+
+                ; Detect high-current stall during safe start
+                (if (and (= use_safe_start 1) (= last_speed SPEED_SOFT_START_SENTINEL) (> elapsed SAFE_START_TIMEOUT) (> (abs current) SAFE_START_FAIL_CURRENT) (< (abs rpm) SAFE_START_MIN_RPM))
+                    (safe_start_abort_with_reason "high current stall")
+                )
+            })
         })
     })
 })
@@ -1003,63 +984,58 @@
 
 (defun start_display_output_loop()
 {
-    (let ((start_pos 0) ; variable used to define start position in the array of diferent display screens
-        (pixbuf (array-create 16)) ; create a temp array to store display bytes in
-        (display_mpu_addr 0x70)) { ; I2C Address for the screen
-        (bufclear pixbuf) ; clear the buffer
-        (loopwhile-thd THREAD_STACK_DISPLAY t {
-            (sleep SLEEP_UI_UPDATE)
-            ; xxxx Timer section to turn display off, gets reset by each new request to display
-            (if (and (> disp_timer_start 1) ; check to see if display is on. don't want to run i2c commands continuously
-                (> (secs-since disp_timer_start) TIMER_DISPLAY_DURATION)) { ; check timer to see if its longer than display duration and display needs turning off, new display commands will keep adding time
-                (if (and (= scooter_type SCOOTER_BLACKTIP) ; For Blacktip Turn off the display
-                    (!= last_disp_num DISPLAY_SMART_CRUISE_FULL)) ; if last display was the Smart Cruise, don't disable display
-                    (i2c-tx-rx 0x70 (list 0x80))
-                )
-                ; For Cuda X make sure it doesn't get stuck on displaying B1 or B2 error, so switch back to last battery.
-                (if (and (= scooter_type SCOOTER_CUDAX) (> last_disp_num 20))
-                    (setvar 'disp_num last_batt_disp_num))
+    (var start_pos 0) ; variable used to define start position in the array of diferent display screens
+    (var pixbuf (array-create 16)) ; create a temp array to store display bytes in
+    (var display_mpu_addr 0x70) ; I2C Address for the screen
+    (loopwhile-thd THREAD_STACK_DISPLAY t {
+        (sleep SLEEP_UI_UPDATE)
+        (if (and (> disp_timer_start 1) ; check to see if display is on. don't want to run i2c commands continuously
+            (> (secs-since disp_timer_start) TIMER_DISPLAY_DURATION)) { ; check timer to see if its longer than display duration and display needs turning off, new display commands will keep adding time
+            (if (and (= scooter_type SCOOTER_BLACKTIP) ; For Blacktip Turn off the display
+                (!= last_disp_num DISPLAY_SMART_CRUISE_FULL)) ; if last display was the Smart Cruise, don't disable display
+                (i2c-tx-rx 0x70 (list 0x80))
+            )
+            ; For Cuda X make sure it doesn't get stuck on displaying B1 or B2 error, so switch back to last battery.
+            (if (and (= scooter_type SCOOTER_CUDAX) (> last_disp_num 20))
+                (setvar 'disp_num last_batt_disp_num)
+            )
 
-                (setvar 'disp_timer_start 0)
-            })
-            ; xxxx End of timer section
+            (setvar 'disp_timer_start 0)
+        })
 
-            (if (!= disp_num last_disp_num) {
-                (if (= scooter_type 1) { ; For cuda X second screen
+        (if (!= disp_num last_disp_num) {
+            (setvar 'display_mpu_addr 0x70)
+            (if (= scooter_type 1) { ; For cuda X second screen
+                (if (or (= disp_num 0) (= disp_num 1) (= disp_num 2) (= disp_num 3) (> disp_num 17))
                     (if (= cudax_flip 1)
-                        (setvar 'display_mpu_addr 0x70)
                         (setvar 'display_mpu_addr 0x71)
                     )
-                    (if (or (= disp_num 0) (= disp_num 1) (= disp_num 2) (= disp_num 3) (> disp_num 17))
-                        (if (= cudax_flip 1)
-                            (setvar 'display_mpu_addr 0x71)
-                            (setvar 'display_mpu_addr 0x70)
-                        )
+                    (if (!= cudax_flip 1)
+                        (setvar 'display_mpu_addr 0x71)
                     )
-                })
-                (setvar 'disp_timer_start (systime))
-                (if (= display_mpu_addr 0x70)
-                    (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation))) ; define the correct start position in the array for the display
-                    (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation2)))
                 )
-                (bufclear pixbuf)
-                ; Copy display data from binary LUT (8 byte header + frame data)
-                (bufcpy pixbuf 0 display_lut_bin (+ 8 start_pos) 16) ; copy the required display from binary LUT to "pixbuf"
-                (i2c-tx-rx display_mpu_addr pixbuf) ; send display characters
-                (i2c-tx-rx display_mpu_addr (list 0x81)) ; Turn on display
-                (setvar 'last_disp_num disp_num)
-                (setvar 'display_mpu_addr 0x70)
             })
+            (setvar 'disp_timer_start (systime))
+            (if (= display_mpu_addr 0x70)
+                (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation))) ; define the correct start position in the array for the display
+                (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation2)))
+            )
+            (bufclear pixbuf)
+            ; Copy display data from binary LUT (8 byte header + frame data)
+            (bufcpy pixbuf 0 display_lut_bin (+ 8 start_pos) 16) ; copy the required display from binary LUT to "pixbuf"
+            (i2c-tx-rx display_mpu_addr pixbuf) ; send display characters
+            (i2c-tx-rx display_mpu_addr (list 0x81)) ; Turn on display
+            (setvar 'last_disp_num disp_num)
         })
     })
 })
 
 (move-to-flash start_display_output_loop)
 
- ; **** Program that triggers the display to show battery status ****
+; **** Program that triggers the display to show battery status ****
 (defun start_display_battery_loop()
 {
-    (let ((batt_disp_state 0))
+    (var batt_disp_state 0)
     (loopwhile-thd THREAD_STACK_BATTERY t {
        (sleep SLEEP_UI_UPDATE)
 
@@ -1152,7 +1128,6 @@
             (setvar 'batt_disp_timer_start 0)
         })
     })
-    )
 })
 
 (move-to-flash start_display_battery_loop)
@@ -1181,31 +1156,30 @@
 ; ***** Program that beeps trigger clicks
 (defun start_beeper_loop()
 {
-    (let ((click_beep_timer 0))
-        (loopwhile-thd THREAD_STACK_CLICK_BEEP t {
-            (sleep SLEEP_UI_UPDATE)
+    (var click_beep_timer 0)
+    (loopwhile-thd THREAD_STACK_CLICK_BEEP t {
+        (sleep SLEEP_UI_UPDATE)
 
-            (if (and (> (secs-since click_beep_timer) SLEEP_UI_UPDATE) (!= click_beep_timer 0)) {
-                (foc-play-stop)
-                (setvar 'click_beep_timer 0)
-            })
-
-            (if (> click_beep 0) {
-                (if (and (= click_beep CLICKS_QUINTUPLE) (> enable_smart_cruise 0) (!= speed SPEED_OFF))
-                    (foc-play-tone 1 1500 beeps_vol)
-                )
-                (if (= enable_trigger_beeps 1) {
-                    (if (= click_beep CLICKS_SINGLE)(foc-play-tone 1 2500 beeps_vol))
-                    (if (= click_beep CLICKS_DOUBLE)(foc-play-tone 1 3000 beeps_vol))
-                    (if (= click_beep CLICKS_TRIPLE)(foc-play-tone 1 3500 beeps_vol))
-                    (if (= click_beep CLICKS_QUADRUPLE)(foc-play-tone 1 4000 beeps_vol))
-                })
-
-                (setvar 'click_beep_timer (systime))
-                (setvar 'click_beep 0)
-            })
+        (if (and (> (secs-since click_beep_timer) SLEEP_UI_UPDATE) (!= click_beep_timer 0)) {
+            (foc-play-stop)
+            (setvar 'click_beep_timer 0)
         })
-    )
+
+        (if (> click_beep 0) {
+            (if (and (= click_beep CLICKS_QUINTUPLE) (> enable_smart_cruise 0) (!= speed SPEED_OFF))
+                (foc-play-tone 1 1500 beeps_vol)
+            )
+            (if (= enable_trigger_beeps 1) {
+                (if (= click_beep CLICKS_SINGLE)(foc-play-tone 1 2500 beeps_vol))
+                (if (= click_beep CLICKS_DOUBLE)(foc-play-tone 1 3000 beeps_vol))
+                (if (= click_beep CLICKS_TRIPLE)(foc-play-tone 1 3500 beeps_vol))
+                (if (= click_beep CLICKS_QUADRUPLE)(foc-play-tone 1 4000 beeps_vol))
+            })
+
+            (setvar 'click_beep_timer (systime))
+            (setvar 'click_beep 0)
+        })
+    })
 })
 
 (move-to-flash start_beeper_loop)
