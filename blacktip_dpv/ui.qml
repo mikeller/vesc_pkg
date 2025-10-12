@@ -1214,7 +1214,7 @@ Item {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     topPadding:10
-                    text: "A single click while Smart Cruise is active will reset the timeout timer. To disable Smart Cruise, do another triple (3) click."
+                    text: "While Smart Cruise is active: short trigger taps reset the timeout timer. To adjust speed, hold the trigger for >1 second, release, then do 1 click (speed down) or 2 clicks (speed up). To disable Smart Cruise, do another triple (3) click after a long hold."
                 }
 
                 Text {
