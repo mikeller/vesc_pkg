@@ -484,7 +484,7 @@
 
 (move-to-flash get_battery_level)
 
-(defun my_data_recv_prog (data)
+(defun receive_data (data)
 {
     (if (= (bufget-u8 data 0) HANDSHAKE_CODE) { ; Handshake to trigger data send if not yet received.
         (var setbuf (array-create EEPROM_SETTINGS_COUNT)) ; create a temp array to store setting
@@ -505,7 +505,7 @@
     })
 })
 
-(move-to-flash my_data_recv_prog)
+(move-to-flash receive_data)
 
 ; Setup functions (init-only, not moved to flash)
 (defun setup_event_handler ()
@@ -514,7 +514,7 @@
     {
         (loopwhile t
             (recv
-                ((event-data-rx . (? data)) (my_data_recv_prog data))
+                ((event-data-rx . (? data)) (receive_data data))
                 (_ nil))
         )
     })
