@@ -2,7 +2,7 @@ import QtQuick 2.15
 
 Item {
     property string pkgName: "BlacktipDPV"
-    property string pkgDescriptionMd: "README.md"
+    property string pkgDescriptionMd: "README.dist.md"
     property string pkgLisp: "blacktip_dpv.lisp"
     property string pkgQml: "ui.qml"
     property bool pkgQmlIsFullscreen: true
