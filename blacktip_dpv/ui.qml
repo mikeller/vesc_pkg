@@ -301,7 +301,7 @@ Item {
                             id: jump_speed
                             Layout.fillWidth: true
                             decimals: 0
-                            prefix: "Jump Speed (3 Clicks): "
+                            prefix: "Jump Speed (3 Clicks while stopped): "
                             realFrom: 1
                             realTo: no_speeds.realValue
                             realValue: 6
@@ -372,17 +372,17 @@ Item {
 
                         Button {
                             Layout.fillWidth: true
-                            text: "Enable Untangle && Reverse (4 Clicks)"
+                            text: "Enable Smart Cruise (3 clicks while running)"
                             onClicked: {
-                                reverseDialog.open()
+                                smartCruiseDialog.open()
                             }
                         }
 
                         Button {
                             Layout.fillWidth: true
-                            text: "Enable Smart Cruise (5 clicks)"
+                            text: "Enable Untangle && Reverse (4 Clicks while stopped)"
                             onClicked: {
-                                smartCruiseDialog.open()
+                                reverseDialog.open()
                             }
                         }
 
@@ -910,7 +910,7 @@ Item {
         da1.setUint8(13, 1)
         da1.setUint8(14, 0)
         da1.setUint8(15, 0)
-        da1.setUint8(16, 1)
+        da1.setUint8(16, 60)
         da1.setUint8(17, 2)
         da1.setUint8(18, 5)
         da1.setUint8(19, 3)
@@ -1206,7 +1206,7 @@ Item {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
 
-                    text: "This gives you the option of Smart Cruise.  If when running you do a quintuple (5) click the display will show \"C ?\" another quintuple click this will confirm and Smart Cruise will be engaged. The display will show \"C\"."
+                    text: "This gives you the option of Smart Cruise. While running, do a triple (3) click and the display will show \"C\" and Smart Cruise will be engaged."
                 }
 
                 Text {
@@ -1214,7 +1214,7 @@ Item {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     topPadding:10
-                    text: "Any click on the trigger will disengage Smart Cruise."
+                    text: "A single click while Smart Cruise is active will reset the timeout timer. To disable Smart Cruise, do another triple (3) click."
                 }
 
                 Text {
@@ -1222,7 +1222,7 @@ Item {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     topPadding:10
-                    text: "Smart Cruise also times out after the duration set below. At the set time the display will show “C?” and reduce your rpm’s slightly. A quintuple click will reengage Smart Cruise otherwise the scooter will stop."
+                    text: "Smart Cruise also times out after the duration set below. At the set time the display will show “C?” and reduce your rpm’s slightly. Another triple click will re-engage Smart Cruise, otherwise the scooter will stop."
                 }
 
                 Text {
