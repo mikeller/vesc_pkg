@@ -86,6 +86,9 @@
 (define SAFE_START_MAX_RETRIES 3)     ; Max safe start retries before shutting down
 (define SAFE_START_RETRY_BACKOFF 0.2) ; Delay before retrying safe start (seconds)
 
+; Soft-start duration (how long to hold reduced current before restoring)
+(define SOFT_START_DURATION SAFE_START_TIMEOUT)
+
 ; Smart Cruise speed adjustment (slowdown to 80%)
 (define SMART_CRUISE_SLOWDOWN_DIVISOR 125) ; Divide by 125 instead of 100 for 80%
 
@@ -223,14 +226,42 @@
 ; =============================================================================
 ; Safe Start Helpers
 ; =============================================================================
+; Canonical values for `safe_start_status` used throughout the codebase:
+;  - 'idle    : not running / feature disabled
+;  - 'running : safe-start attempt in progress
+;  - 'success : safe-start completed successfully
+;  - 'failed  : safe-start attempt failed (may retry)
+; Keep checks limited to these symbols and use `soft_start_active` boolean for
+; soft-start vs safe-start distinctions when needed.
 ; =============================================================================
+
+; Helper to set safe_start_status and emit a concise debug log when it changes
+(defun safe_start_set_status (new_status)
+{
+    (var old_status safe_start_status)
+    (setvar 'safe_start_status new_status)
+    (if (and (not-eq debug_enabled nil) (= debug_enabled 1) (not-eq old_status new_status)) {
+        (debug_log_format (str-merge "SafeStart: " (to-str old_status) " -> " (to-str new_status)))
+    })
+})
+
+(move-to-flash safe_start_set_status)
+
+; Helper to set soft_start_active (silent - no logging to reduce noise)
+(defun soft_start_set_active (val)
+{
+    (setvar 'soft_start_active val)
+})
+
+(move-to-flash soft_start_set_active)
 
 (defun safe_start_reset_state ()
 {
     (setvar 'safe_start_timer 0)
     (setvar 'safe_start_attempt_speed SPEED_OFF)
     (setvar 'safe_start_failures 0)
-    (setvar 'safe_start_status 'idle)
+    (safe_start_set_status 'idle)
+    (soft_start_set_active 0)
 })
 
 (move-to-flash safe_start_reset_state)
@@ -241,11 +272,11 @@
     (if (= use_safe_start 1) {
         (setvar 'safe_start_timer (systime))
         (setvar 'safe_start_attempt_speed target_speed)
-        (setvar 'safe_start_status 'running)
-        (debug_log (str-merge "Motor: Safe start attempt " (to-str (+ safe_start_failures 1)) " targeting speed " (to-str target_speed)))
+        (safe_start_set_status 'running)
+        (debug_log (str-merge "Motor: Safe start attempt " (to-str (+ safe_start_failures 1)) " targeting speed " (to-str (to-i target_speed))))
     } {
-        ; Mark as disabled so callers can detect the state and avoid logging/abort flows
-        (setvar 'safe_start_status 'disabled)
+        ; Feature disabled: set status to 'idle so callers treat it as not running
+        (safe_start_set_status 'idle)
         (setvar 'safe_start_timer 0)
         (setvar 'safe_start_attempt_speed SPEED_OFF)
     })
@@ -258,7 +289,7 @@
     (setvar 'safe_start_timer 0)
     (setvar 'safe_start_attempt_speed SPEED_OFF)
     (setvar 'safe_start_failures 0)
-    (setvar 'safe_start_status 'success)
+    (safe_start_set_status 'success)
 })
 
 (move-to-flash safe_start_success)
@@ -266,8 +297,10 @@
 (defun safe_start_increment_failure (reason)
 {
     (setvar 'safe_start_failures (+ safe_start_failures 1))
-    (setvar 'safe_start_status 'failed)
-    (debug_log (str-merge "Motor: Safe start attempt " (to-str safe_start_failures) "/" (to-str SAFE_START_MAX_RETRIES) " failed (" reason ")"))
+    (safe_start_set_status 'failed)
+    (if (and (not-eq debug_enabled nil) (= debug_enabled 1)) {
+        (debug_log (str-merge "Motor: Safe start attempt " (to-str safe_start_failures) "/" (to-str SAFE_START_MAX_RETRIES) " failed (" reason ")"))
+    })
 })
 
 (move-to-flash safe_start_increment_failure)
@@ -286,7 +319,9 @@
         (sleep SAFE_START_RETRY_BACKOFF)
         (safe_start_begin safe_start_attempt_speed)
     } {
-        (debug_log "Motor: Safe start retries exhausted, stopping motor")
+        (if (and (not-eq debug_enabled nil) (= debug_enabled 1)) {
+            (debug_log (str-merge "Motor: Safe start retries exhausted, stopping motor (reason=" reason ")"))
+        })
         (set_speed_safe SPEED_OFF)
         (state_transition_to STATE_COUNTING_CLICKS "safe_start_abort" THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
         (foc-beep 250 0.15 5)
@@ -691,7 +726,7 @@
         ; Clamp to valid range
         (if (< new_speed SPEED_REVERSE_2) {
             (setvar 'clamped_speed SPEED_REVERSE_2)
-            (debug_log_format (str-merge "Speed: Clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_2) " (underflow)"))
+            (debug_log_format (str-merge "Speed: Clamped " (to-str (to-i new_speed)) " to " (to-str SPEED_REVERSE_2) " (underflow)"))
         })
 
         (if (> clamped_speed max_speed_no) {
@@ -702,11 +737,11 @@
         ; Check reverse enable
         (if (and (< clamped_speed SPEED_REVERSE_THRESHOLD) (= enable_reverse 0)) {
             (setvar 'clamped_speed SPEED_REVERSE_THRESHOLD)
-            (debug_log_format (str-merge "Speed: Reverse disabled, clamped " (to-str new_speed) " to " (to-str SPEED_REVERSE_THRESHOLD)))
+            (debug_log_format (str-merge "Speed: Reverse disabled, clamped " (to-str (to-i new_speed)) " to " (to-str SPEED_REVERSE_THRESHOLD)))
         })
 
         (setvar 'speed clamped_speed)
-        (debug_log_format (str-merge "Speed: Set to " (to-str clamped_speed)))
+        (debug_log_format (str-merge "Speed: Set to " (to-str (to-i clamped_speed))))
     })
     clamped_speed
 })
@@ -755,7 +790,7 @@
         })
         ((= click_count CLICKS_DOUBLE) {
             (if (= speed SPEED_OFF) {
-                (debug_log_format (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
+                (debug_log_format (str-merge "Click action: Double click (start at speed " (to-str (to-i new_start_speed)) ")"))
                 (set_speed_safe new_start_speed)
             } {
                 (debug_log "Click action: Double click (speed up)")
@@ -833,7 +868,7 @@
             (apply_click_action clicks)
 
             ; End of Click Actions
-            (debug_log_format (str-merge "State 1->2: Speed=" (to-str speed)))
+            (debug_log_format (str-merge "State 1->2: Speed=" (to-str (to-i speed))))
             (setvar 'clicks 0)
             (setvar 'timer_duration TIMER_DISABLED)
             (state_transition_to STATE_PRESSED "click_window_expired" THREAD_STACK_STATE_MACHINE state_handler_pressed)
@@ -910,7 +945,7 @@
                     (debug_log "Smart Cruise: Disabled by button press")
                     (setvar 'smart_cruise SMART_CRUISE_OFF)
                 }
-                (if (= safe_start_timer 0) { ; safe start uses 0 as the inactive sentinel
+                (if (eq safe_start_status 'idle) { ; safe-start inactive
                     (setvar 'clicks (+ clicks 1))
                 })
             )
@@ -964,7 +999,10 @@
         (sleep SLEEP_MOTOR_CONTROL)
 
         (loopwhile (!= speed last_speed) {
-            (debug_log_format (str-merge "Motor: Speed change " (to-str (to-i last_speed)) "->" (to-str (to-i speed))))
+            ; Only log speed changes that aren't part of soft-start monitoring
+            (if (!= last_speed SPEED_SOFT_START_SENTINEL)
+                (debug_log_format (str-merge "Motor: Speed change " (to-str (to-i last_speed)) "->" (to-str (to-i speed))))
+            )
             (sleep SLEEP_MOTOR_SPEED_CHANGE)
 
             ; turn off motor if speed is 99
@@ -978,49 +1016,89 @@
             })
 
             (if (!= speed SPEED_OFF) {
-                ; Soft Start section for all speeds
+                ; Soft Start initiation section (only when starting from off)
                 (if (= last_speed SPEED_OFF) {
                     (debug_log "Motor: Soft start initiated")
                     (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MIN_CURRENT_BLACKTIP MIN_CURRENT_CUDAX))
-                    (safe_start_begin speed)
+                    ; Start the soft-start timer regardless of safe-start being enabled so we can restore currents after a short period
+                    (setvar 'soft_start_timer (systime))
+                    (soft_start_set_active 1)
+                    (setvar 'safe_start_attempt_speed speed)
+                    (if (= use_safe_start 1)
+                        (safe_start_begin speed)
+                        (safe_start_set_status 'idle)) ; keep safe_start_status idle when disabled
                     (setvar 'last_speed SPEED_SOFT_START_SENTINEL)
                     (if (< speed SPEED_REVERSE_THRESHOLD)
                         (set-duty (- 0 SAFE_START_DUTY))
                         (set-duty SAFE_START_DUTY)
                     )
-                })
-
-                ; Set Actual Speeds section
-                (var elapsed (secs-since safe_start_timer))
-                (var rpm (get-rpm))
-                (var duty (get-duty))
-                (var current (get-current))
-                (if (and (= use_safe_start 1) (not (safe_start_telemetry_valid rpm duty current)))
-                    (safe_start_abort_with_reason "invalid telemetry")
-                )
-
-                (if (or (= use_safe_start 0) (!= last_speed SPEED_SOFT_START_SENTINEL) (safe_start_met_success_criteria rpm duty current)) {
-                    (debug_log "Motor: Soft start completed")
-                    (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
-                    (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
-                    (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
-                    (safe_start_success)
-                    (setvar 'last_speed speed)
                 } {
-                    (if (and (= use_safe_start 1) (= last_speed SPEED_SOFT_START_SENTINEL) (> elapsed (+ SAFE_START_TIMEOUT SAFE_START_TIMEOUT_GRACE)))
-                        (safe_start_abort_with_reason "timeout")
-                    )
-
-                    ; If safe start conditions not met yet but last_speed is still sentinel, update to speed to exit inner loop after abort
-                    (if (and (= last_speed SPEED_SOFT_START_SENTINEL) (not-eq safe_start_status 'running))
+                    ; Speed change while already running (not from off, not during soft-start)
+                    (if (!= last_speed SPEED_SOFT_START_SENTINEL) {
+                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                        (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
                         (setvar 'last_speed speed)
-                    )
+                    })
                 })
 
-                ; Detect high-current stall during safe start
-                (if (and (= use_safe_start 1) (= last_speed SPEED_SOFT_START_SENTINEL) (> elapsed SAFE_START_TIMEOUT) (> (abs current) SAFE_START_FAIL_CURRENT) (< (abs rpm) SAFE_START_MIN_RPM))
-                    (safe_start_abort_with_reason "high current stall")
-                )
+                ; Soft-start/Safe-start monitoring section (runs while sentinel is active)
+                (if (= last_speed SPEED_SOFT_START_SENTINEL) {
+                    (var soft_elapsed (secs-since soft_start_timer))
+                    (var rpm (get-rpm))
+                    (var duty (get-duty))
+                    (var current (get-current))
+
+                    ; For safe-start enabled: check telemetry and criteria
+                    (if (= use_safe_start 1) {
+                        (var elapsed (secs-since safe_start_timer))
+
+                        ; Check for invalid telemetry
+                        (if (not (safe_start_telemetry_valid rpm duty current))
+                            (safe_start_abort_with_reason "invalid telemetry")
+                        )
+
+                        ; Check safe-start completion
+                        (if (safe_start_met_success_criteria rpm duty current)
+                            {
+                                (debug_log "Motor: Soft start completed (telemetry)")
+                                (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
+                                (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                                (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
+                                (safe_start_success)
+                                (soft_start_set_active 0)
+                                (setvar 'last_speed speed)
+                            } {
+                                ; Check timeout
+                                (if (> elapsed (+ SAFE_START_TIMEOUT SAFE_START_TIMEOUT_GRACE))
+                                    (safe_start_abort_with_reason "timeout")
+                                )
+
+                                ; Detect high-current stall
+                                (if (and (> elapsed SAFE_START_TIMEOUT) (> (abs current) SAFE_START_FAIL_CURRENT) (< (abs rpm) SAFE_START_MIN_RPM))
+                                    (safe_start_abort_with_reason "high current stall")
+                                )
+
+                                ; If aborted, exit sentinel
+                                (if (not (eq safe_start_status 'running))
+                                    (setvar 'last_speed speed)
+                                )
+                            })
+                    } {
+                        ; For safe-start disabled: just wait for timer
+                        (if (> soft_elapsed SOFT_START_DURATION)
+                            {
+                                (debug_log "Motor: Soft start completed (timer)")
+                                (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
+                                (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                                (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
+                                ; Clear timers without changing safe-start status (feature disabled)
+                                (setvar 'soft_start_timer 0)
+                                (setvar 'safe_start_timer 0)
+                                (soft_start_set_active 0)
+                                (setvar 'last_speed speed)
+                            })
+                    })
+                })
             })
         })
     })
@@ -1301,6 +1379,8 @@
 
     (define speed SPEED_OFF)
     (define safe_start_timer 0)
+    (define soft_start_timer 0)
+    (define soft_start_active 0)
     (define safe_start_attempt_speed SPEED_OFF)
     (define safe_start_failures 0)
     (define safe_start_status 'idle)
