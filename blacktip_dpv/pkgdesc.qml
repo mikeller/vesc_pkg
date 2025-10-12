@@ -36,7 +36,7 @@ Item {
             return false
         }
 
-        if (major != 6 || minor != 5) {
+        if (major != 6 || minor != 6) {
             return false
         }
 
