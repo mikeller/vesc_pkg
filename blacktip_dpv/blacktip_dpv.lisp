@@ -15,6 +15,7 @@
 (define TIMER_CLICK_WINDOW 0.3)       ; Click detection window
 (define TIMER_RELEASE_WINDOW 0.5)     ; Release detection window
 (define TIMER_SMART_CRUISE_TIMEOUT 5) ; Smart Cruise half-enable timeout
+(define TIMER_SMART_CRUISE_HOLD 1.0)  ; Hold duration before Smart Cruise adjustments
 (define TIMER_DISPLAY_DURATION 5)     ; Display duration (used in calculations)
 (define TIMER_LONG_PRESS 10)          ; Long press duration for special functions
 
@@ -780,17 +781,40 @@
         ((= click_count CLICKS_SINGLE) {
             (if (!= speed SPEED_OFF) {
                 (if (> smart_cruise SMART_CRUISE_OFF) {
-                    (debug_log "Click action: Single click (Smart Cruise timer reset)")
-                    (setvar 'click_beep CLICKS_SINGLE)
-                    (setvar 'timer_start (systime))
-                    ; If in warning mode, upgrade back to fully enabled
-                    (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
-                        (debug_log "Smart Cruise: Re-enabled from warning mode")
-                        (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
-                        (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                    ; Smart Cruise is active
+                    (if (> initial_press_time TIMER_SMART_CRUISE_HOLD) {
+                        ; Long hold before click - change speed down
+                        (debug_log "Click action: Single click after hold (Smart Cruise: speed down + timer reset)")
+                        (setvar 'click_beep CLICKS_SINGLE)
+                        (setvar 'timer_start (systime))
+                        ; If in warning mode, upgrade back to fully enabled
+                        (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
+                            (debug_log "Smart Cruise: Re-enabled from warning mode")
+                            (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
+                            (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+                            (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                        })
+                        ; Change speed down
+                        (cond
+                            ((> speed SPEED_REVERSE_THRESHOLD)
+                                (set_speed_safe (- speed 1)))
+                            ((= speed SPEED_REVERSE_2)
+                                (set_speed_safe SPEED_UNTANGLE)))
+                    } {
+                        ; Quick tap - just reset timer
+                        (debug_log "Click action: Single click (Smart Cruise timer reset)")
+                        (setvar 'click_beep CLICKS_SINGLE)
+                        (setvar 'timer_start (systime))
+                        ; If in warning mode, upgrade back to fully enabled
+                        (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
+                            (debug_log "Smart Cruise: Re-enabled from warning mode")
+                            (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
+                            (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+                            (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                        })
                     })
                 } {
+                    ; Smart Cruise not active - normal speed down
                     (debug_log "Click action: Single click (speed down)")
                     (setvar 'click_beep CLICKS_SINGLE)
                     (cond
@@ -808,6 +832,17 @@
             } {
                 (debug_log "Click action: Double click (speed up)")
                 (setvar 'click_beep CLICKS_DOUBLE)
+                ; Only reset Smart Cruise timer if there was a long hold and Smart Cruise is active
+                (if (and (> smart_cruise SMART_CRUISE_OFF) (> initial_press_time TIMER_SMART_CRUISE_HOLD)) {
+                    (setvar 'timer_start (systime))
+                    ; If in warning mode, upgrade back to fully enabled
+                    (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
+                        (debug_log "Smart Cruise: Re-enabled from warning mode")
+                        (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
+                        (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                    })
+                })
                 (if (< speed max_speed_no) {
                     (if (> speed SPEED_UNTANGLE)
                         (set_speed_safe (+ speed 1))
@@ -941,6 +976,8 @@
         (if (= sw_pressed 0) {
             (debug_log "State 2->3: Released")
             (setvar 'thirds_warning_latched 0)
+            ; Record how long the button was held before first release
+            (setvar 'initial_press_time (secs-since timer_start))
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_RELEASE_WINDOW)
             (state_transition_to STATE_GOING_OFF "released" THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
@@ -967,11 +1004,12 @@
 
             ; Check if this is a new click sequence (timer expired) or continuation
             (if (> (secs-since timer_start) timer_duration) {
-                ; New click sequence - reset counter
+                ; New click sequence - reset counter and initial press time
                 (setvar 'clicks 1)
+                (setvar 'initial_press_time 0)
             } {
                 ; Continuation of existing click sequence - increment
-                (if (eq safe_start_status 'idle) { ; safe-start inactive
+                (if (not (eq safe_start_status 'running)) { ; block only while safe-start is in progress
                     (setvar 'clicks (+ clicks 1))
                 })
             })
@@ -1171,9 +1209,15 @@
         (sleep SLEEP_UI_UPDATE)
         (if (and (> disp_timer_start 1) ; check to see if display is on. don't want to run i2c commands continuously
             (> (secs-since disp_timer_start) TIMER_DISPLAY_DURATION)) { ; check timer to see if its longer than display duration and display needs turning off, new display commands will keep adding time
-            (if (and (= scooter_type SCOOTER_BLACKTIP) ; For Blacktip Turn off the display
-                (!= last_disp_num DISPLAY_SMART_CRUISE_FULL)) ; if last display was the Smart Cruise, don't disable display
+            ; If last display was Smart Cruise 'C', switch to speed display instead of turning off
+            (if (= last_disp_num DISPLAY_SMART_CRUISE_FULL) {
+                (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
+            }
+            ; For Blacktip, if not Smart Cruise, turn off the display
+            (if (and (= scooter_type SCOOTER_BLACKTIP)
+                (!= last_disp_num DISPLAY_SMART_CRUISE_FULL))
                 (i2c-tx-rx 0x70 (list 0x80))
+            )
             )
             ; For Cuda X make sure it doesn't get stuck on displaying B1 or B2 error, so switch back to last battery.
             (if (and (= scooter_type SCOOTER_CUDAX) (> last_disp_num 20))
@@ -1409,6 +1453,7 @@
     (define sw_state 0)
     (define timer_start 0)
     (define timer_duration 0)
+    (define initial_press_time 0)
     (define clicks 0)
     (define actual_batt 0)
     (define new_start_speed start_speed)
