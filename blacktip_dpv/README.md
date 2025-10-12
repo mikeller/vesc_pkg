@@ -29,7 +29,17 @@ Always stays compatible with latest VESC firmware, ensuring your scooter runs as
 
 When stopped, a triple click jumps the scooter to a preset speed (by default speed 6, overdrive). The jump speed can be set via the app to whatever speed you want.
 
-When running, a triple click activates Smart Cruise if enabled in the app. The display will show "C" to indicate Smart Cruise is active. A single click while Smart Cruise is active will reset the timeout timer. To disable Smart Cruise, do another triple click.
+When running, a triple click activates Smart Cruise if enabled in the app. The display will show "C" to indicate Smart Cruise is active.
+
+#### Smart Cruise Controls
+
+While Smart Cruise is active, the following trigger patterns are available:
+
+- **Short single trigger tap**: Reset timeout timer only
+- **Long continuous trigger pull (>1s)**: Reset timeout timer only
+- **Long pull (>1s), release, then pull again**: Speed down + reset timeout timer
+- **Long pull (>1s), release, single tap, then pull**: Speed up + reset timeout timer
+- **Triple click**: Disable Smart Cruise
 
 Smart Cruise can also be set to auto-engage after the scooter has been running at the same speed for some time. It will auto-disengage after a user-configurable timeout.
 
