@@ -193,7 +193,7 @@
             (eeprom_store_i_if_changed 12 7) ; Speed to jump to on triple click, (actual speed #, not user speed)
             (eeprom_store_i_if_changed 13 1) ; Turn safe start on or off 1=On 0=Off
             (eeprom_store_i_if_changed 14 0) ; Enable Reverse speed. 1=On 0=Off
-            (eeprom_store_i_if_changed 15 0) ; Enable 5 click Smart Cruise. 1=On 0=Off
+            (eeprom_store_i_if_changed 15 0) ; Enable Smart Cruise (3 clicks while running). 1=On 0=Off
             (eeprom_store_i_if_changed 16 60) ; How long before Smart Cruise times out and requires reactivation in sec.
             (eeprom_store_i_if_changed 17 0) ; rotation of Display, 0-3 . Each number rotates display 90 deg.
             (eeprom_store_i_if_changed 18 5) ; Display Brighness 0-5
@@ -779,13 +779,26 @@
     (cond
         ((= click_count CLICKS_SINGLE) {
             (if (!= speed SPEED_OFF) {
-                (debug_log "Click action: Single click (speed down)")
-                (setvar 'click_beep CLICKS_SINGLE)
-                (cond
-                    ((> speed SPEED_REVERSE_THRESHOLD)
-                        (set_speed_safe (- speed 1)))
-                    ((= speed SPEED_REVERSE_2)
-                        (set_speed_safe SPEED_UNTANGLE)))
+                (if (> smart_cruise SMART_CRUISE_OFF) {
+                    (debug_log "Click action: Single click (Smart Cruise timer reset)")
+                    (setvar 'click_beep CLICKS_SINGLE)
+                    (setvar 'timer_start (systime))
+                    ; If in warning mode, upgrade back to fully enabled
+                    (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
+                        (debug_log "Smart Cruise: Re-enabled from warning mode")
+                        (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
+                        (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                    })
+                } {
+                    (debug_log "Click action: Single click (speed down)")
+                    (setvar 'click_beep CLICKS_SINGLE)
+                    (cond
+                        ((> speed SPEED_REVERSE_THRESHOLD)
+                            (set_speed_safe (- speed 1)))
+                        ((= speed SPEED_REVERSE_2)
+                            (set_speed_safe SPEED_UNTANGLE)))
+                })
             })
         })
         ((= click_count CLICKS_DOUBLE) {
@@ -803,11 +816,34 @@
             })
         })
         ((= click_count CLICKS_TRIPLE) {
-            (debug_log_format (str-merge "Click action: Triple click (jump to speed " (to-str (to-i jump_speed)) ")"))
-            (if (!= speed SPEED_OFF)
-                (setvar 'click_beep CLICKS_TRIPLE)
-            )
-            (set_speed_safe jump_speed)
+            (if (= speed SPEED_OFF) {
+                (debug_log_format (str-merge "Click action: Triple click (jump to speed " (to-str (to-i jump_speed)) ")"))
+                (set_speed_safe jump_speed)
+            } {
+                ; Running - check Smart Cruise state first
+                (if (> smart_cruise SMART_CRUISE_OFF) {
+                    ; Smart Cruise is active (any state) - disable it
+                    (debug_log "Click action: Triple click (Smart Cruise disabled)")
+                    (setvar 'click_beep CLICKS_TRIPLE)
+                    (setvar 'smart_cruise SMART_CRUISE_OFF)
+                } {
+                    ; Smart Cruise not active - check if feature is enabled
+                    (if (> enable_smart_cruise 0) {
+                        ; Enable Smart Cruise
+                        (debug_log "Click action: Triple click (Smart Cruise enabled)")
+                        (setvar 'click_beep CLICKS_TRIPLE)
+                        (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
+                        (setvar 'timer_start (systime))
+                        (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                    } {
+                        ; Smart Cruise not enabled in settings, treat as jump speed
+                        (debug_log_format (str-merge "Click action: Triple click (jump to speed " (to-str (to-i jump_speed)) ")"))
+                        (setvar 'click_beep CLICKS_TRIPLE)
+                        (set_speed_safe jump_speed)
+                    })
+                })
+            })
         })
         ((= click_count CLICKS_QUADRUPLE) {
             (if (= enable_reverse 1) {
@@ -816,25 +852,6 @@
                     (setvar 'click_beep CLICKS_QUADRUPLE)
                 )
                 (set_speed_safe SPEED_UNTANGLE)
-            })
-        })
-        ((= click_count CLICKS_QUINTUPLE) {
-            (debug_log_format (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
-            (setvar 'click_beep CLICKS_QUINTUPLE)
-            (if (and (!= speed SPEED_OFF) (> enable_smart_cruise 0) (< smart_cruise SMART_CRUISE_FULLY_ENABLED))
-                (setvar 'smart_cruise (+ 1 smart_cruise))
-            )
-
-            (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
-                (debug_log "Smart Cruise: Half-enabled (waiting for confirmation)")
-                (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
-                (setvar 'last_disp_num DISPLAY_SENTINEL)
-            })
-
-            (if (= smart_cruise SMART_CRUISE_FULLY_ENABLED) {
-                (debug_log "Smart Cruise: Fully enabled")
-                (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
             })
         })
         (t
@@ -868,10 +885,19 @@
             (apply_click_action clicks)
 
             ; End of Click Actions
-            (debug_log_format (str-merge "State 1->2: Speed=" (to-str (to-i speed))))
             (setvar 'clicks 0)
             (setvar 'timer_duration TIMER_DISABLED)
-            (state_transition_to STATE_PRESSED "click_window_expired" THREAD_STACK_STATE_MACHINE state_handler_pressed)
+
+            ; Transition based on actual button state
+            (if (= sw_pressed 1) {
+                (debug_log_format (str-merge "State 1->2: Speed=" (to-str (to-i speed))))
+                (state_transition_to STATE_PRESSED "click_window_expired" THREAD_STACK_STATE_MACHINE state_handler_pressed)
+            } {
+                (debug_log "State 1->3: Button released during click window")
+                (setvar 'timer_start (systime))
+                (setvar 'timer_duration TIMER_RELEASE_WINDOW)
+                (state_transition_to STATE_GOING_OFF "click_window_expired" THREAD_STACK_STATE_TRANSITIONS state_handler_going_off)
+            })
             (break)
         })
     })
@@ -938,17 +964,20 @@
         ; Pressed
         (if (= sw_pressed 1) {
             (timeout-reset) ; keeps motor running, vesc automatically stops if it doesn't receive this command every second
-            (setvar 'timer_start (systime))
-            (setvar 'timer_duration TIMER_CLICK_WINDOW)
 
-            (if (>= smart_cruise SMART_CRUISE_FULLY_ENABLED) { ; if Smart Cruise is on and switch pressed, turn it off
-                    (debug_log "Smart Cruise: Disabled by button press")
-                    (setvar 'smart_cruise SMART_CRUISE_OFF)
-                }
+            ; Check if this is a new click sequence (timer expired) or continuation
+            (if (> (secs-since timer_start) timer_duration) {
+                ; New click sequence - reset counter
+                (setvar 'clicks 1)
+            } {
+                ; Continuation of existing click sequence - increment
                 (if (eq safe_start_status 'idle) { ; safe-start inactive
                     (setvar 'clicks (+ clicks 1))
                 })
-            )
+            })
+
+            (setvar 'timer_start (systime))
+            (setvar 'timer_duration TIMER_CLICK_WINDOW)
 
             (state_transition_to STATE_COUNTING_CLICKS "button_pressed" THREAD_STACK_STATE_COUNTING state_handler_counting_clicks)
             (break)
@@ -956,31 +985,43 @@
 
         ; Timer Expiry
         (if (> (secs-since timer_start) timer_duration) {
-            (if (and (!= smart_cruise SMART_CRUISE_FULLY_ENABLED) (!= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) { ; If Smart Cruise is enabled, don't shut down
-                (debug_log "State 3->0: Timeout, shutting down")
-                (setvar 'timer_duration TIMER_DISABLED)
-                (cond
-                    ((and (< speed start_speed) (> speed SPEED_UNTANGLE)) ; start at old speed if less than start speed
-                        (setvar 'new_start_speed speed))
-                    ((>= speed start_speed)
-                        (setvar 'new_start_speed start_speed)))
-                (set_speed_safe SPEED_OFF)
-                (setvar 'smart_cruise SMART_CRUISE_OFF) ; turn off Smart Cruise
-                (state_transition_to STATE_OFF "timeout_shutdown" THREAD_STACK_STATE_TRANSITIONS state_handler_off)
-                (break) ; SWST_OFF
-            })
-
-            (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) ; Require Smart Cruise to be re-enabled after a fixed duration
-                (if (> (secs-since timer_start) smart_cruise_timeout) {
-                    (setvar 'smart_cruise SMART_CRUISE_HALF_ENABLED)
-                    (setvar 'timer_start (systime))
-                    (setvar 'timer_duration TIMER_SMART_CRUISE_TIMEOUT) ; sets timer duration to display duration to allow for re-enable
-                    (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
-                    (setvar 'click_beep CLICKS_QUINTUPLE)
-                    ; slow scooter to 80% to help people realize custom is expiring
-                    (set-rpm (calculate_rpm speed SMART_CRUISE_SLOWDOWN_DIVISOR))
+            ; Check if we have pending clicks to process first
+            (if (> clicks 0) {
+                (debug_log_format (str-merge "State 3: Processing pending clicks=" (to-str clicks)))
+                (apply_click_action clicks)
+                (setvar 'clicks 0)
+                ; Reset timer to stay in GOING_OFF state
+                (setvar 'timer_start (systime))
+                (setvar 'timer_duration TIMER_RELEASE_WINDOW)
+            } {
+                ; No pending clicks - check if we should shut down
+                (if (and (!= smart_cruise SMART_CRUISE_FULLY_ENABLED) (!= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) { ; If Smart Cruise is enabled, don't shut down
+                    (debug_log "State 3->0: Timeout, shutting down")
+                    (setvar 'timer_duration TIMER_DISABLED)
+                    (cond
+                        ((and (< speed start_speed) (> speed SPEED_UNTANGLE)) ; start at old speed if less than start speed
+                            (setvar 'new_start_speed speed))
+                        ((>= speed start_speed)
+                            (setvar 'new_start_speed start_speed)))
+                    (set_speed_safe SPEED_OFF)
+                    (setvar 'smart_cruise SMART_CRUISE_OFF) ; turn off Smart Cruise
+                    (state_transition_to STATE_OFF "timeout_shutdown" THREAD_STACK_STATE_TRANSITIONS state_handler_off)
+                    (break) ; SWST_OFF
                 })
-            )
+
+                (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) ; Require Smart Cruise to be re-enabled after a fixed duration
+                    (if (> (secs-since timer_start) smart_cruise_timeout) {
+                        (debug_log "Smart Cruise: Timeout - entering warning slowdown")
+                        (setvar 'smart_cruise SMART_CRUISE_HALF_ENABLED)
+                        (setvar 'timer_start (systime))
+                        (setvar 'timer_duration TIMER_SMART_CRUISE_TIMEOUT) ; sets timer duration to display duration to allow for re-enable
+                        (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
+                        (setvar 'click_beep CLICKS_QUINTUPLE)
+                        ; slow scooter to 80% to help people realize custom is expiring
+                        (set-rpm (calculate_rpm speed SMART_CRUISE_SLOWDOWN_DIVISOR))
+                    })
+                )
+            })
         }) ; end Timer expiry
     }) ; end state
 })
@@ -1298,7 +1339,7 @@
         })
 
         (if (> click_beep 0) {
-            (if (and (= click_beep CLICKS_QUINTUPLE) (> enable_smart_cruise 0) (!= speed SPEED_OFF))
+            (if (and (= click_beep CLICKS_TRIPLE) (> enable_smart_cruise 0) (!= speed SPEED_OFF))
                 (foc-play-tone 1 1500 beeps_vol)
             )
             (if (= enable_trigger_beeps 1) {
