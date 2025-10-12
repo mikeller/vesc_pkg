@@ -314,7 +314,7 @@
 (move-to-flash safe_start_met_success_criteria)
 
 ; Settings initialization (init-only, not moved to flash)
-(defun update_settings_from_eeprom()
+(defun update_settings_from_eeprom ()
 {
     (setvar 'max_speed_no (eeprom-read-i 10))
     (setvar 'start_speed (eeprom-read-i 11))
@@ -358,7 +358,7 @@
 })
 
 
-(defun log_startup()
+(defun log_startup ()
 {
     ; Log configuration on startup
     (if (and (not-eq debug_enabled nil) (= debug_enabled 1)) {
@@ -381,7 +381,7 @@
 })
 
 
-(defun log_settings_1()
+(defun log_settings_1 ()
 {
     (debug_log_format (str-merge "- max_speed_no: " (to-str (to-i max_speed_no))
         "\n- start_speed: " (to-str (to-i start_speed))
@@ -401,7 +401,7 @@
 })
 
 
-(defun log_settings_2()
+(defun log_settings_2 ()
 {
     (debug_log_format (str-merge "- enable_smart_cruise_auto_engage: " (to-str (to-i enable_smart_cruise_auto_engage))
         "\n- smart_cruise_auto_engage_time: " (to-str (to-i smart_cruise_auto_engage_time))
@@ -411,7 +411,7 @@
 })
 
 
-(defun log_speeds()
+(defun log_speeds ()
 {
     (debug_log_format (str-merge "- speed (reverse): " (to-str (to-i (ix speed_set 0)))
         "\n- speed (untangle): " (to-str (to-i (ix speed_set 1)))
@@ -446,7 +446,6 @@
     )
 ))
 
-(move-to-flash debug_log_format)
 
 (defun calculate_corrected_battery ()
 {
@@ -509,7 +508,7 @@
 (move-to-flash my_data_recv_prog)
 
 ; Setup functions (init-only, not moved to flash)
-(defun setup_event_handler()
+(defun setup_event_handler ()
 {
     (defun event_handler ()
     {
@@ -524,7 +523,7 @@
     (event-enable 'event-data-rx)
 })
 
-(defun start_trigger_loop()
+(defun start_trigger_loop ()
 {
     (gpio-configure 'pin-ppm 'pin-mode-in-pd)
 
@@ -537,7 +536,7 @@
     })
 })
 
-(defun start_smart_cruise_loop()
+(defun start_smart_cruise_loop ()
 {
     (debug_log "Smart Cruise: Starting loop")
 
@@ -706,7 +705,7 @@
 
 (move-to-flash set_speed_safe)
 
-(defun state_handler_off()
+(defun state_handler_off ()
 {
     ; xxxx State "0" Off
     (debug_log "State 0: Off")
@@ -735,10 +734,8 @@
 (defun apply_click_action (click_count)
 {
     (cond
-        ((= click_count CLICKS_SINGLE)
-        {
-            (if (!= speed SPEED_OFF)
-            {
+        ((= click_count CLICKS_SINGLE) {
+            (if (!= speed SPEED_OFF) {
                 (debug_log "Click action: Single click (speed down)")
                 (setvar 'click_beep CLICKS_SINGLE)
                 (cond
@@ -748,36 +745,29 @@
                         (set_speed_safe SPEED_UNTANGLE)))
             })
         })
-        ((= click_count CLICKS_DOUBLE)
-        {
-            (if (= speed SPEED_OFF)
-            {
+        ((= click_count CLICKS_DOUBLE) {
+            (if (= speed SPEED_OFF) {
                 (debug_log_format (str-merge "Click action: Double click (start at speed " (to-str new_start_speed) ")"))
                 (set_speed_safe new_start_speed)
-            }
-            {
+            } {
                 (debug_log "Click action: Double click (speed up)")
                 (setvar 'click_beep CLICKS_DOUBLE)
-                (if (< speed max_speed_no)
-                {
+                (if (< speed max_speed_no) {
                     (if (> speed SPEED_UNTANGLE)
                         (set_speed_safe (+ speed 1))
                         (set_speed_safe SPEED_REVERSE_2))
                 })
             })
         })
-        ((= click_count CLICKS_TRIPLE)
-        {
+        ((= click_count CLICKS_TRIPLE) {
             (debug_log_format (str-merge "Click action: Triple click (jump to speed " (to-str (to-i jump_speed)) ")"))
             (if (!= speed SPEED_OFF)
                 (setvar 'click_beep CLICKS_TRIPLE)
             )
             (set_speed_safe jump_speed)
         })
-        ((= click_count CLICKS_QUADRUPLE)
-        {
-            (if (= enable_reverse 1)
-            {
+        ((= click_count CLICKS_QUADRUPLE) {
+            (if (= enable_reverse 1) {
                 (debug_log "Click action: Quadruple click (untangle)")
                 (if (!= speed SPEED_OFF)
                     (setvar 'click_beep CLICKS_QUADRUPLE)
@@ -785,8 +775,7 @@
                 (set_speed_safe SPEED_UNTANGLE)
             })
         })
-        ((= click_count CLICKS_QUINTUPLE)
-        {
+        ((= click_count CLICKS_QUINTUPLE) {
             (debug_log_format (str-merge "Click action: Quintuple click (Smart Cruise " (to-str smart_cruise) "->" (to-str (+ smart_cruise 1)) ")"))
             (setvar 'click_beep CLICKS_QUINTUPLE)
             (if (and (!= speed SPEED_OFF) (> enable_smart_cruise 0) (< smart_cruise SMART_CRUISE_FULLY_ENABLED))
@@ -848,7 +837,7 @@
 (move-to-flash state_handler_counting_clicks)
 
 ; xxxx State 2 "Pressed"
-(defun state_handler_pressed()
+(defun state_handler_pressed ()
 {
     (debug_log "State 2: Pressed")
     (loopwhile (= sw_state STATE_PRESSED) {
@@ -909,8 +898,7 @@
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_CLICK_WINDOW)
 
-            (if (>= smart_cruise SMART_CRUISE_FULLY_ENABLED) ; if Smart Cruise is on and switch pressed, turn it off
-                {
+            (if (>= smart_cruise SMART_CRUISE_FULLY_ENABLED) { ; if Smart Cruise is on and switch pressed, turn it off
                     (debug_log "Smart Cruise: Disabled by button press")
                     (setvar 'smart_cruise SMART_CRUISE_OFF)
                 }
@@ -956,7 +944,7 @@
 
 (move-to-flash state_handler_going_off)
 
-(defun start_motor_speed_loop()
+(defun start_motor_speed_loop ()
 {
     (debug_log "Motor: Starting motor speed loop")
 
@@ -1032,7 +1020,7 @@
 (move-to-flash start_motor_speed_loop)
 
 ; Init-only function (not moved to flash)
-(defun thirds_warning_startup()
+(defun thirds_warning_startup ()
 {
     (if (> enable_thirds_warning_startup 0) {
         (debug_log "Battery: Thirds warning enabled at startup")
@@ -1046,7 +1034,7 @@
     })
 })
 
-(defun start_display_output_loop()
+(defun start_display_output_loop ()
 {
     (var start_pos 0) ; variable used to define start position in the array of diferent display screens
     (var pixbuf (array-create 16)) ; create a temp array to store display bytes in
@@ -1097,7 +1085,7 @@
 (move-to-flash start_display_output_loop)
 
 ; **** Program that triggers the display to show battery status ****
-(defun start_display_battery_loop()
+(defun start_display_battery_loop ()
 {
     (var batt_disp_state 0)
     (loopwhile-thd THREAD_STACK_BATTERY t {
@@ -1113,36 +1101,30 @@
 
             (if (= thirds_total 0)
                 (cond
-                    ((> actual_batt 0.75)
-                    {
+                    ((> actual_batt 0.75) {
                         (setvar 'disp_num 3)
                         (spawn beeper 4)
                     })
-                    ((> actual_batt 0.5)
-                    {
+                    ((> actual_batt 0.5) {
                         (setvar 'disp_num 2)
                         (spawn beeper 3)
                     })
-                    ((> actual_batt 0.25)
-                    {
+                    ((> actual_batt 0.25) {
                         (setvar 'disp_num 1)
                         (spawn beeper 2)
                     })
-                    (t
-                    {
+                    (t {
                         (setvar 'disp_num 0)
                         (spawn beeper 1)
                     }))
 
                 ; Section for 1/3rds display
                 (cond
-                    ((and (> actual_batt (* thirds_total 0.66)) (= warning_counter 0))
-                    {
+                    ((and (> actual_batt (* thirds_total 0.66)) (= warning_counter 0)) {
                         (debug_log "Battery: 2/3rds warning triggered")
                         (setvar 'disp_num 20)
                     })
-                    ((and (> actual_batt (* thirds_total 0.33)) (< warning_counter 3))
-                    {
+                    ((and (> actual_batt (* thirds_total 0.33)) (< warning_counter 3)) {
                         (debug_log "Battery: 1/3rd warning triggered")
                         (setvar 'disp_num 19)
                         (if (< warning_counter 2) {
@@ -1150,8 +1132,7 @@
                             (setvar 'warning_counter (+ warning_counter 1))
                         })
                     })
-                    (t
-                    {
+                    (t {
                         (debug_log "Battery: Critical warning triggered")
                         (setvar 'disp_num 18)
                         (if (< warning_counter 4) {
@@ -1208,17 +1189,17 @@
 ; xxxx warbler Program xxxx"
 (defun warbler (Tone Time Delay)
 {
-         (sleep Delay)
-         (foc-beep Tone Time beeps_vol)
-         (foc-beep (- Tone 200) Time beeps_vol)
-         (foc-beep Tone Time beeps_vol)
-         (foc-beep (- Tone 200) Time beeps_vol)
-         })
+    (sleep Delay)
+    (foc-beep Tone Time beeps_vol)
+    (foc-beep (- Tone 200) Time beeps_vol)
+    (foc-beep Tone Time beeps_vol)
+    (foc-beep (- Tone 200) Time beeps_vol)
+})
 
 (move-to-flash warbler)
 
 ; ***** Program that beeps trigger clicks
-(defun start_beeper_loop()
+(defun start_beeper_loop ()
 {
     (var click_beep_timer 0)
     (loopwhile-thd THREAD_STACK_CLICK_BEEP t {
@@ -1249,7 +1230,7 @@
 (move-to-flash start_beeper_loop)
 
 ; Init-only function (not moved to flash)
-(defun peripherals_setup()
+(defun peripherals_setup ()
 {
     (if (or (= 0 hardware_configuration) (= 3 hardware_configuration)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
             (i2c-start 'rate-400k 'pin-swdio 'pin-swclk) ; Works HW 60 with screen on SWD Connector. Screen SDA pin to Vesc SWDIO (2), Screen SCL pin to Vesc SWCLK (4)
@@ -1269,7 +1250,7 @@
     })
 })
 
-(defun init()
+(defun init ()
 {
     (define display_num_frames 0)
     (define brightness_num_levels 0)
@@ -1283,7 +1264,7 @@
     (debug_log "Initialisation done")
 })
 
-(defun main()
+(defun main ()
 {
     (update_settings_from_eeprom)
 
