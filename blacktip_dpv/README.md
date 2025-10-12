@@ -2,6 +2,8 @@
 
 ![Blacktip DPV Logo.](https://raw.githubusercontent.com/mikeller/vesc_pkg/main/blacktip_dpv/shark_with_laser.png)
 
+**Version:** 0.5.0
+
 ## About
 
 This software is an improved version of the Dive Xtras scooter software for VESC controllers. It includes all the original features plus many new ones. It is designed to be used with the VESC ecosystem, including the VESC Tool (PC) and the VESC mobile app.

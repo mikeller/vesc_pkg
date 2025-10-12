@@ -14,6 +14,26 @@ make smoke-tests  # Run unit-style smoke tests only
 make binary       # Generate binary LUT files only
 ```
 
+### Version Management
+
+The build system automatically generates version information for the package:
+
+- **Version source**: Base version (e.g., `1.0.0`) is stored in `README.md` in the line `**Version:** 1.0.0`
+- **Version format**:
+  - On `main` branch: `<version>-<yyyymmdd>-<git-hash>` (e.g., `1.0.0-20251013-120605-2eacfa2`)
+  - On other branches: `<version>-<branch-name>-<git-hash>` (e.g., `1.0.0-feature-xyz-2eacfa2`)
+- **Distribution**: During build, `tools/update_version.sh` creates `README.dist.md` with the full version and build timestamp
+- **Package**: The `.vescpkg` includes `README.dist.md` (referenced in `pkgdesc.qml`) so users see the detailed version info
+- **Repository**: The `README.md` in the repository shows only the base version for simplicity
+- **Rebuild behavior**: The package is only rebuilt when source files change (`blacktip_dpv.lisp`, `ui.qml`, `pkgdesc.qml`, `README.md`)
+
+To update the version:
+
+1. Edit the version line in `README.md`: `**Version:** 1.1.0`
+2. Run `make` - the distribution file will be generated automatically with a new timestamp
+
+**Note**: `README.dist.md` is generated during build and should not be committed to git.
+
 ### Test Suite
 
 The project includes smoke tests for pure functions to catch regressions before
