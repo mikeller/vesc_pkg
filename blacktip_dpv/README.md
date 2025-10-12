@@ -25,17 +25,17 @@ Designed primarily to be used with new scooters (Cuda-X & Blacktip) which now ha
 
 Always stays compatible with latest VESC firmware, ensuring your scooter runs as smoothly and quietly as possible.
 
-### Triple Click "Jump Speed"
+### Triple Click Smart Cruise / Jump Speed
 
-A triple click jumps the scooter to a preset speed. By default, it jumps you to speed 6, straight to overdrive. The jump speed can be set via the app to whatever speed you want.
+When stopped, a triple click jumps the scooter to a preset speed (by default speed 6, overdrive). The jump speed can be set via the app to whatever speed you want.
+
+When running, a triple click activates Smart Cruise if enabled in the app. The display will show "C" to indicate Smart Cruise is active. A single click while Smart Cruise is active will reset the timeout timer. To disable Smart Cruise, do another triple click.
+
+Smart Cruise can also be set to auto-engage after the scooter has been running at the same speed for some time. It will auto-disengage after a user-configurable timeout.
 
 ### Quadruple Click Reverse Gears
 
 A quadruple click gets you into reverse. There are two reverse speeds: "Untangle" (slow, useful for untangling line) and "Reverse" (faster, for backing out). Reverse can be enabled or disabled in the app. Access it via a quadruple click, then normal shifting switches between the two speeds. Release to stop, then restart with a double click to resume forward speeds.
-
-### Quintuple "5" Click Smart Cruise
-
-Smart Cruise can be activated with a quintuple click. Optionally, Smart Cruise can be set to auto-engage after the scooter has been running at the same speed for some time. It will auto-disengage after a user-configurable timeout, or on trigger input.
 
 ### Slow Speed Restart
 
