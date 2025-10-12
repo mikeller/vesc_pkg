@@ -237,10 +237,18 @@
 
 (defun safe_start_begin (target_speed)
 {
-    (setvar 'safe_start_timer (systime))
-    (setvar 'safe_start_attempt_speed target_speed)
-    (setvar 'safe_start_status 'running)
-    (debug_log (str-merge "Motor: Safe start attempt " (to-str (+ safe_start_failures 1)) " targeting speed " (to-str target_speed)))
+    ; Only perform safe-start initialization when the feature is enabled.
+    (if (= use_safe_start 1) {
+        (setvar 'safe_start_timer (systime))
+        (setvar 'safe_start_attempt_speed target_speed)
+        (setvar 'safe_start_status 'running)
+        (debug_log (str-merge "Motor: Safe start attempt " (to-str (+ safe_start_failures 1)) " targeting speed " (to-str target_speed)))
+    } {
+        ; Mark as disabled so callers can detect the state and avoid logging/abort flows
+        (setvar 'safe_start_status 'disabled)
+        (setvar 'safe_start_timer 0)
+        (setvar 'safe_start_attempt_speed SPEED_OFF)
+    })
 })
 
 (move-to-flash safe_start_begin)
@@ -992,6 +1000,7 @@
                 )
 
                 (if (or (= use_safe_start 0) (!= last_speed SPEED_SOFT_START_SENTINEL) (safe_start_met_success_criteria rpm duty current)) {
+                    (debug_log "Motor: Soft start completed")
                     (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
                     (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
                     (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
