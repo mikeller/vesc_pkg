@@ -877,41 +877,49 @@
         })
         ((= click_count CLICKS_TRIPLE) {
             (if (= speed SPEED_OFF) {
+                ; Stopped - jump to preset speed
                 (debug_log_format (str-merge "Click action: Triple click (jump to speed " (to-str (to-i jump_speed)) ")"))
                 (set_speed_safe jump_speed)
             } {
-                ; Running - check Smart Cruise state first
-                (if (> smart_cruise SMART_CRUISE_OFF) {
-                    ; Smart Cruise is active (any state) - disable it
-                    (debug_log "Click action: Triple click (Smart Cruise disabled)")
-                    (setvar 'click_beep CLICKS_TRIPLE)
-                    (setvar 'smart_cruise SMART_CRUISE_OFF)
-                } {
-                    ; Smart Cruise not active - check if feature is enabled
-                    (if (> enable_smart_cruise 0) {
-                        ; Enable Smart Cruise
-                        (debug_log "Click action: Triple click (Smart Cruise enabled)")
+                ; Running - only allow Smart Cruise toggle in forward speeds
+                (if (>= speed SPEED_REVERSE_THRESHOLD) {
+                    ; Running forward - toggle Smart Cruise
+                    (if (> smart_cruise SMART_CRUISE_OFF) {
+                        ; Smart Cruise is active - disable it
+                        (debug_log "Click action: Triple click (Smart Cruise disabled)")
                         (setvar 'click_beep CLICKS_TRIPLE)
-                        (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
-                        (setvar 'timer_start (systime))
-                        (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                        (setvar 'smart_cruise SMART_CRUISE_OFF)
                     } {
-                        ; Smart Cruise not enabled in settings, treat as jump speed
-                        (debug_log_format (str-merge "Click action: Triple click (jump to speed " (to-str (to-i jump_speed)) ")"))
-                        (setvar 'click_beep CLICKS_TRIPLE)
-                        (set_speed_safe jump_speed)
+                        ; Smart Cruise not active - enable it if feature is enabled
+                        (if (> enable_smart_cruise 0) {
+                            (debug_log "Click action: Triple click (Smart Cruise enabled)")
+                            (setvar 'click_beep CLICKS_TRIPLE)
+                            (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
+                            (setvar 'timer_start (systime))
+                            (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+                            (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                        } {
+                            (debug_log "Click action: Triple click ignored (Smart Cruise disabled in settings)")
+                        })
                     })
+                } {
+                    ; Running backward - ignore
+                    (debug_log "Click action: Triple click ignored (running backward)")
                 })
             })
         })
         ((= click_count CLICKS_QUADRUPLE) {
-            (if (= enable_reverse 1) {
-                (debug_log "Click action: Quadruple click (untangle)")
-                (if (!= speed SPEED_OFF)
-                    (setvar 'click_beep CLICKS_QUADRUPLE)
-                )
-                (set_speed_safe SPEED_UNTANGLE)
+            ; Quadruple click only works when stopped
+            (if (= speed SPEED_OFF) {
+                (if (= enable_reverse 1) {
+                    (debug_log "Click action: Quadruple click (untangle)")
+                    (set_speed_safe SPEED_UNTANGLE)
+                } {
+                    (debug_log "Click action: Quadruple click ignored (reverse disabled in settings)")
+                })
+            } {
+                ; Running - ignore quadruple click
+                (debug_log "Click action: Quadruple click ignored (scooter running)")
             })
         })
         (t

@@ -27,25 +27,36 @@ Always stays compatible with latest VESC firmware, ensuring your scooter runs as
 
 ### Triple Click Smart Cruise / Jump Speed
 
-When stopped, a triple click jumps the scooter to a preset speed (by default speed 6, overdrive). The jump speed can be set via the app to whatever speed you want.
+**When stopped:**
+- Triple click jumps the scooter to a preset speed (by default speed 6, overdrive). The jump speed can be set via the app to whatever speed you want.
 
-When running, a triple click activates Smart Cruise if enabled in the app. The display will show "C" to indicate Smart Cruise is active.
+**When running forward:**
+- Triple click toggles Smart Cruise on/off (if enabled in the app). The display will show "C" to indicate Smart Cruise is active.
+
+**When running backward:**
+- Triple clicks are ignored (safety feature).
+
+### Smart Cruise
+
+Smart Cruise can be manually toggled with a triple click while running forward, or set to auto-engage after the scooter has been running at the same speed for some time. When active, the display will show "C" to indicate Smart Cruise is engaged. It will auto-disengage after a user-configurable timeout.
 
 #### Smart Cruise Controls
 
 While Smart Cruise is active, the following trigger patterns are available:
 
 - **Short single trigger tap**: Reset timeout timer only
-- **Long continuous trigger pull (>1s)**: Reset timeout timer only
-- **Long pull (>1s), release, then pull again**: Speed down + reset timeout timer
-- **Long pull (>1s), release, single tap, then pull**: Speed up + reset timeout timer
+- **Long hold and release (>1s)**: Timer continues (press again to adjust)
+- **Long hold (>1s), release, press and release**: Speed down + reset timeout timer
+- **Long hold (>1s), release, tap, press again**: Speed up + reset timeout timer
 - **Triple click**: Disable Smart Cruise
-
-Smart Cruise can also be set to auto-engage after the scooter has been running at the same speed for some time. It will auto-disengage after a user-configurable timeout.
 
 ### Quadruple Click Reverse Gears
 
-A quadruple click gets you into reverse. There are two reverse speeds: "Untangle" (slow, useful for untangling line) and "Reverse" (faster, for backing out). Reverse can be enabled or disabled in the app. Access it via a quadruple click, then normal shifting switches between the two speeds. Release to stop, then restart with a double click to resume forward speeds.
+**When stopped only:**
+A quadruple click gets you into reverse. There are two reverse speeds: "Untangle" (slow, useful for untangling line) and "Reverse" (faster, for backing out). Reverse can be enabled or disabled in the app. Access it via a quadruple click when stopped, then normal shifting switches between the two speeds. Release to stop, then restart with a double click to resume forward speeds.
+
+**When running:**
+- Quadruple clicks are ignored (safety feature). Stop the scooter first to access reverse.
 
 ### Slow Speed Restart
 
