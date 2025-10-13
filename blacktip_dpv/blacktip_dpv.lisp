@@ -749,6 +749,31 @@
 
 (move-to-flash set_speed_safe)
 
+; =============================================================================
+; Smart Cruise Timeout Helper
+; =============================================================================
+
+; Checks if Smart Cruise should transition to warning mode (HALF_ENABLED)
+; and performs the transition if needed
+; Called from state_handler_going_off timer expiry
+(defun check_smart_cruise_timeout ()
+{
+    (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED))
+        (if (> (secs-since timer_start) smart_cruise_timeout) {
+            (debug_log "Smart Cruise: Timeout - entering warning slowdown")
+            (setvar 'smart_cruise SMART_CRUISE_HALF_ENABLED)
+            (setvar 'timer_start (systime))
+            (setvar 'timer_duration TIMER_SMART_CRUISE_TIMEOUT)
+            (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
+            (setvar 'click_beep CLICKS_QUINTUPLE)
+            ; slow scooter to 80% to help people realize cruise is expiring
+            (set-rpm (calculate_rpm speed SMART_CRUISE_SLOWDOWN_DIVISOR))
+        })
+    )
+})
+
+(move-to-flash check_smart_cruise_timeout)
+
 (defun state_handler_off ()
 {
     ; xxxx State "0" Off
@@ -1047,18 +1072,8 @@
                     (break) ; SWST_OFF
                 })
 
-                (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) ; Require Smart Cruise to be re-enabled after a fixed duration
-                    (if (> (secs-since timer_start) smart_cruise_timeout) {
-                        (debug_log "Smart Cruise: Timeout - entering warning slowdown")
-                        (setvar 'smart_cruise SMART_CRUISE_HALF_ENABLED)
-                        (setvar 'timer_start (systime))
-                        (setvar 'timer_duration TIMER_SMART_CRUISE_TIMEOUT) ; sets timer duration to display duration to allow for re-enable
-                        (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
-                        (setvar 'click_beep CLICKS_QUINTUPLE)
-                        ; slow scooter to 80% to help people realize custom is expiring
-                        (set-rpm (calculate_rpm speed SMART_CRUISE_SLOWDOWN_DIVISOR))
-                    })
-                )
+                ; Check if Smart Cruise needs to timeout
+                (check_smart_cruise_timeout)
             })
         }) ; end Timer expiry
     }) ; end state
