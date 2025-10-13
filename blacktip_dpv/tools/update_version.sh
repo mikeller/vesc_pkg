@@ -26,7 +26,15 @@ fi
 
 # Get git information
 GIT_HASH=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")
-GIT_BRANCH=$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+BRANCH_RAW="$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")"
+# Normalize: lowercase, replace / and _ with -, strip illegal chars, collapse dashes, trim edges
+GIT_BRANCH="$(printf '%s' "$BRANCH_RAW" \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed -E 's@[/_]+@-@g; s/[^a-z0-9.-]//g; s/-{2,}/-/g; s/^-+//; s/-+$//')"
+# Fallback for detached HEAD or empty after sanitization
+if [ -z "$GIT_BRANCH" ] || [ "$GIT_BRANCH" = "head" ]; then
+  GIT_BRANCH="unknown"
+fi
 BUILD_DATE=$(date +%Y%m%d)
 BUILD_TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
