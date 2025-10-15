@@ -1226,33 +1226,38 @@
 (defun apply_smart_cruise_timer_bar (pixbuf)
 {
     ; Apply Smart Cruise timer bar to the bottom row when active
-    ; The bottom row is bit 0 across all 8 columns (bytes 1,3,5,7,9,11,13,15)
-    ; The bar starts with all 8 LEDs on and turns them off from left to right as time elapses
-    ; Right before timeout, only the rightmost LED should remain lit
+    ; The display buffer is organized as 8 rows of 2 bytes each (16 bytes total)
+    ; b0,b1 = row 0 (top), b2,b3 = row 1, ..., b14,b15 = row 7 (bottom)
+    ; Within each row: b15 (odd byte) contains the 8 LED bits, where bit 0 = leftmost LED, bit 7 = rightmost LED
+    ; Show timer bar whenever Smart Cruise is active
+    ; If trigger is held, show full bar (all 8 LEDs). If released, show countdown.
     (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) {
-        (var elapsed (secs-since timer_start))
-        (var progress (/ elapsed smart_cruise_timeout))
-        (if (< progress 1.0) {
-            ; Calculate how many LEDs should be lit (8 at start, decreasing to 1)
-            (var leds_lit (to-i (+ 1 (* 7 (- 1.0 progress)))))
-            ; Ensure at least 1 LED is lit and at most 8
-            (if (< leds_lit 1) (setvar 'leds_lit 1))
-            (if (> leds_lit 8) (setvar 'leds_lit 8))
-            ; Update bit 0 of each column (bytes 1,3,5,7,9,11,13,15)
-            ; Light columns from left (0) to right (7) based on leds_lit
-            (var col 0)
-            (loopwhile (< col 8) {
-                (var byte_idx (+ 1 (* col 2))) ; High byte indices: 1,3,5,7,9,11,13,15
-                (var current_byte (bufget-u8 pixbuf byte_idx))
-                (if (< col leds_lit)
-                    ; Turn on bit 0 (set to 1)
-                    (bufset-u8 pixbuf byte_idx (bitwise-or current_byte 1))
-                    ; Turn off bit 0 (clear to 0)
-                    (bufset-u8 pixbuf byte_idx (bitwise-and current_byte 0xFE))
-                )
-                (setvar 'col (+ col 1))
+        (var leds_lit 8) ; Default to full bar
+
+        ; If trigger is NOT held, calculate countdown based on elapsed time
+        (if (!= sw_state STATE_PRESSED) {
+            (var elapsed (secs-since timer_start))
+            (var progress (/ elapsed smart_cruise_timeout))
+            (if (< progress 1.0) {
+                ; Calculate how many LEDs should be lit (8 at start, decreasing to 1)
+                (setvar 'leds_lit (to-i (+ 0.5 (* 8 (- 1.0 progress)))))
+                ; Ensure at least 1 LED is lit and at most 8
+                (if (< leds_lit 1) (setvar 'leds_lit 1))
+                (if (> leds_lit 8) (setvar 'leds_lit 8))
             })
         })
+
+        ; Build the bottom row byte value - set bits 0 through (leds_lit-1)
+        (var bottom_row_value 0)
+        (var bit 0)
+        (loopwhile (< bit leds_lit) {
+            (setvar 'bottom_row_value (bitwise-or bottom_row_value (shl 1 bit)))
+            (setvar 'bit (+ bit 1))
+        })
+
+        ; Set the bottom row (byte 15) to show the timer bar
+        (var current_byte (bufget-u8 pixbuf 15))
+        (bufset-u8 pixbuf 15 (bitwise-or current_byte bottom_row_value))
     })
 })
 
@@ -1265,17 +1270,14 @@
     (var display_mpu_addr 0x70) ; I2C Address for the screen
     (loopwhile-thd THREAD_STACK_DISPLAY t {
         (sleep SLEEP_UI_UPDATE)
-        (if (and (> disp_timer_start 1) ; check to see if display is on. don't want to run i2c commands continuously
-            (> (secs-since disp_timer_start) TIMER_DISPLAY_DURATION)) { ; check timer to see if its longer than display duration and display needs turning off, new display commands will keep adding time
-            ; If last display was Smart Cruise 'C', switch to speed display instead of turning off
-            (if (= last_disp_num DISPLAY_SMART_CRUISE_FULL) {
-                (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
-            }
-            ; For Blacktip, if not Smart Cruise, turn off the display
-            (if (and (= scooter_type SCOOTER_BLACKTIP)
-                (!= last_disp_num DISPLAY_SMART_CRUISE_FULL))
+        ; Skip normal display timeout logic when Smart Cruise is active - keep display on
+        (if (and
+                (> disp_timer_start 1)
+                (> (secs-since disp_timer_start) TIMER_DISPLAY_DURATION)
+                (= smart_cruise SMART_CRUISE_OFF)) { ; Only timeout if Smart Cruise is OFF
+            ; For Blacktip, turn off the display
+            (if (= scooter_type SCOOTER_BLACKTIP)
                 (i2c-tx-rx 0x70 (list 0x80))
-            )
             )
             ; For Cuda X make sure it doesn't get stuck on displaying B1 or B2 error, so switch back to last battery.
             (if (and (= scooter_type SCOOTER_CUDAX) (> last_disp_num 20))
@@ -1287,8 +1289,10 @@
 
         ; Check if we need to update display (either disp_num changed OR Smart Cruise timer bar needs updating)
         (var should_update_display (!= disp_num last_disp_num))
+        ; Force continuous updates for Smart Cruise timer bar whenever Smart Cruise is active
+        ; This ensures the bar updates continuously regardless of trigger state or display number
         (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) {
-            (setvar 'should_update_display 1) ; Force continuous updates for Smart Cruise timer bar
+            (setvar 'should_update_display 1)
         })
 
         (if should_update_display {
