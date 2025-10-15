@@ -1223,6 +1223,41 @@
     })
 })
 
+(defun apply_smart_cruise_timer_bar (pixbuf)
+{
+    ; Apply Smart Cruise timer bar to the bottom row when active
+    ; The bottom row is bit 0 across all 8 columns (bytes 1,3,5,7,9,11,13,15)
+    ; The bar starts with all 8 LEDs on and turns them off from left to right as time elapses
+    ; Right before timeout, only the rightmost LED should remain lit
+    (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) {
+        (var elapsed (secs-since timer_start))
+        (var progress (/ elapsed smart_cruise_timeout))
+        (if (< progress 1.0) {
+            ; Calculate how many LEDs should be lit (8 at start, decreasing to 1)
+            (var leds_lit (to-i (+ 1 (* 7 (- 1.0 progress)))))
+            ; Ensure at least 1 LED is lit and at most 8
+            (if (< leds_lit 1) (setvar 'leds_lit 1))
+            (if (> leds_lit 8) (setvar 'leds_lit 8))
+            ; Update bit 0 of each column (bytes 1,3,5,7,9,11,13,15)
+            ; Light columns from left (0) to right (7) based on leds_lit
+            (var col 0)
+            (loopwhile (< col 8) {
+                (var byte_idx (+ 1 (* col 2))) ; High byte indices: 1,3,5,7,9,11,13,15
+                (var current_byte (bufget-u8 pixbuf byte_idx))
+                (if (< col leds_lit)
+                    ; Turn on bit 0 (set to 1)
+                    (bufset-u8 pixbuf byte_idx (bitwise-or current_byte 1))
+                    ; Turn off bit 0 (clear to 0)
+                    (bufset-u8 pixbuf byte_idx (bitwise-and current_byte 0xFE))
+                )
+                (setvar 'col (+ col 1))
+            })
+        })
+    })
+})
+
+(move-to-flash apply_smart_cruise_timer_bar)
+
 (defun start_display_output_loop ()
 {
     (var start_pos 0) ; variable used to define start position in the array of diferent display screens
@@ -1250,7 +1285,13 @@
             (setvar 'disp_timer_start 0)
         })
 
-        (if (!= disp_num last_disp_num) {
+        ; Check if we need to update display (either disp_num changed OR Smart Cruise timer bar needs updating)
+        (var should_update_display (!= disp_num last_disp_num))
+        (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) {
+            (setvar 'should_update_display 1) ; Force continuous updates for Smart Cruise timer bar
+        })
+
+        (if should_update_display {
             (setvar 'display_mpu_addr 0x70)
             (if (= scooter_type 1) { ; For cuda X second screen
                 (if (or (= disp_num 0) (= disp_num 1) (= disp_num 2) (= disp_num 3) (> disp_num 17))
@@ -1262,7 +1303,10 @@
                     )
                 )
             })
-            (setvar 'disp_timer_start (systime))
+            ; Only update disp_timer_start if disp_num actually changed
+            (if (!= disp_num last_disp_num) {
+                (setvar 'disp_timer_start (systime))
+            })
             (if (= display_mpu_addr 0x70)
                 (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation))) ; define the correct start position in the array for the display
                 (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation2)))
@@ -1270,6 +1314,8 @@
             (bufclear pixbuf)
             ; Copy display data from binary LUT (8 byte header + frame data)
             (bufcpy pixbuf 0 display_lut_bin (+ 8 start_pos) 16) ; copy the required display from binary LUT to "pixbuf"
+            ; Apply Smart Cruise timer bar overlay to bottom row if active
+            (apply_smart_cruise_timer_bar pixbuf)
             (i2c-tx-rx display_mpu_addr pixbuf) ; send display characters
             (i2c-tx-rx display_mpu_addr (list 0x81)) ; Turn on display
             (setvar 'last_disp_num disp_num)
