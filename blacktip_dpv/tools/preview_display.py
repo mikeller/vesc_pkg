@@ -73,8 +73,8 @@ class DisplayFrame:
         # Position 0 uses bit 7, positions 1-7 use bits 0-6
         for col in cols:
             rows.append(''.join(
-                '#' if (col >> (7 - pos)) & 1 else '.'
-                for pos in range(8)
+                '#' if (col >> pos) & 1 else '.'
+                for pos in [7, *range(7)]  # bit 7 first, then bits 0-6
             ))
 
         return rows
