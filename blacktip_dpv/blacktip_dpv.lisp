@@ -1239,21 +1239,21 @@
             (var elapsed (secs-since timer_start))
             (var progress (/ elapsed smart_cruise_timeout))
             (if (< progress 1.0) {
-                ; Calculate how many LEDs should be lit (8 at start, decreasing to 1)
+                ; 8 -> 1 LEDs
                 (setvar 'leds_lit (to-i (+ 0.5 (* 8 (- 1.0 progress)))))
-                ; Ensure at least 1 LED is lit and at most 8
                 (if (< leds_lit 1) (setvar 'leds_lit 1))
                 (if (> leds_lit 8) (setvar 'leds_lit 8))
+            } {
+                ; At/after expiry, keep a single LED (bar won't render in HALF state anyway)
+                (setvar 'leds_lit 1)
             })
         })
 
         ; Build the bottom row byte value - set bits 0 through (leds_lit-1)
-        (var bottom_row_value 0)
-        (var bit 0)
-        (loopwhile (< bit leds_lit) {
-            (setvar 'bottom_row_value (bitwise-or bottom_row_value (shl 1 bit)))
-            (setvar 'bit (+ bit 1))
-        })
+        (var bottom_row_value (cond
+            ((<= leds_lit 0) 0)
+            ((>= leds_lit 8) 0xFF)
+            (t (- (shl 1 leds_lit) 1))))
 
         ; Set the bottom row (byte 15) to show the timer bar
         (var current_byte (bufget-u8 pixbuf 15))
