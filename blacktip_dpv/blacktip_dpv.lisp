@@ -1303,13 +1303,19 @@
             (var current_leds 8) ; Default to full bar
             (if (!= sw_state STATE_PRESSED) {
                 (var elapsed (secs-since timer_start))
-                (var progress (/ elapsed smart_cruise_timeout))
-                (if (< progress 1.0) {
+                (if (> smart_cruise_timeout 0) {
+                    (var progress (/ elapsed smart_cruise_timeout))
+                    (if (< progress 1.0) {
+                        (setvar 'current_leds (to-i (+ 0.5 (* 8 (- 1.0 progress)))))
+                        (if (< current_leds 1) (setvar 'current_leds 1))
+                        (if (> current_leds 8) (setvar 'current_leds 8))
+                    } {
+                        (setvar 'current_leds 1)
+                    })
+                } {
                     (setvar 'current_leds (to-i (+ 0.5 (* 8 (- 1.0 progress)))))
                     (if (< current_leds 1) (setvar 'current_leds 1))
                     (if (> current_leds 8) (setvar 'current_leds 8))
-                } {
-                    (setvar 'current_leds 1)
                 })
             })
             ; Only update if LED count changed
