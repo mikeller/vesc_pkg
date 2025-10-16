@@ -1231,6 +1231,7 @@
     ; Within each row: b15 (odd byte) contains the 8 LED bits, where bit 0 = leftmost LED, bit 7 = rightmost LED
     ; Show timer bar whenever Smart Cruise is active
     ; If trigger is held, show full bar (all 8 LEDs). If released, show countdown.
+    ; Returns the number of LEDs that should be lit (0-8), or -1 if Smart Cruise is not active
     (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) {
         (var leds_lit 8) ; Default to full bar
 
@@ -1258,6 +1259,10 @@
         ; Set the bottom row (byte 15) to show the timer bar
         (var current_byte (bufget-u8 pixbuf 15))
         (bufset-u8 pixbuf 15 (bitwise-or current_byte bottom_row_value))
+
+        leds_lit ; Return the LED count
+    } {
+        -1 ; Smart Cruise not active, return -1
     })
 })
 
@@ -1268,6 +1273,7 @@
     (var start_pos 0) ; variable used to define start position in the array of diferent display screens
     (var pixbuf (array-create 16)) ; create a temp array to store display bytes in
     (var display_mpu_addr 0x70) ; I2C Address for the screen
+    (var last_timer_bar_leds -1) ; Cache for Smart Cruise timer bar LED count to minimize I2C updates
     (loopwhile-thd THREAD_STACK_DISPLAY t {
         (sleep SLEEP_UI_UPDATE)
         ; Skip normal display timeout logic when Smart Cruise is active - keep display on
@@ -1285,14 +1291,38 @@
             )
 
             (setvar 'disp_timer_start 0)
+            (setvar 'last_timer_bar_leds -1) ; Reset cache when display turns off
         })
 
         ; Check if we need to update display (either disp_num changed OR Smart Cruise timer bar needs updating)
         (var should_update_display (!= disp_num last_disp_num))
-        ; Force continuous updates for Smart Cruise timer bar whenever Smart Cruise is active
-        ; This ensures the bar updates continuously regardless of trigger state or display number
+
+        ; Check if Smart Cruise timer bar LED count has changed
         (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) {
-            (setvar 'should_update_display 1)
+            ; Calculate what the LED count would be without rendering
+            (var current_leds 8) ; Default to full bar
+            (if (!= sw_state STATE_PRESSED) {
+                (var elapsed (secs-since timer_start))
+                (var progress (/ elapsed smart_cruise_timeout))
+                (if (< progress 1.0) {
+                    (setvar 'current_leds (to-i (+ 0.5 (* 8 (- 1.0 progress)))))
+                    (if (< current_leds 1) (setvar 'current_leds 1))
+                    (if (> current_leds 8) (setvar 'current_leds 8))
+                } {
+                    (setvar 'current_leds 1)
+                })
+            })
+            ; Only update if LED count changed
+            (if (!= current_leds last_timer_bar_leds) {
+                (setvar 'should_update_display 1)
+                (setvar 'last_timer_bar_leds current_leds)
+            })
+        } {
+            ; Smart Cruise not active - reset cache if it was previously set
+            (if (!= last_timer_bar_leds -1) {
+                (setvar 'last_timer_bar_leds -1)
+                (setvar 'should_update_display 1) ; Force update to clear timer bar
+            })
         })
 
         (if should_update_display {
