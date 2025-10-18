@@ -5,12 +5,11 @@ BASH ?= bash
 GENERATED_DIR := generated
 BINARY_STAMP := $(GENERATED_DIR)/binary_luts.stamp
 LUT_BINARY := $(GENERATED_DIR)/display_lut.bin
-BRIGHTNESS_BINARY := $(GENERATED_DIR)/brightness_lut.bin
 DIST_README := README.dist.md
 
 # Source files that should trigger a rebuild
 SOURCE_FILES := blacktip_dpv.lisp ui.qml pkgdesc.qml README.md
-ASSET_FILES := assets/display_lut.csv assets/brightness_levels.csv
+ASSET_FILES := assets/display_lut.csv
 BINARY_GENERATOR := tools/generate_lut_binary.py
 VERSION_GENERATOR := tools/update_version.sh
 
@@ -26,7 +25,6 @@ $(BINARY_STAMP): $(ASSET_FILES) $(BINARY_GENERATOR)
 	@touch $@
 
 $(LUT_BINARY): $(BINARY_STAMP)
-$(BRIGHTNESS_BINARY): $(BINARY_STAMP)
 
 # Update branch cache if it doesn't exist or branch has changed
 $(BRANCH_FILE): FORCE
@@ -39,7 +37,7 @@ $(BRANCH_FILE): FORCE
 $(DIST_README): $(SOURCE_FILES) $(VERSION_GENERATOR) $(BRANCH_FILE)
 	@$(BASH) $(VERSION_GENERATOR)
 
-blacktip_dpv.vescpkg: $(DIST_README) $(LUT_BINARY) $(BRIGHTNESS_BINARY)
+blacktip_dpv.vescpkg: $(DIST_README) $(LUT_BINARY)
 	$(VESC_TOOL) --buildPkgFromDesc pkgdesc.qml --testPkgDesc 'vesc:test'
 
 check-whitespace:
@@ -55,7 +53,7 @@ smoke-tests:
 	@echo "Running smoke tests..."
 	@$(PYTHON) tests/run_tests.py
 
-binary: $(LUT_BINARY) $(BRIGHTNESS_BINARY)
+binary: $(LUT_BINARY)
 
 test: check-whitespace smoke-tests
 	@echo "All checks passed"
