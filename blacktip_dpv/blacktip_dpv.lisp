@@ -110,6 +110,12 @@
 (define DISPLAY_REPEAT_FIRST 6)       ; display duration + 1
 (define DISPLAY_REPEAT_SECOND 12)     ; 2 * display duration + 2
 
+; Lookup table for brightness values
+(define BRIGHTNESS_LUT (list 224 227 230 233 236 239))
+
+; Masks for 0..8 LEDs lit (ordered per hardware bit mapping)
+(define TIMER_BAR_MASKS (list 0x00 0x40 0x60 0x70 0x78 0x7C 0x7E 0x7F 0xFF))
+
 ; EEPROM settings buffer size
 (define EEPROM_SETTINGS_COUNT 30)
 
@@ -146,19 +152,13 @@
     ; Import display and brightness lookup tables from binary files
     ; These files are generated at build time from CSV sources
     (import "generated/display_lut.bin" 'display_lut_bin)
-    (import "generated/brightness_lut.bin" 'brightness_lut_bin)
 
     ; Initialize display LUT (returns number of frames or nil on error)
-    (setvar 'display_num_frames (validate_lut_header display_lut_bin 0x4C555444u32 1))
-
-    ; Initialize brightness LUT (returns number of levels or nil on error)
-    (setvar 'brightness_num_levels (validate_lut_header brightness_lut_bin 0x4C555442u32 1))
+    (var display_num_frames (validate_lut_header display_lut_bin 0x4C555444u32 1))
 
     ; Verify LUTs loaded successfully - halt if validation fails
     (if (not display_num_frames)
         (exit-error "LUT validation failed: display"))
-    (if (not brightness_num_levels)
-        (exit-error "LUT validation failed: brightness"))
 })
 
 ; EEPROM initialization (init-only, not moved to flash)
@@ -774,6 +774,40 @@
 
 (move-to-flash check_smart_cruise_timeout)
 
+
+(defun smart_cruise_leds_count ()
+{
+    ; Calculate Smart Cruise timer bar LED count (0-8)
+    ; Returns: -1 if Smart Cruise not active, otherwise 0-8 LEDs to light
+    (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) {
+        (var leds_lit 8) ; Default to full bar
+
+        ; If trigger is NOT held, calculate countdown based on elapsed time
+        (if (!= sw_state STATE_PRESSED) {
+            (var elapsed (secs-since timer_start))
+            (if (> smart_cruise_timeout 0) {
+                (var progress (/ elapsed smart_cruise_timeout))
+                (if (< progress 1.0) {
+                    (setvar 'leds_lit (clamp (to-i (+ 0.5 (* 8 (- 1.0 progress)))) 1 8))
+                } {
+                    ; At/after expiry, keep a single LED
+                    (setvar 'leds_lit 1)
+                })
+            } {
+                ; Timeout <= 0: treat as immediately expired
+                (setvar 'leds_lit 1)
+            })
+        })
+
+        leds_lit ; Return the LED count
+    } {
+        -1 ; Smart Cruise not active, return -1
+    })
+})
+
+(move-to-flash smart_cruise_leds_count)
+
+
 (defun state_handler_off ()
 {
     ; xxxx State "0" Off
@@ -1223,58 +1257,35 @@
     })
 })
 
+
 (defun apply_smart_cruise_timer_bar (pixbuf)
 {
     ; Apply Smart Cruise timer bar to the bottom row when active
     ; The display buffer is organized as 8 rows of 2 bytes each (16 bytes total)
     ; b0,b1 = row 0 (top), b2,b3 = row 1, ..., b14,b15 = row 7 (bottom)
-    ; Within each row: b15 (odd byte) contains the 8 LED bits, where bit 0 = leftmost LED, bit 7 = rightmost LED
+    ; Within each row: b15 (odd byte) contains the 8 LED bits with the following mapping:
+    ; LED positions (left→right): LED1=bit7, LED2=bit0, LED3=bit1, LED4=bit2, LED5=bit3, LED6=bit4, LED7=bit5, LED8=bit6
     ; Show timer bar whenever Smart Cruise is active
     ; If trigger is held, show full bar (all 8 LEDs). If released, show countdown.
     ; Returns the number of LEDs that should be lit (0-8), or -1 if Smart Cruise is not active
-    (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) {
-        (var leds_lit 8) ; Default to full bar
+    (var leds_lit (smart_cruise_leds_count))
 
-        ; If trigger is NOT held, calculate countdown based on elapsed time
-        (if (!= sw_state STATE_PRESSED) {
-            (var elapsed (secs-since timer_start))
-            (var progress (/ elapsed smart_cruise_timeout))
-            (if (< progress 1.0) {
-                ; 8 -> 1 LEDs
-                (setvar 'leds_lit (to-i (+ 0.5 (* 8 (- 1.0 progress)))))
-                (if (< leds_lit 1) (setvar 'leds_lit 1))
-                (if (> leds_lit 8) (setvar 'leds_lit 8))
-            } {
-                ; At/after expiry, keep a single LED (bar won't render in HALF state anyway)
-                (setvar 'leds_lit 1)
-            })
-        })
-
+    (if (!= leds_lit -1) {
         ; Build the bottom row byte value - LEDs turn off left to right (LED 1→2→3→4→5→6→7→8)
-        ; LED numbering (left to right): 1=bit7, 2=bit0, 3=bit1, 4=bit2, 5=bit3, 6=bit4, 7=bit5, 8=bit6
+        ; Physical LED positions mapped to byte bits: LED1=bit7, LED2=bit0, LED3=bit1, LED4=bit2, LED5=bit3, LED6=bit4, LED7=bit5, LED8=bit6
         ; Lookup table approach for clarity
-        (var bottom_row_value (cond
-            ((<= leds_lit 0) 0)
-            ((= leds_lit 1) 0x40)   ; bit 6: LED 8
-            ((= leds_lit 2) 0x60)   ; bits 5-6: LEDs 7-8
-            ((= leds_lit 3) 0x70)   ; bits 4-6: LEDs 6-8
-            ((= leds_lit 4) 0x78)   ; bits 3-6: LEDs 5-8
-            ((= leds_lit 5) 0x7C)   ; bits 2-6: LEDs 4-8
-            ((= leds_lit 6) 0x7E)   ; bits 1-6: LEDs 3-8
-            ((= leds_lit 7) 0x7F)   ; bits 0-6: LEDs 2-8
-            (t 0xFF)))
+        (var bottom_row_value (ix TIMER_BAR_MASKS (clamp leds_lit 0 8)))
 
         ; Set the bottom row (byte 15) to show the timer bar
         (var current_byte (bufget-u8 pixbuf 15))
         (bufset-u8 pixbuf 15 (bitwise-or current_byte bottom_row_value))
-
-        leds_lit ; Return the LED count
-    } {
-        -1 ; Smart Cruise not active, return -1
     })
+
+    leds_lit ; Return the LED count or -1
 })
 
 (move-to-flash apply_smart_cruise_timer_bar)
+
 
 (defun start_display_output_loop ()
 {
@@ -1299,6 +1310,8 @@
                 (if (= scooter_type SCOOTER_BLACKTIP)
                     (i2c-tx-rx 0x70 (list 0x80))
                 )
+                ; Prevent the off→on flip in the same loop iteration
+                (setvar 'last_disp_num DISPLAY_SENTINEL)
             })
             ; For Cuda X make sure it doesn't get stuck on displaying B1 or B2 error, so switch back to last battery.
             (if (and (= scooter_type SCOOTER_CUDAX) (> last_disp_num 20))
@@ -1312,27 +1325,9 @@
         (var should_update_display (!= disp_num last_disp_num))
 
         ; Check if Smart Cruise timer bar LED count has changed
-        (if (or (= smart_cruise SMART_CRUISE_FULLY_ENABLED) (= smart_cruise SMART_CRUISE_AUTO_ENGAGED)) {
-            ; Calculate what the LED count would be without rendering
-            (var current_leds 8) ; Default to full bar
-            (if (!= sw_state STATE_PRESSED) {
-                (var elapsed (secs-since timer_start))
-                (if (> smart_cruise_timeout 0) {
-                    (var progress (/ elapsed smart_cruise_timeout))
-                    (if (< progress 1.0) {
-                        (setvar 'current_leds (to-i (+ 0.5 (* 8 (- 1.0 progress)))))
-                        (if (< current_leds 1) (setvar 'current_leds 1))
-                        (if (> current_leds 8) (setvar 'current_leds 8))
-                    } {
-                        (setvar 'current_leds 1)
-                    })
-                } {
-                    (setvar 'current_leds (to-i (+ 0.5 (* 8 (- 1.0 progress)))))
-                    (if (< current_leds 1) (setvar 'current_leds 1))
-                    (if (> current_leds 8) (setvar 'current_leds 8))
-                })
-            })
-            ; Only update if LED count changed
+        (var current_leds (smart_cruise_leds_count))
+        (if (!= current_leds -1) {
+            ; Smart Cruise active - check if LED count changed
             (if (!= current_leds last_timer_bar_leds) {
                 (setvar 'should_update_display 1)
                 (setvar 'last_timer_bar_leds current_leds)
@@ -1538,20 +1533,17 @@
                     (nil))))
 
     (i2c-tx-rx 0x70 (list 0x21)) ; start the oscillator
-    ; Get brightness byte from binary LUT (8 byte header + brightness data)
-    (i2c-tx-rx 0x70 (list (bufget-u8 brightness_lut_bin (+ 8 disp_brightness)))) ; set brightness
+    ; Set brightness using BRIGHTNESS_LUT (six discrete levels, indices 0..5)
+    (i2c-tx-rx 0x70 (list (ix BRIGHTNESS_LUT (clamp disp_brightness 0 (- (length BRIGHTNESS_LUT) 1))))) ; set brightness safely
 
     (if (= scooter_type 1) { ; For cuda X setup second screen
             (i2c-tx-rx 0x71 (list 0x21)) ; start the oscillator
-            (i2c-tx-rx 0x71 (list (bufget-u8 brightness_lut_bin (+ 8 disp_brightness)))) ; set brightness
+            (i2c-tx-rx 0x71 (list (ix BRIGHTNESS_LUT (clamp disp_brightness 0 (- (length BRIGHTNESS_LUT) 1))))) ; set brightness safely
     })
 })
 
 (defun init ()
 {
-    (define display_num_frames 0)
-    (define brightness_num_levels 0)
-
     (load_lookup_tables)
 
     (eeprom_set_defaults)
