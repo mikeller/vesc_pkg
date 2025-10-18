@@ -50,6 +50,7 @@
 (define CLICKS_DOUBLE 2)
 (define CLICKS_TRIPLE 3)
 (define CLICKS_QUADRUPLE 4)
+(define CLICKS_SMART_CRUISE_CHANGE 5)
 
 ; Smart Cruise states
 (define SMART_CRUISE_OFF 0)
@@ -600,7 +601,7 @@
                     (setvar 'smart_cruise SMART_CRUISE_AUTO_ENGAGED)
                     (setvar 'timer_start (systime))
                     (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                    (setvar 'click_beep CLICKS_TRIPLE)
+                    (setvar 'click_beep CLICKS_SMART_CRUISE_CHANGE)
                     ; re command actual speed as reverification sets it to 0.8x
                     (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
                 })
@@ -765,7 +766,7 @@
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_SMART_CRUISE_TIMEOUT)
             (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
-            (setvar 'click_beep CLICKS_TRIPLE)
+            (setvar 'click_beep CLICKS_SMART_CRUISE_CHANGE)
             ; slow scooter to 80% to help people realize cruise is expiring
             (set-rpm (calculate_rpm speed SMART_CRUISE_SLOWDOWN_DIVISOR))
         })
@@ -888,6 +889,7 @@
         ((= click_count CLICKS_DOUBLE) {
             (if (= speed SPEED_OFF) {
                 (debug_log_format (str-merge "Click action: Double click (start at speed " (to-str (to-i new_start_speed)) ")"))
+                (setvar 'click_beep CLICKS_DOUBLE)
                 (set_speed_safe new_start_speed)
             } {
                 (if (> smart_cruise SMART_CRUISE_OFF) {
@@ -926,6 +928,7 @@
             (if (= speed SPEED_OFF) {
                 ; Stopped - jump to preset speed
                 (debug_log_format (str-merge "Click action: Triple click (jump to speed " (to-str (to-i jump_speed)) ")"))
+                (setvar 'click_beep CLICKS_TRIPLE)
                 (set_speed_safe jump_speed)
             } {
                 ; Running - only allow Smart Cruise toggle in forward speeds
@@ -960,6 +963,7 @@
             (if (= speed SPEED_OFF) {
                 (if (= enable_reverse 1) {
                     (debug_log "Click action: Quadruple click (untangle)")
+                    (setvar 'click_beep CLICKS_QUADRUPLE)
                     (set_speed_safe SPEED_UNTANGLE)
                 } {
                     (debug_log "Click action: Quadruple click ignored (reverse disabled in settings)")
@@ -1520,17 +1524,18 @@
         })
 
         (if (> click_beep 0) {
-            (if (and (= click_beep CLICKS_TRIPLE) (> enable_smart_cruise 0) (!= speed SPEED_OFF))
-                (foc-play-tone 1 1500 beeps_vol)
+            (cond
+                ((= click_beep CLICKS_SMART_CRUISE_CHANGE)
+                    (foc-play-tone 1 1500 beeps_vol))
+                ((= enable_trigger_beeps 1) {
+                    (cond
+                        ((= click_beep CLICKS_SINGLE) (foc-play-tone 1 2500 beeps_vol))
+                        ((= click_beep CLICKS_DOUBLE) (foc-play-tone 1 3000 beeps_vol))
+                        ((= click_beep CLICKS_TRIPLE) (foc-play-tone 1 3500 beeps_vol))
+                        ((= click_beep CLICKS_QUADRUPLE) (foc-play-tone 1 4000 beeps_vol))
+                    )
+                })
             )
-            (if (= enable_trigger_beeps 1) {
-                (cond
-                    ((= click_beep CLICKS_SINGLE) (foc-play-tone 1 2500 beeps_vol))
-                    ((= click_beep CLICKS_DOUBLE) (foc-play-tone 1 3000 beeps_vol))
-                    ((= click_beep CLICKS_TRIPLE) (foc-play-tone 1 3500 beeps_vol))
-                    ((= click_beep CLICKS_QUADRUPLE) (foc-play-tone 1 4000 beeps_vol))
-                )
-            })
 
             (setvar 'click_beep_timer (systime))
             (setvar 'click_beep 0)
