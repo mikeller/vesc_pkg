@@ -16,6 +16,8 @@ This firmware gives your DPV with advanced features like Smart Cruise control, e
 
 **Scroll down for [installation instructions](#installation).**
 
+---
+
 ## What's New in Version 1.0.0
 
 This is the **first official release** of the improved package with a complete rewrite and numerous enhancements over the original Dive Xtras firmware:
@@ -195,6 +197,8 @@ This package includes substantial improvements over the [original Dive Xtras fir
 - ✅ **Comprehensive Debug Logging** — Easier troubleshooting and development
 - ✅ **Code Documentation** — Extensively commented codebase for maintainability
 - ✅ **Modular Architecture** — Cleaner separation of concerns for easier updates
+
+---
 
 ## Installation
 
