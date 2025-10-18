@@ -12,7 +12,7 @@ This software is released under the GPL-3.0 License. See the [LICENSE](https://g
 
 This is a comprehensive, feature-rich firmware package for Dive Xtras scooters (Blacktip and Cuda-X) running VESC motor controllers.
 
-This firmware gives your DPV with advanced features like Smart Cruise control, enhanced safety features, and extensive customization options.
+This firmware gives your DPV advanced features like Smart Cruise control, enhanced safety features, and extensive customization options.
 
 **Scroll down for [installation instructions](#installation).**
 
@@ -93,7 +93,7 @@ Professional dive planning tool for managing battery capacity:
 
 - Hold trigger for 10 seconds to activate (audible warble confirms)
 - Display shows three bars representing thirds of remaining capacity
-- Audible warning when you've used one third of capacity
+- Audible warning when you've used one-third of capacity
 - Perfect for implementing rule-of-thirds dive planning
 - Can be reset at any point during the dive to recalculate from current battery level
 
