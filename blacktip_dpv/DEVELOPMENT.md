@@ -1,5 +1,37 @@
 # BlackTip DPV Development Documentation
 
+## Firmware Architecture Overview
+
+The BlackTip DPV firmware is organized as a set of cooperative threads and event-driven state machines, designed for reliability and clarity on resource-constrained VESC hardware. Key architectural components:
+
+* **State Machine:**
+   * Manages button presses, clicks, long holds, and transitions between operational states (off, running, Smart Cruise, etc.).
+   * Implements logic for Smart Cruise activation, speed changes, and safety features.
+
+* **Display Update Loop:**
+   * Periodically updates the OLED display with speed, battery, Smart Cruise status, error codes, and timer bar.
+   * Uses a lookup table for LED timer bar mapping (left-to-right countdown).
+   * Loads display frames and brightness levels from binary files generated from CSV assets.
+
+* **Smart Cruise Logic:**
+   * Allows hands-free operation with configurable timeout and auto-engage.
+   * Visual feedback via display and 8-LED timer bar; warning mode triggers slowdown and beep.
+   * Speed changes require a long hold before tap, preventing accidental adjustments.
+
+* **Peripheral Loops:**
+   * Separate threads for motor control, trigger/button polling, battery monitoring, and Smart Cruise background checks.
+   * Each loop uses minimal stack and sleep intervals to conserve memory and CPU.
+
+* **Logging and Debugging:**
+   * Conditional debug logging via `debug_log` and `when-debug` macros to minimize memory usage.
+   * Debug output can be enabled for troubleshooting in VESC Tool.
+
+* **Configuration and EEPROM:**
+   * Settings are stored in EEPROM and loaded at startup; configuration is managed via QML UI in VESC Tool.
+   * Battery calculation supports voltage-based or ampere-hour-based methods.
+
+For more details, see the sections below and refer to `blacktip_dpv.lisp` for implementation specifics.
+
 This document contains information for developers working on the BlackTip DPV firmware.
 
 ## Build System
@@ -18,14 +50,14 @@ make binary       # Generate binary LUT files only
 
 The build system automatically generates version information for the package:
 
-- **Version source**: Base version (e.g., `1.0.0`) is stored in `README.md` in the line `**Version:** 1.0.0`
-- **Version format**:
-  - On `main` branch: `<version>-<yyyymmdd>-<git-hash>` (e.g., `1.0.0-20251013-120605-2eacfa2`)
-  - On other branches: `<version>-<branch-name>-<git-hash>` (e.g., `1.0.0-feature-xyz-2eacfa2`)
-- **Distribution**: During build, `tools/update_version.sh` creates `README.dist.md` with the full version and build timestamp
-- **Package**: The `.vescpkg` includes `README.dist.md` (referenced in `pkgdesc.qml`) so users see the detailed version info
-- **Repository**: The `README.md` in the repository shows only the base version for simplicity
-- **Rebuild behavior**: The package is only rebuilt when source files change (`blacktip_dpv.lisp`, `ui.qml`, `pkgdesc.qml`, `README.md`)
+* **Version source**: Base version (e.g., `1.0.0`) is stored in `README.md` in the line `**Version:** 1.0.0`
+* **Version format:**
+   * On `main` branch: `<version>-<yyyymmdd>-<git-hash>` (e.g., `1.0.0-20251013-120605-2eacfa2`)
+   * On other branches: `<version>-<branch-name>-<git-hash>` (e.g., `1.0.0-feature-xyz-2eacfa2`)
+* **Distribution**: During build, `tools/update_version.sh` creates `README.dist.md` with the full version and build timestamp
+* **Package**: The `.vescpkg` includes `README.dist.md` (referenced in `pkgdesc.qml`) so users see the detailed version info
+* **Repository**: The `README.md` in the repository shows only the base version for simplicity
+* **Rebuild behavior**: The package is only rebuilt when source files change (`blacktip_dpv.lisp`, `ui.qml`, `pkgdesc.qml`, `README.md`)
 
 To update the version:
 
@@ -44,11 +76,11 @@ make smoke-tests  # Run 30+ unit tests for pure functions
 ```
 
 **Tested functions:**
-- `clamp` - Value clamping (7 tests)
-- `validate_boolean` - Boolean validation (5 tests)
-- `state_name_for` - State name mapping (6 tests)
-- `speed_percentage_at` - Speed percentage lookup (5 tests)
-- `calculate_rpm` - RPM calculation (7 tests)
+* `clamp` - Value clamping (7 tests)
+* `validate_boolean` - Boolean validation (5 tests)
+* `state_name_for` - State name mapping (6 tests)
+* `speed_percentage_at` - Speed percentage lookup (5 tests)
+* `calculate_rpm` - RPM calculation (7 tests)
 
 Tests are implemented in Python (`tests/run_tests.py`) to mirror the LispBM
 implementations and verify correctness without needing hardware.
@@ -58,14 +90,12 @@ implementations and verify correctness without needing hardware.
 ```text
 blacktip_dpv/
 ├── assets/                          # Source data files
-│   ├── display_lut.csv             # Display frames (124 frames × 4 rotations)
-│   └── brightness_levels.csv       # Brightness levels (6 levels)
+│   └── display_lut.csv             # Display frames (124 frames × 4 rotations)
 ├── tools/                           # Build and development tools
 │   ├── generate_lut_binary.py      # Generates binary files from CSV
 │   └── preview_display.py          # ASCII/PGM visualization tool
 ├── generated/                       # Auto-generated files (not in git)
-│   ├── display_lut.bin             # Binary display data (1992 bytes)
-│   └── brightness_lut.bin          # Binary brightness data (14 bytes)
+│   └── display_lut.bin             # Binary display data (1992 bytes)
 ├── blacktip_dpv.lisp               # Main firmware source
 ├── ui.qml                           # User interface
 ├── pkgdesc.qml                     # Package descriptor
@@ -75,13 +105,11 @@ blacktip_dpv/
 
 ### Asset Files
 
-The OLED screen artwork and brightness tables live in `assets/` as CSV files:
+The OLED screen artwork lives in `assets/display_lut.csv` as a CSV file:
 
-- **`display_lut.csv`** — All display frames (124 rows, one per screen/rotation)
-- **`brightness_levels.csv`** — Brightness command bytes (6 levels)
+* **`display_lut.csv`** — All display frames (124 rows, one per screen/rotation)
 
-These CSV files are the source of truth. The build system automatically generates
-binary files from them.
+This CSV file is the source of truth. The build system automatically generates the binary display LUT from it.
 
 ### Preview Tool
 
@@ -109,28 +137,20 @@ match the physical hardware orientation.
 
 ### Binary File Format
 
-The firmware loads display and brightness data from binary files at runtime using
-LispBM's `import` statement. These files are automatically generated from the CSV
-assets during the build process.
+The firmware loads display data from a binary file at runtime using LispBM's `import` statement. This file is automatically generated from the CSV asset during the build process.
 
 **Display LUT** (`generated/display_lut.bin`):
-- Header (8 bytes):
-  - Magic number: 0x4C555444 ("LUTD" in ASCII)
-  - Version: u16 (currently 1)
-  - Frame count: u16 (currently 124)
-- Frame data: 124 frames × 4 rotations × 16 bytes per frame = 1984 bytes
-- Total size: 1992 bytes
+* Header (8 bytes):
+  * Magic number: 0x4C555444 ("LUTD" in ASCII)
+  * Version: u16 (currently 1)
+  * Frame count: u16 (currently 124)
+* Frame data: 124 frames × 4 rotations × 16 bytes per frame = 1984 bytes
+* Total size: 1992 bytes
 
-**Brightness LUT** (`generated/brightness_lut.bin`):
-- Header (8 bytes):
-  - Magic number: 0x4C555442 ("LUTB" in ASCII)
-  - Version: u16 (currently 1)
-  - Level count: u16 (currently 6)
-- Level data: 6 brightness levels × 1 byte = 6 bytes
-- Total size: 14 bytes
+**Brightness Levels:**
+Brightness levels are now hardcoded in the firmware as `BRIGHTNESS_LUT` (see `blacktip_dpv.lisp`). There is no separate asset or binary file for brightness.
 
-The firmware validates the magic numbers and versions at startup to ensure data
-integrity.
+The firmware validates the display LUT magic number and version at startup to ensure data integrity.
 
 ## Development Workflow
 
@@ -159,9 +179,9 @@ The display hardware is rotated 90° clockwise relative to the natural orientati
 The preview tool and firmware both handle this transformation automatically.
 
 Each display frame consists of:
-- 8 columns × 8 rows = 64 pixels
-- Stored as 16 bytes (8 column pairs, each pair = low byte + high byte)
-- Bit 7 (MSB) = top pixel, Bit 0 (LSB) = bottom pixel in each column
+* 8 columns × 8 rows = 64 pixels
+* Stored as 16 bytes (8 column pairs, each pair = low byte + high byte)
+* Bit 7 (MSB) = top pixel, Bit 0 (LSB) = bottom pixel in each column
 
 ## Code Quality
 
@@ -173,11 +193,11 @@ make test  # Runs whitespace checks
 
 ### Code Style
 
-- Use snake_case for LispBM variable and function names
-- Use 4 spaces for indentation (not tabs)
-- No trailing whitespace
-- Brace style: 1TBS (One True Brace Style)
-- See `.github/instructions/copilot-instructions.md` for full style guide
+* Use snake_case for LispBM variable and function names
+* Use 4 spaces for indentation (not tabs)
+* No trailing whitespace
+* Brace style: 1TBS (One True Brace Style)
+* See `.github/instructions/copilot-instructions.md` for full style guide
 
 ## Logging Hygiene
 
@@ -201,19 +221,19 @@ Two mechanisms are available for debug logging:
 ### When to Use `when-debug`
 
 Use the `when-debug` macro when logging requires:
-- String concatenation (`str-merge`)
-- Number-to-string conversion (`to-str`)
-- Any other expensive operations
+* String concatenation (`str-merge`)
+* Number-to-string conversion (`to-str`)
+* Any other expensive operations
 
 The macro only evaluates these expressions when `debug_enabled` is 1, preventing
 unnecessary memory allocation and CPU cycles in hot paths.
 
 ### Hot Paths Requiring `when-debug`
 
-- `set_speed_safe` - Called every speed change (multiple times per second)
-- Motor control loop - Runs continuously
-- State machine handlers - Active during user interactions
-- Click action handlers - Called on every button press
+* `set_speed_safe` - Called every speed change (multiple times per second)
+* Motor control loop - Runs continuously
+* State machine handlers - Active during user interactions
+* Click action handlers - Called on every button press
 
 ### Example
 
@@ -320,9 +340,9 @@ system and **cannot be removed**:
 
 ## Build Dependencies
 
-- Python 3.x (for build tools)
-- VESC Tool (for building .vescpkg files)
-- Standard Unix tools (make, grep, etc.)
+* Python 3.x (for build tools)
+* VESC Tool (for building .vescpkg files)
+* Standard Unix tools (make, grep, etc.)
 
 ## Repository
 
