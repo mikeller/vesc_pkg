@@ -833,6 +833,20 @@
 
 (move-to-flash state_handler_off)
 
+
+(defun smart_cruise_upgrade_if_needed ()
+{
+    (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
+        (debug_log "Smart Cruise: Re-enabled from warning mode")
+        (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
+        (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
+        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+    })
+})
+
+(move-to-flash smart_cruise_upgrade_if_needed)
+
+
 ; Encapsulated click action handler
 (defun apply_click_action (click_count)
 {
@@ -847,12 +861,7 @@
                         (setvar 'click_beep CLICKS_SINGLE)
                         (setvar 'timer_start (systime))
                         ; If in warning mode, upgrade back to fully enabled
-                        (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
-                            (debug_log "Smart Cruise: Re-enabled from warning mode")
-                            (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
-                            (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                            (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
-                        })
+                        (smart_cruise_upgrade_if_needed)
                         ; Change speed down
                         (cond
                             ((> speed SPEED_REVERSE_THRESHOLD)
@@ -865,12 +874,7 @@
                         (setvar 'click_beep CLICKS_SINGLE)
                         (setvar 'timer_start (systime))
                         ; If in warning mode, upgrade back to fully enabled
-                        (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
-                            (debug_log "Smart Cruise: Re-enabled from warning mode")
-                            (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
-                            (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                            (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
-                        })
+                        (smart_cruise_upgrade_if_needed)
                     })
                 } {
                     ; Smart Cruise not active - normal speed down
@@ -889,23 +893,37 @@
                 (debug_log_format (str-merge "Click action: Double click (start at speed " (to-str (to-i new_start_speed)) ")"))
                 (set_speed_safe new_start_speed)
             } {
-                (debug_log "Click action: Double click (speed up)")
-                (setvar 'click_beep CLICKS_DOUBLE)
-                ; Only reset Smart Cruise timer if there was a long hold and Smart Cruise is active
-                (if (and (> smart_cruise SMART_CRUISE_OFF) (> initial_press_time TIMER_SMART_CRUISE_HOLD)) {
-                    (setvar 'timer_start (systime))
-                    ; If in warning mode, upgrade back to fully enabled
-                    (if (= smart_cruise SMART_CRUISE_HALF_ENABLED) {
-                        (debug_log "Smart Cruise: Re-enabled from warning mode")
-                        (setvar 'smart_cruise SMART_CRUISE_FULLY_ENABLED)
-                        (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                        (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
+                (if (> smart_cruise SMART_CRUISE_OFF) {
+                    ; Smart Cruise is active - only allow speed change after long hold
+                    (if (> initial_press_time TIMER_SMART_CRUISE_HOLD) {
+                        ; Long hold before double tap - change speed up
+                        (debug_log "Click action: Double click after hold (Smart Cruise: speed up + timer reset)")
+                        (setvar 'click_beep CLICKS_DOUBLE)
+                        (setvar 'timer_start (systime))
+                        ; If in warning mode, upgrade back to fully enabled
+                        (smart_cruise_upgrade_if_needed)
+                        ; Change speed up
+                        (if (< speed max_speed_no) {
+                            (if (> speed SPEED_UNTANGLE)
+                                (set_speed_safe (+ speed 1))
+                        })
+                    } {
+                        ; Quick double tap without hold - just reset timer
+                        (debug_log "Click action: Double click (Smart Cruise timer reset)")
+                        (setvar 'click_beep CLICKS_DOUBLE)
+                        (setvar 'timer_start (systime))
+                        ; If in warning mode, upgrade back to fully enabled
+                        (smart_cruise_upgrade_if_needed)
                     })
-                })
-                (if (< speed max_speed_no) {
-                    (if (> speed SPEED_UNTANGLE)
-                        (set_speed_safe (+ speed 1))
-                        (set_speed_safe SPEED_REVERSE_2))
+                } {
+                    ; Smart Cruise not active - normal speed up
+                    (debug_log "Click action: Double click (speed up)")
+                    (setvar 'click_beep CLICKS_DOUBLE)
+                    (if (< speed max_speed_no) {
+                        (if (> speed SPEED_UNTANGLE)
+                            (set_speed_safe (+ speed 1))
+                            (set_speed_safe SPEED_REVERSE_2))
+                    })
                 })
             })
         })
