@@ -50,7 +50,6 @@
 (define CLICKS_DOUBLE 2)
 (define CLICKS_TRIPLE 3)
 (define CLICKS_QUADRUPLE 4)
-(define CLICKS_QUINTUPLE 5)
 
 ; Smart Cruise states
 (define SMART_CRUISE_OFF 0)
@@ -601,7 +600,7 @@
                     (setvar 'smart_cruise SMART_CRUISE_AUTO_ENGAGED)
                     (setvar 'timer_start (systime))
                     (setvar 'disp_num DISPLAY_SMART_CRUISE_FULL)
-                    (setvar 'click_beep CLICKS_QUINTUPLE)
+                    (setvar 'click_beep CLICKS_TRIPLE)
                     ; re command actual speed as reverification sets it to 0.8x
                     (set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))
                 })
@@ -657,7 +656,8 @@
     (cond
         ((< value min_val) min_val)
         ((> value max_val) max_val)
-        (t value))
+        (t value)
+    )
 })
 
 (move-to-flash clamp)
@@ -765,7 +765,7 @@
             (setvar 'timer_start (systime))
             (setvar 'timer_duration TIMER_SMART_CRUISE_TIMEOUT)
             (setvar 'disp_num DISPLAY_SMART_CRUISE_HALF)
-            (setvar 'click_beep CLICKS_QUINTUPLE)
+            (setvar 'click_beep CLICKS_TRIPLE)
             ; slow scooter to 80% to help people realize cruise is expiring
             (set-rpm (calculate_rpm speed SMART_CRUISE_SLOWDOWN_DIVISOR))
         })
@@ -863,15 +863,12 @@
                         ; If in warning mode, upgrade back to fully enabled
                         (smart_cruise_upgrade_if_needed)
                         ; Change speed down
-                        (cond
-                            ((> speed SPEED_REVERSE_THRESHOLD)
-                                (set_speed_safe (- speed 1)))
-                            ((= speed SPEED_REVERSE_2)
-                                (set_speed_safe SPEED_UNTANGLE)))
+                        (if (> speed SPEED_REVERSE_THRESHOLD) {
+                            (set_speed_safe (- speed 1))
+                        })
                     } {
                         ; Quick tap - just reset timer
                         (debug_log "Click action: Single click (Smart Cruise timer reset)")
-                        (setvar 'click_beep CLICKS_SINGLE)
                         (setvar 'timer_start (systime))
                         ; If in warning mode, upgrade back to fully enabled
                         (smart_cruise_upgrade_if_needed)
@@ -903,14 +900,12 @@
                         ; If in warning mode, upgrade back to fully enabled
                         (smart_cruise_upgrade_if_needed)
                         ; Change speed up
-                        (if (< speed max_speed_no) {
-                            (if (> speed SPEED_UNTANGLE)
-                                (set_speed_safe (+ speed 1))
+                        (if (and (< speed max_speed_no) (> speed SPEED_UNTANGLE)) {
+                            (set_speed_safe (+ speed 1))
                         })
                     } {
                         ; Quick double tap without hold - just reset timer
                         (debug_log "Click action: Double click (Smart Cruise timer reset)")
-                        (setvar 'click_beep CLICKS_DOUBLE)
                         (setvar 'timer_start (systime))
                         ; If in warning mode, upgrade back to fully enabled
                         (smart_cruise_upgrade_if_needed)
@@ -1125,7 +1120,8 @@
                         ((and (< speed start_speed) (> speed SPEED_UNTANGLE)) ; start at old speed if less than start speed
                             (setvar 'new_start_speed speed))
                         ((>= speed start_speed)
-                            (setvar 'new_start_speed start_speed)))
+                            (setvar 'new_start_speed start_speed))
+                    )
                     (set_speed_safe SPEED_OFF)
                     (setvar 'smart_cruise SMART_CRUISE_OFF) ; turn off Smart Cruise
                     (state_transition_to STATE_OFF "timeout_shutdown" THREAD_STACK_STATE_TRANSITIONS state_handler_off)
@@ -1426,7 +1422,8 @@
                     (t {
                         (setvar 'disp_num 0)
                         (spawn beeper 1)
-                    }))
+                    })
+                )
 
                 ; Section for 1/3rds display
                 (cond
@@ -1449,7 +1446,8 @@
                             (spawn warbler 350 0.5 0.5)
                             (setvar 'warning_counter (+ warning_counter 1))
                         })
-                    }))
+                    })
+                )
             )
 
             (setvar 'batt_disp_state 1)
@@ -1478,7 +1476,8 @@
                 ((> actual_batt 0.20)
                     (setvar 'disp_num 22)) ; 20%
                 (t
-                    (setvar 'disp_num 21)))
+                    (setvar 'disp_num 21))
+            )
             (setvar 'batt_disp_state 0)
             (setvar 'batt_disp_timer_start 0)
         })
@@ -1525,10 +1524,12 @@
                 (foc-play-tone 1 1500 beeps_vol)
             )
             (if (= enable_trigger_beeps 1) {
-                (if (= click_beep CLICKS_SINGLE)(foc-play-tone 1 2500 beeps_vol))
-                (if (= click_beep CLICKS_DOUBLE)(foc-play-tone 1 3000 beeps_vol))
-                (if (= click_beep CLICKS_TRIPLE)(foc-play-tone 1 3500 beeps_vol))
-                (if (= click_beep CLICKS_QUADRUPLE)(foc-play-tone 1 4000 beeps_vol))
+                (cond
+                    ((= click_beep CLICKS_SINGLE) (foc-play-tone 1 2500 beeps_vol))
+                    ((= click_beep CLICKS_DOUBLE) (foc-play-tone 1 3000 beeps_vol))
+                    ((= click_beep CLICKS_TRIPLE) (foc-play-tone 1 3500 beeps_vol))
+                    ((= click_beep CLICKS_QUADRUPLE) (foc-play-tone 1 4000 beeps_vol))
+                )
             })
 
             (setvar 'click_beep_timer (systime))
