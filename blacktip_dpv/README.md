@@ -93,7 +93,7 @@ Professional dive planning tool for managing battery capacity:
 
 - Hold trigger for 10 seconds to activate (audible warble confirms)
 - Display shows three bars representing thirds of remaining capacity
-- Audible warning when you've used one third of capacity
+- Audible warning when you've used one-third of capacity
 - Perfect for implementing rule-of-thirds dive planning
 - Can be reset at any point during the dive to recalculate from current battery level
 
