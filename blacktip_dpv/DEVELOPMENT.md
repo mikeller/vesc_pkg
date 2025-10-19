@@ -10,7 +10,7 @@ The BlackTip DPV firmware is organized as a set of cooperative threads and event
 * **Display Update Loop:**
   * Periodically updates the OLED display with speed, battery, Smart Cruise status, error codes, and timer bar.
   * Uses a lookup table for LED timer bar mapping (left-to-right countdown).
-    * Loads display frames and brightness levels from binary files generated from CSV assets.
+    * Loads display frames from a binary file generated from a CSV asset.
 * **Smart Cruise Logic:**
   * Allows hands-free operation with configurable timeout and auto-engage.
   * Visual feedback via display and 8-LED timer bar; warning mode triggers slowdown and beep.
@@ -130,12 +130,6 @@ The firmware loads display data from a binary file at runtime using LispBM's `im
 * Frame data: 124 frames × 4 rotations × 16 bytes per frame = 1984 bytes
 * Total size: 1992 bytes
 
-**Brightness Levels:**
-
-Brightness levels are now hardcoded in the firmware as `BRIGHTNESS_LUT` (see `blacktip_dpv.lisp`). There is no separate asset or binary file for brightness.
-
-The firmware validates the display LUT magic number and version at startup to ensure data integrity.
-
 ## Development Workflow
 
 ### Editing Display Artwork
@@ -149,10 +143,6 @@ The binary files will be automatically regenerated from the CSV.
 ### Adding New Displays
 
 1. Add four rows to `display_lut.csv` (one per rotation 0-3). The `index` field must be sequential and unique. Each row has 16 byte fields (`b0` through `b15`) representing the 8×8 pixel matrix as interleaved low/high column bytes.
-
-### Changing Brightness Levels
-
-1. Edit `assets/brightness_levels.csv` to modify the I2C command bytes for each brightness level (0-5). The binary file will be regenerated on next build.
 
 ## Display Orientation
 
