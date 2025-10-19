@@ -1,6 +1,6 @@
-# Improved Firmware for Dive Xtras Scooters
+# Improved Software for Dive Xtras Scooters
 
-![Blacktip DPV Logo](https://raw.githubusercontent.com/mikeller/vesc_pkg/main/blacktip_dpv/shark_with_laser.png)
+![Blacktip DPV Logo](https://raw.githubusercontent.com/mikeller/vesc_pkg/main/blacktip_dpv/assets/shark_with_laser.png)
 
 **Version:** 1.0.0
 
@@ -10,9 +10,22 @@ This software is released under the GPL-3.0 License. See the [LICENSE](https://g
 
 ## About
 
-This is a comprehensive, feature-rich firmware package for Dive Xtras scooters (Blacktip and Cuda-X) running VESC motor controllers.
+This is a comprehensive, feature-rich package for Dive Xtras scooters (Blacktip and CudaX) running VESC motor controllers.
 
-This firmware gives your DPV advanced features like Smart Cruise control, enhanced safety features, and extensive customization options.
+This package gives your DPV advanced features like Smart Cruise control, enhanced safety features, and extensive customization options.
+
+## Supported Hardware
+
+**Dive Xtras Blacktip:**
+
+- first generation (Flipsky 4.10 based)
+- second generation (Flipsky 6.0 based)
+- third generation (Flipsky 6.0 MK5 based, with Bluetooth)
+
+**Dive Xtras CudaX:**
+
+- first generation (Flipsky 6.0 based)
+- second generation (Flipsky 6.0 MK5 based, with Bluetooth)
 
 **Scroll down for [installation instructions](#installation).**
 
@@ -20,15 +33,16 @@ This firmware gives your DPV advanced features like Smart Cruise control, enhanc
 
 ## What's New in Version 1.0.0
 
-This is the **first official release** of the improved package with a complete rewrite and numerous enhancements over the original Dive Xtras firmware:
+This is the **first official release** of the improved package with a complete rewrite and numerous enhancements over the original Dive Xtras software:
 
 - **Smart Cruise** — Hands-free cruising with visual timer bar and configurable timeout
 - **Smart Cruise Visual Indicator** — LED countdown timer bar showing time remaining
 - **Auto-engage Smart Cruise** — Optionally enable Smart Cruise automatically after maintaining speed
 - **Improved Speed Controls** — Change your speed while in Smart Cruise mode
 - **Voltage or Ah-based Battery Calculation** — Choose the method that works best for your setup
+- **Update to run on VESC 6.06** — Smoother running with latest FOC algorithms, improved safety features
 - **Code Optimization** — Reduced memory usage and improved performance
-- **Bug Fixes** — Numerous fixes from the original firmware for improved reliability and less EEPROM wear
+- **Bug Fixes** — Numerous fixes from the original software for improved reliability and less EEPROM wear
 
 ## Features
 
@@ -148,7 +162,7 @@ Full access to all features via the VESC mobile app on iOS or Android devices:
 - Visual interface for speed configuration and feature toggles
 - Save settings directly to the scooter
 
-### Latest VESC Firmware Compatibility
+### Latest VESC Firmware (6.06) Compatibility
 
 - Always compatible with the latest VESC firmware releases
 - Benefits from continuous VESC ecosystem improvements
@@ -166,9 +180,9 @@ Full access to all features via the VESC mobile app on iOS or Android devices:
 - Battery level indicators (full, thirds mode, percentage)
 - Error code display for diagnostics
 
-## Improvements Over Original Firmware
+## Improvements Over Original Software
 
-This package includes substantial improvements over the [original Dive Xtras firmware](https://github.com/mikeller/vesc_pkg/commit/cde7411093b973bf81c35653118aedeca582d092):
+This package includes substantial improvements over the original [V1.50 Dive Xtras Poseidon](https://dive-xtras.zendesk.com/hc/en-us/articles/22561137269908-Reset-Blacktip-Software) software:
 
 ### New Features Added
 
@@ -198,48 +212,102 @@ This package includes substantial improvements over the [original Dive Xtras fir
 - ✅ **Code Documentation** — Extensively commented codebase for maintainability
 - ✅ **Modular Architecture** — Cleaner separation of concerns for easier updates
 
+### General Improvements
+
+- ✅ **Runs on the latest (6.06) VESC release** — Smoother running with latest FOC algorithms, improved safety features
+
 ---
 
 ## Installation
 
 ### Requirements
 
-- Dive Xtras Blacktip or Cuda-X scooter with VESC controller
-- VESC firmware 6.06 or higher
-- VESC Tool (PC) or VESC mobile app (iOS/Android)
+- Dive Xtras Blacktip or CudaX scooter
+- the latest 'blacktip\_dpv.vescpkg' file from [GitHub](https://github.com/mikeller/vesc_pkg/releases)
+- VESC Tool (PC) or VESC mobile app (iOS/Android), version 6.06 or higher from [VESC Project](https://vesc-project.com/vesc_tool)
+- USB cable (for models without Bluetooth)
 
 ### Installation Steps
 
-1. **Download the Package:**
+1. **Identify your hardware model:**
 
-- Get the latest `blacktip_dpv.vescpkg` file from the releases page
+**Blacktip generations:**
+
+- **First generation** (Flipsky 4.10 based): Has a short USB cable with type A connector at the motor end
+- **Second generation** (Flipsky 6.0 based): No USB cable visible, and no Bluetooth capability\*
+- **Third generation** (Flipsky 6.0 MK5 based): Supports Bluetooth connectivity
+
+**CudaX generations:**
+
+- **First generation** (Flipsky 6.0 based): No Bluetooth capability
+- **Second generation** (Flipsky 6.0 MK5 based): Supports Bluetooth connectivity
 
 2. **Connect to Scooter:**
 
-- Use VESC Tool (PC) via USB, or
-- Use VESC mobile app via Bluetooth
+**USB:**
 
-3. **Install Package:**
+**Blacktip First Generation:**
+
+- use an 'USB extension' cable to connect the type A connector on the motor end to your PC
+- install batteries to power up the scooter
+
+**Blacktip Second Generation:**
+
+- remove the four screws holding the metal plate on top of the motor assembly
+- carefully lift the metal plate to expose the VESC controller mounted on the underside of it
+- remove the rubber plug covering the micro USB port on the VESC
+- connect a micro USB cable from the VESC to your PC
+- install batteries to power up the scooter
+
+**CudaX First Generation:**
+
+- remove the rubber plug covering the micro USB port on the VESC
+- connect a micro USB cable from the VESC to your PC
+- install batteries to power up the scooter
+
+**Blacktip Third Generation and CudaX Second Generation:**
+
+- install batteries to power up the scooter
+- use 'Scan BLE' in the first tab of the VESC Tool or the VESC mobile app to find and connect to your scooter via Bluetooth
+
+3. **Update the VESC firmware:**
+
+(only needed if the firmware version shown in the VESC Tool or VESC mobile app is below 6.06)
 
 - **VESC Tool (PC):**
 
-- Go to the "Packages" tab
-- Click "Import Package"
-- Select the downloaded `.vescpkg` file
+- Go to the "Firmware" tab
+- Click the 'arrow down' button to install the firmware
+
+- **VESC Mobile App:**
+
+- Navigate to the firmware section
+- Click the "arrow down" icon to install the firmware
+
+4. **Install Package:**
+
+- **VESC Tool (PC):**
+
+- Go to the "VESC Packages" tab, then the "Load Custom" sub-tab
+- Click the "load file" icon and select "blacktip\_dpv.vescpkg"
 - Click "Install" and wait for completion
 
 - **VESC Mobile App:**
 
 - Navigate to the packages section
+- Click "..."
 - Select "Install Package"
-- Choose the downloaded file
+- Choose "blacktip\_dpv.vescpkg"
 - Confirm installation
 
-4. **Verify Installation:**
+5. **Verify Installation:**
 
-- The scooter should beep to confirm successful installation
+- The scooter should show the startup splash screen to confirm successful installation
 - Check that the custom UI appears in the app
+- Configure to suit your preferences
 - Test basic functionality in a safe environment
+
+\* this model can be upgraded with a Bluetooth module to enable Bluetooth connectivity, see [these instructions](https://github.com/mikeller/vesc_pkg/blob/main/blacktip_dpv/BLUETOOTH_UPGRADE.md)
 
 ### First-Time Configuration
 
@@ -247,7 +315,7 @@ After installation, configure these essential settings:
 
 1. **Scooter Type:**
 
-- Select Blacktip or Cuda-X in the Hardware Configuration
+- Select Blacktip or CudaX in the Hardware Configuration
 
 2. **Battery Settings:**
 
@@ -320,7 +388,7 @@ All settings are accessible through the VESC mobile app or VESC Tool:
 
 ### Hardware Configuration
 
-- **Scooter Type:** Blacktip or Cuda-X (affects display and pinout)
+- **Scooter Type:** Blacktip or CudaX (affects display and pinout)
 
 ## Support
 
