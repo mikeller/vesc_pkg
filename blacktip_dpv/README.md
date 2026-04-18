@@ -2,7 +2,7 @@
 
 ![Blacktip DPV Logo](https://raw.githubusercontent.com/vedderb/vesc_pkg/main/blacktip_dpv/assets/shark_with_laser.png)
 
-**Version:** 1.2.0
+**Version:** 1.3.0
 
 ## License
 
@@ -37,6 +37,13 @@ Some videos showing the basic commands to control Smart Cruise while diving:
 - [manually enabling and disabling Smart Cruise](https://youtu.be/riwqB_mttLM)
 
 ---
+
+## What's New in Version 1.3.0
+
+Minor release focused on battery safety configuration flexibility:
+
+- **ADC1 Balance-Wire Monitoring Toggle**: Added an option to disable ADC1 balance-wire monitoring (B1/B2 fault check) when using battery packs that each have their own BMS/cell protection
+- **Safety Guidance Added**: This option is now explicitly documented as BMS-only usage. Disable this monitoring only when each battery pack has its own BMS/cell protection
 
 ## What's New in Version 1.2.0
 
@@ -340,6 +347,7 @@ After installation, configure these essential settings:
 - Set battery cell count (typically 10S for 36V systems)
 - Configure battery capacity (Ah)
 - Choose calculation method (voltage or Ah-based)
+- Optional: disable ADC1 balance-wire monitoring only when using battery packs that each have their own BMS/cell protection
 - Set cutoff voltages
 
 3. **Speed Configuration:**
@@ -390,6 +398,8 @@ All settings are accessible through the VESC mobile app or VESC Tool:
 - **Cell Count:** Number of cells in series (typically 10S)
 - **Battery Capacity:** Total Ah rating
 - **Calculation Method:** Voltage-based or Ah-based
+- **Balance Wire Monitoring (ADC1):** Can be disabled (sets `fault_adc1` to 0) only when each battery pack has its own BMS/cell protection
+- **Safety Warning:** Disable ADC1 balance-wire monitoring only if each battery pack has its own BMS/cell-level protection. Otherwise you lose an important pack-imbalance warning path
 - **Cutoff Voltages:** Start and end cutoff voltages
 
 ### Display & Beeper Settings

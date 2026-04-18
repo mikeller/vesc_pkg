@@ -24,6 +24,8 @@ The BlackTip DPV lispBM runtime is organized as a set of cooperative threads and
 * **Configuration and EEPROM:**
   * Settings are stored in EEPROM and loaded at startup; configuration is managed via QML UI in VESC Tool.
   * Battery calculation supports voltage-based or ampere-hour-based methods.
+  * ADC1 balance-wire monitoring (B1/B2 fault check) can be disabled from the UI, but this must only be used when each battery pack has its own BMS/cell protection.
+  * If packs do not have independent BMS protection, disabling ADC1 monitoring removes an important pack-imbalance warning path and should not be done.
 
 For more details, see the sections below and refer to `blacktip_dpv.lisp` for implementation specifics.
 

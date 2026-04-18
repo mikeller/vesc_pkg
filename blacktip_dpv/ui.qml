@@ -28,6 +28,7 @@ Item {
     ]
 
     readonly property int const_RELOAD_DELAY_MS: 1000
+    readonly property real const_BALANCE_ADC1_DEFAULT_VOLTAGE: 2.0
 
 
     property Commands mCommands: VescIf.commands()
@@ -44,6 +45,7 @@ Item {
     property int gaugeSize2: big.width * 0.45
 
     property bool loading_values: false
+    property bool app_has_fault_adc1: false
 
     property string firmwareVersion: "&lt;unknown$gt;"
 
@@ -774,6 +776,24 @@ Item {
         })
     }
 
+    function getBalanceAdc1Threshold() {
+        if (!app_has_fault_adc1) {
+            return const_BALANCE_ADC1_DEFAULT_VOLTAGE
+        }
+
+        var threshold = mAppConf.getParamDouble("fault_adc1")
+
+        if (!isFinite(threshold) || threshold < 0) {
+            return const_BALANCE_ADC1_DEFAULT_VOLTAGE
+        }
+
+        return threshold
+    }
+
+    function hasFaultAdc1Param() {
+        return (typeof mAppConf.isParamDouble === "function") && mAppConf.isParamDouble("fault_adc1")
+    }
+
     function read_settings() {
         readSettingsDone = false
     }
@@ -915,6 +935,9 @@ Item {
         mAppConf.updateParamEnum("app_to_use", 3)
         mAppConf.updateParamInt("app_uart_baudrate", 115200)
         mAppConf.updateParamEnum("shutdown_mode", 9)
+        if (hasFaultAdc1Param()) {
+            mAppConf.updateParamDouble("fault_adc1", const_BALANCE_ADC1_DEFAULT_VOLTAGE)
+        }
 
         mCommands.setMcconf(false) // Write Motor settings immediatly
 
@@ -1022,6 +1045,9 @@ Item {
         mAppConf.updateParamEnum("app_to_use", 3)
         mAppConf.updateParamInt("app_uart_baudrate", 115200)
         mAppConf.updateParamEnum("shutdown_mode", 9)
+        if (hasFaultAdc1Param()) {
+            mAppConf.updateParamDouble("fault_adc1", const_BALANCE_ADC1_DEFAULT_VOLTAGE)
+        }
 
         mCommands.setMcconf(false) // Write Motor settings immediatly
 
@@ -1044,6 +1070,7 @@ Item {
         function onCustomAppDataReceived (data) {
             var dv = new DataView(data)
             loading_values = true;
+            app_has_fault_adc1 = hasFaultAdc1Param()
 
             hardware_configuration.currentIndex =  dv.getUint8(19) // set first so U spinbox range is opened up for cuda x
 
@@ -1076,6 +1103,7 @@ Item {
             enable_thirds_warning_startup.checked =  dv.getUint8(27) == 1
             use_ah_battery_calculation.checked =  dv.getUint8(28) == 1
             debug_enabled.checked =  dv.getUint8(29) == 1
+            disable_balance_wire_monitoring.checked = app_has_fault_adc1 && (getBalanceAdc1Threshold() <= 0)
 
             ramp_rate.realValue = mMcConf.getParamDouble("s_pid_ramp_erpms_s")
             battery_ah.realValue = mMcConf.getParamDouble("si_battery_ah")
@@ -1347,7 +1375,16 @@ Item {
 	    onAccepted: {
             if (has_changes) {
                 mMcConf.updateParamDouble("si_battery_ah", battery_ah.realValue, null)
+                if (app_has_fault_adc1) {
+                    var currentFaultAdc1 = getBalanceAdc1Threshold()
+                    var targetFaultAdc1 = disable_balance_wire_monitoring.checked
+                        ? 0
+                        : (currentFaultAdc1 <= 0 ? const_BALANCE_ADC1_DEFAULT_VOLTAGE : currentFaultAdc1)
+                    mAppConf.updateParamDouble("fault_adc1", targetFaultAdc1, null)
+                }
+
                 mCommands.setMcconf(false)
+                mCommands.setAppConf()
 
                 write_settings()
 
@@ -1411,6 +1448,35 @@ Item {
                     onClicked: {
                         batteryDialog.valuesChanged()
                     }
+                }
+
+                CheckBox {
+                    id: disable_balance_wire_monitoring
+                    Layout.fillWidth: true
+                    visible: app_has_fault_adc1
+                    text: "Disable ADC1 balance-wire monitoring (B1/B2 fault check; only with BMS-protected packs)"
+                    checked: false
+                    onClicked: {
+                        batteryDialog.valuesChanged()
+                    }
+                }
+
+                Text {
+                    visible: app_has_fault_adc1
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: Utility.getAppHexColor("lightText")
+                    font.pixelSize: Qt.application.font.pixelSize * 0.8
+                    text: "Warning: only disable this if each battery pack has its own BMS/cell protection. Otherwise you remove a key pack-imbalance warning."
+                }
+
+                Text {
+                    visible: !app_has_fault_adc1
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: Utility.getAppHexColor("lightText")
+                    font.pixelSize: Qt.application.font.pixelSize * 0.8
+                    text: "ADC1 balance-wire monitoring control is not available on this firmware/app profile."
                 }
             }
         }
