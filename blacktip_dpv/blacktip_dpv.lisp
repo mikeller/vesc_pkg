@@ -117,13 +117,20 @@
 (define TIMER_BAR_MASKS (list 0x00 0x40 0x60 0x70 0x78 0x7C 0x7E 0x7F 0xFF))
 
 ; EEPROM settings buffer size
-(define EEPROM_SETTINGS_COUNT 30)
+(define EEPROM_SETTINGS_COUNT 31)
 
 ; Battery polynomial coefficients (for voltage-based calculation)
 (define BATTERY_COEFF_4 4.3867)
 (define BATTERY_COEFF_3 -6.7072)
 (define BATTERY_COEFF_2 2.4021)
 (define BATTERY_COEFF_1 1.3619)
+
+; Battery imbalance warning constants
+(define BATTERY_IMBALANCE_WARN_NONE 0)
+(define BATTERY_IMBALANCE_WARN_PACK_1 1)
+(define BATTERY_IMBALANCE_WARN_PACK_2 2)
+(define BATTERY_IMBALANCE_DISPLAY_PACK_1 31)
+(define BATTERY_IMBALANCE_DISPLAY_PACK_2 32)
 
 ; Data receive handshake code
 (define HANDSHAKE_CODE 255)
@@ -210,6 +217,13 @@
         ; Mark as initialised for 1.0.0
         (eeprom_store_i_if_changed 127 1) ; indicate that the defaults have been applied
         (puts "EEPROM: Defaults initialized successfully")
+    })
+
+    ; Migration for 1.1.0: battery imbalance detection settings
+    (if (not-eq (eeprom-read-i 127) (to-i32 2)) {
+        (puts "EEPROM: Initializing defaults for 1.1.0")
+        (eeprom_store_i_if_changed 30 200) ; Battery imbalance threshold in 0.01V units (200=2.00V, 0=disabled)
+        (eeprom_store_i_if_changed 127 2)
     })
 })
 
@@ -382,6 +396,7 @@
     (setvar 'enable_thirds_warning_startup (eeprom-read-i 27))
     (setvar 'battery_calculation_method (eeprom-read-i 28))
     (setvar 'debug_enabled (eeprom-read-i 29))
+    (setvar 'battery_imbalance_threshold_centi (eeprom-read-i 30))
 
     (setvar 'speed_set (list
         (eeprom-read-i 0) ; Reverse Speed 2 %
@@ -453,6 +468,7 @@
         "\n- smart_cruise_auto_engage_time: " (to-str (to-i smart_cruise_auto_engage_time))
         "\n- enable_thirds_warning_startup: " (to-str (to-i enable_thirds_warning_startup))
         "\n- battery_calculation_method: " (to-str (to-i battery_calculation_method))
+        "\n- battery_imbalance_threshold_centi: " (to-str (to-i battery_imbalance_threshold_centi))
     ))
 })
 
@@ -493,10 +509,118 @@
 ))
 
 
+(defun imbalance_detection_enabled ()
+{
+    (> battery_imbalance_threshold_centi 0)
+})
+
+(move-to-flash imbalance_detection_enabled)
+
+(defun battery_imbalance_threshold_voltage ()
+{
+    (/ battery_imbalance_threshold_centi 100.0)
+})
+
+(move-to-flash battery_imbalance_threshold_voltage)
+
+(defun get_lower_battery_voltage ()
+{
+    ; ADC1 is connected to the midpoint balance wire (lower pack top).
+    ; When detection is enabled, returns the EMA-smoothed reading (updated by
+    ; update_lower_voltage_smooth each display loop iteration); falls back to
+    ; total/2 if detection is disabled or the smooth value is not yet initialized.
+    (var total_voltage (get-vin))
+    (if (and (imbalance_detection_enabled) (> lower_voltage_smooth 0.1))
+        lower_voltage_smooth
+        (/ total_voltage 2.0)
+    )
+})
+
+(move-to-flash get_lower_battery_voltage)
+
+(defun update_lower_voltage_smooth ()
+{
+    ; Update the EMA-smoothed lower pack ADC voltage. Call once per display loop
+    ; iteration. α = 0.05 gives a ~5 s time constant at 4 Hz (SLEEP_UI_UPDATE = 0.25 s),
+    ; matching the legacy 200-sample / 5-second averaging window.
+    ; Always runs regardless of detection status so the value is pre-warmed on enable.
+    (var total_voltage (get-vin))
+    (var adc_voltage (get-adc 0))
+    (if (and (> total_voltage 1.0) (> adc_voltage 0.1) (< adc_voltage total_voltage)) {
+        (if (= lower_voltage_smooth 0.0)
+            (setvar 'lower_voltage_smooth adc_voltage)
+            (setvar 'lower_voltage_smooth
+                (+ (* 0.05 adc_voltage) (* 0.95 lower_voltage_smooth)))
+        )
+    })
+})
+
+(move-to-flash update_lower_voltage_smooth)
+
+(defun get_display_pack_voltage ()
+{
+    ; Battery display calculations are based on 2 × lower pack voltage.
+    ; get_lower_battery_voltage returns total/2 when detection is disabled,
+    ; so the result is equivalent to get-vin in that case.
+    (* 2.0 (get_lower_battery_voltage))
+})
+
+(move-to-flash get_display_pack_voltage)
+
+(defun get_battery_imbalance_voltage ()
+{
+    ; Positive means upper pack is higher than lower pack.
+    (if (imbalance_detection_enabled) {
+        (var total_voltage (get-vin))
+        (var lower_voltage (get_lower_battery_voltage))
+        (- (- total_voltage lower_voltage) lower_voltage)
+    } {
+        0.0
+    })
+})
+
+(move-to-flash get_battery_imbalance_voltage)
+
+(defun get_battery_imbalance_warning ()
+{
+    ; Legacy warning semantics:
+    ;   > threshold  => show warning "1" (pack 1 / lower pack warning)
+    ;   < -threshold => show warning "2" (pack 2 / upper pack warning)
+    (if (imbalance_detection_enabled) {
+        (var imbalance (get_battery_imbalance_voltage))
+        (var threshold (battery_imbalance_threshold_voltage))
+        (if (> imbalance threshold)
+            BATTERY_IMBALANCE_WARN_PACK_1
+            (if (< imbalance (- 0 threshold))
+                BATTERY_IMBALANCE_WARN_PACK_2
+                BATTERY_IMBALANCE_WARN_NONE
+            )
+        )
+    } {
+        BATTERY_IMBALANCE_WARN_NONE
+    })
+})
+
+(move-to-flash get_battery_imbalance_warning)
+
 (defun calculate_corrected_battery ()
 {
-    ; Calculate corrected battery percentage from raw battery reading
+    ; Calculate corrected battery percentage from raw battery reading.
+    ; When imbalance detection is active, scale the SOC by 2*lower/total.
     (var raw_batt (get-batt))
+    (if (imbalance_detection_enabled) {
+        (var total_voltage (get-vin))
+        (if (> total_voltage 1.0) {
+            (setvar 'raw_batt (* raw_batt (/ (get_display_pack_voltage) total_voltage)))
+            (if (< raw_batt 0.0)
+                (setvar 'raw_batt 0.0)
+            )
+            (if (> raw_batt 1.0)
+                (setvar 'raw_batt 1.0)
+            )
+        })
+    })
+
     (+ (* BATTERY_COEFF_4 raw_batt raw_batt raw_batt raw_batt)
         (* BATTERY_COEFF_3 raw_batt raw_batt raw_batt)
         (* BATTERY_COEFF_2 raw_batt raw_batt)
@@ -1295,7 +1419,6 @@
     })
 })
 
-
 (defun apply_smart_cruise_timer_bar (pixbuf)
 {
     ; Apply Smart Cruise timer bar to the bottom row when active
@@ -1333,6 +1456,7 @@
     (var last_timer_bar_leds -1) ; Cache for Smart Cruise timer bar LED count to minimize I2C updates
     (loopwhile-thd THREAD_STACK_DISPLAY t {
         (sleep SLEEP_UI_UPDATE)
+        (update_lower_voltage_smooth)
         ; Normal display timeout logic - clear display content but keep timer bar visible
         (if (and
                 (> disp_timer_start 1)
@@ -1351,16 +1475,31 @@
                 ; Prevent the off→on flip in the same loop iteration
                 (setvar 'last_disp_num DISPLAY_SENTINEL)
             })
-            ; For Cuda X make sure it doesn't get stuck on displaying B1 or B2 error, so switch back to last battery.
-            (if (and (= scooter_type SCOOTER_CUDAX) (> last_disp_num 20))
+            ; For Cuda X, ensure warning frames don't persist after timeout.
+            (if (and (= scooter_type SCOOTER_CUDAX)
+                     (or (and (>= last_disp_num 18) (<= last_disp_num 20))
+                         (= last_disp_num BATTERY_IMBALANCE_DISPLAY_PACK_1)
+                         (= last_disp_num BATTERY_IMBALANCE_DISPLAY_PACK_2)))
                 (setvar 'disp_num last_batt_disp_num)
             )
 
             (setvar 'disp_timer_start 0)
         })
 
-        ; Check if we need to update display (either disp_num changed OR Smart Cruise timer bar needs updating)
-        (var should_update_display (!= disp_num last_disp_num))
+        ; Compute effective display frame (imbalance warning overrides battery bar frames 0-3)
+        (var eff_disp disp_num)
+        (if (and (>= disp_num 0) (<= disp_num 3)) {
+            (var imb_warn (get_battery_imbalance_warning))
+            (if (= imb_warn BATTERY_IMBALANCE_WARN_PACK_1)
+                (setvar 'eff_disp BATTERY_IMBALANCE_DISPLAY_PACK_1)
+            )
+            (if (= imb_warn BATTERY_IMBALANCE_WARN_PACK_2)
+                (setvar 'eff_disp BATTERY_IMBALANCE_DISPLAY_PACK_2)
+            )
+        })
+
+        ; Check if we need to update display (either effective display changed OR Smart Cruise timer bar needs updating)
+        (var should_update_display (!= eff_disp last_disp_num))
 
         ; Check if Smart Cruise timer bar LED count has changed
         (var current_leds (smart_cruise_leds_count))
@@ -1390,24 +1529,41 @@
                     )
                 )
             })
-            ; Only update disp_timer_start if disp_num actually changed
-            (if (!= disp_num last_disp_num) {
+            ; Only update disp_timer_start if effective display actually changed
+            (if (!= eff_disp last_disp_num) {
                 (setvar 'disp_timer_start (systime))
+                ; Log battery imbalance warning transitions
+                (if (or (= eff_disp BATTERY_IMBALANCE_DISPLAY_PACK_1)
+                        (= eff_disp BATTERY_IMBALANCE_DISPLAY_PACK_2)) {
+                    (when-debug (str-merge "Battery imbalance detected: pack "
+                        (to-str (if (= eff_disp BATTERY_IMBALANCE_DISPLAY_PACK_1) 1 2))
+                        " low (imbalance="
+                        (to-str (get_battery_imbalance_voltage))
+                        "V, lower="
+                        (to-str lower_voltage_smooth)
+                        "V)"))
+                })
+                (if (and (or (= last_disp_num BATTERY_IMBALANCE_DISPLAY_PACK_1)
+                             (= last_disp_num BATTERY_IMBALANCE_DISPLAY_PACK_2))
+                         (not (or (= eff_disp BATTERY_IMBALANCE_DISPLAY_PACK_1)
+                                  (= eff_disp BATTERY_IMBALANCE_DISPLAY_PACK_2)))) {
+                    (debug_log "Battery imbalance warning cleared")
+                })
             })
             (if (= display_mpu_addr 0x70)
-                (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation))) ; define the correct start position in the array for the display
-                (setvar 'start_pos (+(* 64 disp_num) (* 16 rotation2)))
+                (setvar 'start_pos (+(* 64 eff_disp) (* 16 rotation))) ; define the correct start position in the array for the display
+                (setvar 'start_pos (+(* 64 eff_disp) (* 16 rotation2)))
             )
             (bufclear pixbuf)
             ; Copy display data from binary LUT only if not sentinel (allows timer bar only display)
-            (if (!= disp_num DISPLAY_SENTINEL)
+            (if (!= eff_disp DISPLAY_SENTINEL)
                 (bufcpy pixbuf 0 display_lut_bin (+ 8 start_pos) 16) ; copy the required display from binary LUT to "pixbuf"
             )
             ; Apply Smart Cruise timer bar overlay to bottom row if active
             (apply_smart_cruise_timer_bar pixbuf)
             (i2c-tx-rx display_mpu_addr pixbuf) ; send display characters
             (i2c-tx-rx display_mpu_addr (list 0x81)) ; Turn on display
-            (setvar 'last_disp_num disp_num)
+            (setvar 'last_disp_num eff_disp)
         })
     })
 })
@@ -1775,6 +1931,8 @@
 (define debug_enabled 0)
 (define speed_set 0)
 (define scooter_type 0)
+(define battery_imbalance_threshold_centi 0)
+(define lower_voltage_smooth 0.0)
 
 (init)
 
