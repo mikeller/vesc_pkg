@@ -47,6 +47,8 @@ Item {
 
     property string firmwareVersion: "&lt;unknown$gt;"
 
+    property int receivedAdcBalanceWireRatio: 14  // round-tripped from device; default matches firmware default
+
     property string detectedHardwareModel: "<unknown>"
     property string possibleScooterModels: ""
 
@@ -785,7 +787,7 @@ Item {
             return
         }
 
-        var buffer = new ArrayBuffer(31)
+        var buffer = new ArrayBuffer(32)
         var da = new DataView(buffer)
 
         da.setUint8(0, reverse_speed.realValue)
@@ -819,13 +821,14 @@ Item {
         da.setUint8(28, use_ah_battery_calculation.checked ? 1 : 0)
         da.setUint8(29, debug_enabled.checked ? 1 : 0)
         da.setUint8(30, enable_battery_imbalance_detection.checked ? Math.round(battery_imbalance_threshold.realValue * 100) : 0)
+        da.setUint8(31, receivedAdcBalanceWireRatio) // Balance wire ADC resistor divider ratio (round-tripped from device)
         mCommands.sendCustomAppData(buffer)
 
         console.log("Sent values")
     }
 
     function reset_defaults_blacktip() {
-        var buffer1 = new ArrayBuffer(31)
+        var buffer1 = new ArrayBuffer(32)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 45)
         da1.setUint8(1, 20)
@@ -858,6 +861,7 @@ Item {
         da1.setUint8(28, 0) // Battery calculation method default: voltage-based
         da1.setUint8(29, 0) // Debug enabled default: off
         da1.setUint8(30, 200) // Battery imbalance threshold default: 200 cV = 2.00 V (enabled)
+        da1.setUint8(31, 14) // Balance wire ADC resistor divider ratio default: 14
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/master/datatypes.h
@@ -932,7 +936,7 @@ Item {
     }
 
     function reset_defaults_cudax() {
-        var buffer1 = new ArrayBuffer(31)
+        var buffer1 = new ArrayBuffer(32)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 30)
         da1.setUint8(1, 10)
@@ -965,6 +969,7 @@ Item {
         da1.setUint8(28, 0) // Battery calculation method default: voltage-based
         da1.setUint8(29, 0) // Debug enabled default: off
         da1.setUint8(30, 200) // Battery imbalance threshold default: 200 cV = 2.00 V (enabled)
+        da1.setUint8(31, 14) // Balance wire ADC resistor divider ratio default: 14
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/f6b06bc9f8d02d2ba262166127c3f2ffaedbb17e/datatypes.h#L369
@@ -1084,6 +1089,7 @@ Item {
             var imb_val = dv.getUint8(30)
             enable_battery_imbalance_detection.checked = imb_val > 0
             battery_imbalance_threshold.realValue = imb_val > 0 ? imb_val / 100.0 : 2.00
+            if (dv.byteLength > 31) receivedAdcBalanceWireRatio = dv.getUint8(31)
 
             ramp_rate.realValue = mMcConf.getParamDouble("s_pid_ramp_erpms_s")
             battery_ah.realValue = mMcConf.getParamDouble("si_battery_ah")

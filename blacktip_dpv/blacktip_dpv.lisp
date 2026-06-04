@@ -117,7 +117,7 @@
 (define TIMER_BAR_MASKS (list 0x00 0x40 0x60 0x70 0x78 0x7C 0x7E 0x7F 0xFF))
 
 ; EEPROM settings buffer size
-(define EEPROM_SETTINGS_COUNT 31)
+(define EEPROM_SETTINGS_COUNT 32)
 
 ; Battery polynomial coefficients (for voltage-based calculation)
 (define BATTERY_COEFF_4 4.3867)
@@ -223,6 +223,7 @@
     (if (not-eq (eeprom-read-i 127) (to-i32 2)) {
         (puts "EEPROM: Initializing defaults for 1.1.0")
         (eeprom_store_i_if_changed 30 200) ; Battery imbalance threshold in 0.01V units (200=2.00V, 0=disabled)
+        (eeprom_store_i_if_changed 31 14)  ; Balance wire ADC resistor divider ratio (default 14 = 141k/10k divider)
         (eeprom_store_i_if_changed 127 2)
     })
 })
@@ -397,6 +398,7 @@
     (setvar 'battery_calculation_method (eeprom-read-i 28))
     (setvar 'debug_enabled (eeprom-read-i 29))
     (setvar 'battery_imbalance_threshold_centi (eeprom-read-i 30))
+    (setvar 'adc_balance_wire_ratio (eeprom-read-i 31))
 
     (setvar 'speed_set (list
         (eeprom-read-i 0) ; Reverse Speed 2 %
@@ -508,6 +510,13 @@
     )
 ))
 
+; Alias for debug_log_format - use when-debug for clarity in non-flash contexts
+(define when-debug (macro (expr)
+    `(if (and (not-eq debug_enabled nil) (= debug_enabled 1))
+        (puts ,expr)
+    )
+))
+
 
 (defun imbalance_detection_enabled ()
 {
@@ -544,14 +553,23 @@
     ; iteration. α = 0.05 gives a ~5 s time constant at 4 Hz (SLEEP_UI_UPDATE = 0.25 s),
     ; matching the legacy 200-sample / 5-second averaging window.
     ; Always runs regardless of detection status so the value is pre-warmed on enable.
+    ; Note: no when-debug here - this function is move-to-flash'd and macros don't resolve in flash.
     (var total_voltage (get-vin))
-    (var adc_voltage (get-adc 0))
-    (if (and (> total_voltage 1.0) (> adc_voltage 0.1) (< adc_voltage total_voltage)) {
-        (if (= lower_voltage_smooth 0.0)
+    ; Scale the raw ADC pin voltage by (ratio + 1) to get actual pack voltage.
+    ; The balance wire is connected through a resistor divider (default 141k/10k = ratio 14).
+    ; get-adc returns pin voltage (0-3.3V); multiply by (ratio+1) to recover pack voltage.
+    (var adc_pin_voltage (get-adc 0))
+    (var adc_voltage (* adc_pin_voltage (+ adc_balance_wire_ratio 1)))
+    (if (and (> total_voltage 1.0) (> adc_pin_voltage 0.1) (< adc_voltage total_voltage)) {
+        (if (= lower_voltage_smooth 0.0) {
             (setvar 'lower_voltage_smooth adc_voltage)
+            (setvar 'total_voltage_smooth total_voltage)
+        } {
             (setvar 'lower_voltage_smooth
                 (+ (* 0.05 adc_voltage) (* 0.95 lower_voltage_smooth)))
-        )
+            (setvar 'total_voltage_smooth
+                (+ (* 0.05 total_voltage) (* 0.95 total_voltage_smooth)))
+        })
     })
 })
 
@@ -569,11 +587,13 @@
 
 (defun get_battery_imbalance_voltage ()
 {
-    ; Positive means upper pack is higher than lower pack.
+    ; Positive means upper pack (slot 1) voltage is higher than lower pack (slot 2 / ADC) voltage.
+    ; Uses total_voltage_smooth so that motor load sag (which affects get-vin instantly but
+    ; lower_voltage_smooth only slowly) does not flip the sign or inflate the magnitude.
     (if (imbalance_detection_enabled) {
-        (var total_voltage (get-vin))
+        (var total_smooth (if (> total_voltage_smooth 1.0) total_voltage_smooth (get-vin)))
         (var lower_voltage (get_lower_battery_voltage))
-        (- (- total_voltage lower_voltage) lower_voltage)
+        (- (- total_smooth lower_voltage) lower_voltage)
     } {
         0.0
     })
@@ -583,16 +603,16 @@
 
 (defun get_battery_imbalance_warning ()
 {
-    ; Legacy warning semantics:
-    ;   > threshold  => show warning "1" (pack 1 / lower pack warning)
-    ;   < -threshold => show warning "2" (pack 2 / upper pack warning)
+    ; imbalance = upper_smooth - lower_smooth (upper = slot 1 top pack, lower = slot 2 ADC pack)
+    ; Positive: upper (slot 1) is higher  => lower pack (slot 2) is depleted => warn PACK_2
+    ; Negative: lower (slot 2) is higher  => upper pack (slot 1) is depleted => warn PACK_1
     (if (imbalance_detection_enabled) {
         (var imbalance (get_battery_imbalance_voltage))
         (var threshold (battery_imbalance_threshold_voltage))
         (if (> imbalance threshold)
-            BATTERY_IMBALANCE_WARN_PACK_1
+            BATTERY_IMBALANCE_WARN_PACK_2
             (if (< imbalance (- 0 threshold))
-                BATTERY_IMBALANCE_WARN_PACK_2
+                BATTERY_IMBALANCE_WARN_PACK_1
                 BATTERY_IMBALANCE_WARN_NONE
             )
         )
@@ -1486,9 +1506,12 @@
             (setvar 'disp_timer_start 0)
         })
 
-        ; Compute effective display frame (imbalance warning overrides battery bar frames 0-3)
+        ; Compute effective display frame.
+        ; Imbalance warning only replaces a SENTINEL (idle) display so it appears
+        ; AFTER any user-triggered frame (speed indicator, battery bar, smart cruise bar)
+        ; has completed its normal timer duration.
         (var eff_disp disp_num)
-        (if (and (>= disp_num 0) (<= disp_num 3)) {
+        (if (= eff_disp DISPLAY_SENTINEL) {
             (var imb_warn (get_battery_imbalance_warning))
             (if (= imb_warn BATTERY_IMBALANCE_WARN_PACK_1)
                 (setvar 'eff_disp BATTERY_IMBALANCE_DISPLAY_PACK_1)
@@ -1897,6 +1920,15 @@
     ; Play Imperial March on startup in background thread to avoid blocking
     (spawn THREAD_STACK_CLICK_BEEP play_imperial_march)
     
+    ; Pre-warm EMA so the imbalance correction applies to the startup battery level check.
+    ; The display loop thread hasn't had a chance to run yet (no yield between spawn and here),
+    ; so lower_voltage_smooth is still 0.0 without this call.
+    (update_lower_voltage_smooth)
+    (when-debug (str-merge "Imbalance startup: adc_pin=" (to-str (get-adc 0))
+        "V adc_scaled=" (to-str (* (get-adc 0) (+ adc_balance_wire_ratio 1)))
+        "V lower_smooth=" (to-str lower_voltage_smooth)
+        "V total_smooth=" (to-str total_voltage_smooth) "V total_live=" (to-str (get-vin)) "V"))
+
     ; Check battery level and only play battery indication if not full (3 bars)
     ; Battery is considered "full" at > 0.75 (matching the 3-bar threshold)
     ; Allow 6+ seconds for battery to stabilize and Imperial March to finish before beeps
@@ -1932,7 +1964,9 @@
 (define speed_set 0)
 (define scooter_type 0)
 (define battery_imbalance_threshold_centi 0)
+(define adc_balance_wire_ratio 14)
 (define lower_voltage_smooth 0.0)
+(define total_voltage_smooth 0.0)
 
 (init)
 
