@@ -44,6 +44,11 @@ def assert_near(actual, expected, tolerance, test_name):
 # =============================================================================
 
 SPEED_REVERSE_THRESHOLD = 5
+HARDWARE_TEST_FIXTURE = 5
+TEST_FIXTURE_MIN_DUTY = 0.30
+TEST_FIXTURE_MAX_DUTY = 0.65
+TEST_FIXTURE_DUTY = [-0.35, -0.30, 0.30, 0.35, 0.40,
+                     0.45, 0.50, 0.55, 0.60, 0.65]
 DISPLAY_LUT_PATH = Path(__file__).resolve().parents[1] / 'assets' / 'display_lut.csv'
 DISPLAY_LUT_HEADERS = ['index', 'name', 'rotation'] + [f'b{i}' for i in range(16)]
 TIMER_BAR_MASKS = [0x00, 0x40, 0x60, 0x70, 0x78, 0x7C, 0x7E, 0x7F, 0xFF]
@@ -100,6 +105,14 @@ def calculate_rpm(speed_index, divisor, max_erpm=50000):
         return -base_rpm
     else:
         return base_rpm
+
+
+def calculate_fixture_duty(speed_index, divisor=100):
+    """Mirror test_fixture_duty_at, including Smart Cruise's safety bound."""
+    target = TEST_FIXTURE_DUTY[clamp(speed_index, 0, len(TEST_FIXTURE_DUTY) - 1)]
+    scaled = target * 100 / divisor
+    magnitude = clamp(abs(scaled), TEST_FIXTURE_MIN_DUTY, TEST_FIXTURE_MAX_DUTY)
+    return -magnitude if target < 0 else magnitude
 
 
 def physical_display_matrix(frame_bytes):
@@ -201,6 +214,22 @@ def receive_settings_simulate(eeprom, payload):
         result[index] = value
     return True, result
 
+
+def is_blacktip_hardware(hardware_configuration):
+    """Mirror the Blacktip family test used for the fixture model."""
+    return hardware_configuration <= 2 or hardware_configuration == HARDWARE_TEST_FIXTURE
+
+
+def i2c_wiring_for(hardware_configuration):
+    """Mirror the fixture's no-Bluetooth HW60 display wiring selection."""
+    if hardware_configuration in (0, 3):
+        return 'swdio-swclk'
+    if hardware_configuration in (1, 4, HARDWARE_TEST_FIXTURE):
+        return 'rx-tx'
+    if hardware_configuration == 2:
+        return 'tx-rx'
+    return None
+
 # =============================================================================
 # Test Suites
 # =============================================================================
@@ -295,14 +324,38 @@ def test_motor_speed_command_centralisation():
               "motor speed: common command helper exists")
     assert_eq('(set-rpm (calculate_rpm speed_index divisor))' in source, True,
               "motor speed: helper preserves RPM calculation")
-    assert_eq(source.count('(set_motor_speed speed ') == 7, True,
-              "motor speed: every normal speed command uses the helper")
+    assert_eq(source.count('(set_motor_speed speed ') == 5, True,
+              "motor speed: normal speed commands use the helper outside soft-start handoff")
     assert_eq('(set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))' in source,
               False, "motor speed: full-speed commands do not bypass the helper")
     assert_eq('(set-rpm (calculate_rpm speed SMART_CRUISE_SLOWDOWN_DIVISOR))' in source,
               False, "motor speed: Smart Cruise slowdown does not bypass the helper")
     assert_eq('(set-duty SAFE_START_DUTY)' in source, True,
               "motor speed: safe-start duty command remains separate")
+    assert_eq('(defun soft_start_handoff_to_speed (target_speed)' in source, True,
+              "motor speed: soft-start handoff helper exists")
+    assert_eq("(setvar 'startup_tune_cancelled 1)" in source, True,
+              "motor speed: motor start cancels the conflicting startup tune")
+    assert_eq("(setvar 'batt_beeps_pending 0)" in source, True,
+              "motor speed: motor start cancels deferred startup battery beeps")
+    assert_eq('(loopwhile (and (= startup_tune_active 1)' in source, True,
+              "motor speed: final handoff waits for an in-progress startup note")
+    assert_eq('(sleep SLEEP_MOTOR_SPEED_CHANGE)' in source, True,
+              "motor speed: soft-start handoff waits before one reaffirmation")
+    assert_eq("(and (= sw_state STATE_PRESSED)" in source, True,
+              "motor speed: soft-start reaffirmation requires a held trigger")
+    assert_eq(source.count('(soft_start_handoff_to_speed speed)') == 2, True,
+              "motor speed: telemetry and timer soft-start completion use guarded handoff")
+    assert_eq('(defun safe_start_log_abort_telemetry (reason)' in source, True,
+               "motor speed: safe-start failures retain diagnostic telemetry")
+    assert_eq('(safe_start_log_abort_telemetry reason)' in source, True,
+               "motor speed: safe-start abort records diagnostic telemetry")
+    assert_eq('(defun startup_tune_note (tone time delay)' in source, True,
+               "startup audio: tune notes check for motor-start cancellation")
+    assert_eq('(foc-beep tone time beeps_vol)' in source, True,
+               "startup audio: tune retains its existing note generator")
+    assert_eq('(foc-play-tone 1 3000 beeps_vol)' in source, True,
+               "startup audio: normal double-click confirmation tone is retained")
 
 
 def test_startup_tune_cancellation_for_motor_start():
@@ -847,6 +900,127 @@ def test_production_defaults_reset():
               "production reset: contains no test-fixture model")
 
 
+def test_test_fixture_model_configuration():
+    print("\n=== Testing Blacktip test-fixture model configuration ===")
+
+    assert_eq(is_blacktip_hardware(HARDWARE_TEST_FIXTURE), True,
+               "test fixture: belongs to the Blacktip scooter family")
+    assert_eq(is_blacktip_hardware(3), False,
+               "test fixture: CudaX remains outside the Blacktip scooter family")
+    assert_eq(i2c_wiring_for(HARDWARE_TEST_FIXTURE), 'rx-tx',
+               "test fixture: uses the no-Bluetooth HW60 display wiring")
+
+    root = Path(__file__).resolve().parents[1]
+    ui_source = (root / 'ui.qml').read_text()
+    lisp_source = (root / 'blacktip_dpv.lisp').read_text()
+    readme_source = (root / 'README.md').read_text()
+
+    assert_eq('"Blacktip test fixture"' in ui_source, True,
+               "test fixture: appears in the hardware-model selector")
+    assert_eq('function reset_defaults_test_fixture()' in ui_source, True,
+               "test fixture: has a dedicated reset profile")
+    for setting in (
+            'da1.setUint8(19, 5)',
+            'mMcConf.updateParamDouble("l_current_max", 1, null)',
+            'mMcConf.updateParamDouble("foc_motor_r", 32.5, null)',
+            'mMcConf.updateParamDouble("foc_motor_l", 0.00758, null)',
+            'mMcConf.updateParamDouble("foc_motor_flux_linkage", 0.0079, null)',
+            'mMcConf.updateParamDouble("l_min_erpm", -28000, null)',
+            'mMcConf.updateParamDouble("l_max_erpm", 28000, null)',
+            'mMcConf.updateParamDouble("l_erpm_abs_overspeed", 29268.3, null)',
+            'mMcConf.updateParamDouble("s_pid_ramp_erpms_s", 5000, null)',
+            'mMcConf.updateParamDouble("cc_startup_boost_duty", 0.01, null)',
+            'mMcConf.updateParamInt("m_fault_stop_time_ms", 500, null)',
+            'mAppConf.updateParamEnum("app_to_use", 0)',
+            'mAppConf.updateParamInt("timeout_msec", 15000)',
+    ):
+        assert_eq(setting in ui_source, True,
+                   f"test fixture: reset profile contains {setting}")
+    assert_eq('mCommands.getMcconfDefault()' in ui_source and
+              'mCommands.getAppConfDefault()' in ui_source, True,
+              "test fixture: loads complete firmware-compatible motor and app defaults first")
+    assert_eq('!fixtureMotorDefaultsLoaded || !fixtureAppDefaultsLoaded' in ui_source, True,
+              "test fixture: applies overrides only after both default responses")
+    assert_eq(ui_source.index('mCommands.getMcconfDefault()') <
+              ui_source.index('function apply_test_fixture_profile()'), True,
+              "test fixture: default retrieval precedes profile overrides")
+    assert_eq('if (isTestFixture(hardware_configuration.currentIndex))' in ui_source, True,
+               "test fixture: selecting the model applies its reset profile")
+    assert_eq('(define HARDWARE_TEST_FIXTURE 5)' in lisp_source, True,
+               "test fixture: runtime reserves EEPROM model index 5")
+    assert_eq('(= HARDWARE_TEST_FIXTURE hardware_configuration)' in lisp_source, True,
+               "test fixture: runtime uses no-Bluetooth HW60 display wiring")
+    assert_eq('(define TEST_FIXTURE_MIN_DUTY 0.30)' in lisp_source, True,
+               "test fixture: runtime defines the validated duty minimum")
+    assert_eq('(define TEST_FIXTURE_MAX_DUTY 0.65)' in lisp_source, True,
+               "test fixture: runtime defines the validated duty maximum")
+    assert_eq('(define TEST_FIXTURE_DUTY (list -0.35 -0.30 0.30 0.35 0.40 0.45 0.50 0.55 0.60 0.65))' in lisp_source, True,
+               "test fixture: runtime contains the signed selector duty table")
+    assert_eq('TEST_FIXTURE_FORWARD_ERPM' in lisp_source, False,
+               "test fixture: runtime does not use ERPM as a fixture speed scale")
+    fixture_speeds = [calculate_fixture_duty(speed_index)
+                      for speed_index in range(2, len(TEST_FIXTURE_DUTY))]
+    assert_eq(fixture_speeds, TEST_FIXTURE_DUTY[2:],
+               "test fixture: every forward selector uses the duty table")
+    assert_eq(fixture_speeds[0], TEST_FIXTURE_MIN_DUTY,
+               "test fixture: first forward selector commands the validated minimum")
+    assert_eq(fixture_speeds[-1], TEST_FIXTURE_MAX_DUTY,
+               "test fixture: last forward selector commands the validated maximum")
+    assert_eq(all(lower < upper for lower, upper in zip(fixture_speeds, fixture_speeds[1:])), True,
+               "test fixture: forward selector duties are strictly monotonic")
+    assert_eq(calculate_fixture_duty(0), -0.35,
+               "test fixture: strong reverse uses a signed bounded duty")
+    assert_eq(calculate_fixture_duty(1), -0.30,
+               "test fixture: untangle uses a signed bounded duty")
+    assert_eq(calculate_fixture_duty(9, 125), 0.52,
+               "test fixture: Smart Cruise applies its 80 percent warning slowdown")
+    assert_eq(calculate_fixture_duty(2, 125), 0.30,
+               "test fixture: Smart Cruise does not command below the validated duty range")
+    assert_eq('(defun set_motor_speed (speed_index divisor)' in lisp_source, True,
+               "test fixture: all normal commands use the guarded motor command helper")
+    assert_eq('(set-duty (test_fixture_duty_at speed_index divisor))' in lisp_source, True,
+               "test fixture: guarded helper uses duty only for the fixture")
+    assert_eq('(set-rpm (calculate_rpm speed_index divisor))' in lisp_source, True,
+               "test fixture: guarded helper retains production RPM control")
+    assert_eq(lisp_source.count('(set_motor_speed speed ') == 5, True,
+               "test fixture: normal commands use the guarded helper outside soft-start handoff")
+    assert_eq('(set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))' in lisp_source,
+               False, "test fixture: no normal command bypasses the guarded helper")
+    assert_eq('(set-current 0)' in lisp_source, True,
+               "test fixture: stop command retains the current-control stop safeguard")
+    assert_eq('(set-duty SAFE_START_DUTY)' in lisp_source, True,
+               "test fixture: safe start retains the low-duty spin-up safeguard")
+    assert_eq('cc_startup_boost_duty and m_fault_stop_time_ms motor parameters' in lisp_source,
+               True, "test fixture: package safe-start settings remain distinct from VESC motor settings")
+    assert_eq('mMcConf.updateParamDouble("cc_startup_boost_duty", 0.06, null)' in ui_source,
+               False, "test fixture: reset does not invent an uncaptured current-control startup boost")
+    assert_eq('Captured VESC fault-stop hold time, not a package safe-start delay.' in ui_source,
+               True, "test fixture: fault-stop hold time is not labelled as a safe-start delay")
+    assert_eq('this profile is only for the local test rig' in readme_source, True,
+               "test fixture: README warns that the profile is not for a production DPV")
+
+
+def test_production_defaults_reset():
+    """Production profiles must start from complete firmware defaults."""
+    print("\n=== Testing production defaults reset ===")
+    ui_source = (Path(__file__).resolve().parents[1] / 'ui.qml').read_text()
+
+    assert_eq('function reset_defaults_for_profile(profile)' in ui_source, True,
+              "production reset: common asynchronous reset entrypoint exists")
+    assert_eq('mCommands.getMcconfDefault()' in ui_source and
+              'mCommands.getAppConfDefault()' in ui_source, True,
+              "production reset: requests complete motor and app defaults")
+    assert_eq('!profileMotorDefaultsLoaded || !profileAppDefaultsLoaded' in ui_source, True,
+              "production reset: waits for both default responses")
+    assert_eq('function apply_defaults_blacktip()' in ui_source and
+              'function apply_defaults_cudax()' in ui_source, True,
+              "production reset: profiles overlay defaults only after loading")
+    assert_eq('function reset_defaults_blacktip() {\n        reset_defaults_for_profile("blacktip")' in ui_source,
+              True, "production reset: Blacktip uses the common reset")
+    assert_eq('function reset_defaults_cudax() {\n        reset_defaults_for_profile("cudax")' in ui_source,
+              True, "production reset: CudaX uses the common reset")
+
+
 def test_release_documentation():
     """Verify generated package metadata derives its version from the source README."""
     print("\n=== Testing release documentation ===")
@@ -1025,10 +1199,10 @@ def test_click_and_beep_regressions():
               "README rendering: unsupported check-mark glyphs are absent")
 
     ui_source = (Path(__file__).resolve().parents[1] / 'ui.qml').read_text()
-    assert_eq(ui_source.count('new ArrayBuffer(33)'), 3,
-              "QML settings: write and both reset buffers are 33 bytes")
-    assert_eq(ui_source.count('setUint8(32, 0)'), 2,
-              "QML defaults: Blacktip and CudaX disable five-click shutdown")
+    assert_eq(ui_source.count('new ArrayBuffer(33)'), 4,
+               "QML settings: write and all reset buffers are 33 bytes")
+    assert_eq(ui_source.count('setUint8(32, 0)'), 3,
+               "QML defaults: all profiles disable five-click shutdown")
     payload_guard = 'if (dv.byteLength < 31)'
     first_settings_read = 'hardware_configuration.currentIndex =  dv.getUint8(19)'
     assert_eq(payload_guard in ui_source and
@@ -1070,6 +1244,7 @@ def run_all_tests():
     test_state_metrics_reset()
     test_five_click_settings_and_migration()
     test_production_defaults_reset()
+    test_test_fixture_model_configuration()
     test_release_documentation()
     test_five_click_shutdown_decision()
     test_startup_trigger_readiness()

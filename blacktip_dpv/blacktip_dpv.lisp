@@ -69,8 +69,9 @@
 (define SMART_CRUISE_FULLY_ENABLED 2)
 (define SMART_CRUISE_AUTO_ENGAGED 3)
 
-; Hardware configuration thresholds
-(define HARDWARE_BLACKTIP_MAX 2)      ; Hardware configs 0-2 are Blacktip
+; Hardware configuration indices
+(define HARDWARE_BLACKTIP_MAX 2)      ; Hardware configs 0-2 are production Blacktip
+(define HARDWARE_TEST_FIXTURE 5)      ; Blacktip test fixture, wired as HW60 without Bluetooth
 
 ; Scooter types (indices into hardware lists)
 (define SCOOTER_BLACKTIP 0)
@@ -79,6 +80,14 @@
 ; Motor control constants
 (define MAX_ERPM_BLACKTIP 4100)
 (define MAX_ERPM_CUDAX 7100)
+; The fixture's controller protection limits are configured separately in QML.
+; Its gimbal motor was validated only at duty magnitudes 0.30 through 0.65.
+; Selector 0 is strong reverse, selector 1 is untangle reverse, and selectors
+; 2-9 are the eight forward speeds. Do not derive these commands from the
+; controller ERPM limits or use this table for production hardware.
+(define TEST_FIXTURE_MIN_DUTY 0.30)
+(define TEST_FIXTURE_MAX_DUTY 0.65)
+(define TEST_FIXTURE_DUTY (list -0.35 -0.30 0.30 0.35 0.40 0.45 0.50 0.55 0.60 0.65))
 (define MAX_CURRENT_BLACKTIP 22.8)
 (define MAX_CURRENT_CUDAX 46)
 (define MIN_CURRENT_BLACKTIP 1.7)
@@ -87,7 +96,8 @@
 ; RPM scaling
 (define RPM_PERCENT_DENOMINATOR 100)
 
-; Safe start parameters
+; Safe start parameters. These are package timing and duty settings, independent
+; of VESC's cc_startup_boost_duty and m_fault_stop_time_ms motor parameters.
 (define SAFE_START_DUTY 0.06)         ; Initial duty cycle for soft start
 (define SAFE_START_TIMEOUT 0.5)       ; Timeout for safe start checks
 (define SAFE_START_TIMEOUT_GRACE 0.1) ; Additional grace period before aborting (seconds)
@@ -578,8 +588,31 @@
     (< safe_start_failures SAFE_START_MAX_RETRIES)
 })
 
+(defun safe_start_log_abort_telemetry (reason)
+{
+    ; Timeout logs alone cannot distinguish a controller that did not accept the
+    ; duty command from a prop that did not reach the safe-start RPM threshold.
+    ; Sample only on an abort and only with debug enabled: never add telemetry
+    ; I/O or formatting to the 25 Hz normal motor-control path.
+    (if (and (not-eq debug_enabled nil) (= debug_enabled 1)) {
+        (var rpm (get-rpm))
+        (var duty (get-duty))
+        (var current (get-current))
+        (var vin (get-vin))
+        (debug_log_format
+            (str-merge "Motor: Safe start telemetry at " reason
+                       " t=" (to-str (secs-since safe_start_timer))
+                       " target=" (to-str (to-i safe_start_attempt_speed))
+                       " rpm=" (to-str rpm)
+                       " duty=" (to-str duty)
+                       " current=" (to-str current)
+                       " vin=" (to-str vin)))
+    })
+})
+
 (defun safe_start_abort_with_reason (reason)
 {
+    (safe_start_log_abort_telemetry reason)
     (safe_start_increment_failure reason)
     (if (safe_start_should_retry) {
         (sleep SAFE_START_RETRY_BACKOFF)
@@ -724,7 +757,8 @@
     ))
 
     ; Sets scooter type, 0 = Blacktip, 1 = Cuda X
-    (if (<= hardware_configuration HARDWARE_BLACKTIP_MAX)
+    (if (or (<= hardware_configuration HARDWARE_BLACKTIP_MAX)
+            (= hardware_configuration HARDWARE_TEST_FIXTURE))
         (setvar 'scooter_type SCOOTER_BLACKTIP)
         (setvar 'scooter_type SCOOTER_CUDAX)
     )
@@ -1005,6 +1039,20 @@
     })
 })
 
+(defun test_fixture_duty_at (speed_index divisor)
+{
+    (var max_index (- (length TEST_FIXTURE_DUTY) 1))
+    (var clamped (clamp speed_index SPEED_REVERSE_2 max_index))
+    (var target (ix TEST_FIXTURE_DUTY clamped))
+    ; Smart Cruise's warning slowdown is bounded to the validated duty range.
+    ; This preserves direction and avoids commanding an unvalidated duty below
+    ; 0.30 at the lowest selectable forward speed.
+    (var scaled (* (/ target divisor) RPM_PERCENT_DENOMINATOR))
+    (if (< target 0)
+        (- 0 (clamp (abs scaled) TEST_FIXTURE_MIN_DUTY TEST_FIXTURE_MAX_DUTY))
+        (clamp scaled TEST_FIXTURE_MIN_DUTY TEST_FIXTURE_MAX_DUTY))
+})
+
 (defun calculate_rpm (speed_index divisor)
 {
     (var speed_percent (speed_percentage_at speed_index))
@@ -1019,11 +1067,42 @@
     )
 })
 
-; Normal speed commands go through one helper so hardware-specific command
-; modes can share the state-machine and safe-start gates.
+; Keep the fixture duty path behind the same state-machine and safe-start
+; gates as RPM-controlled production hardware. The controller's configured
+; current, ERPM and fault limits remain in force.
 (defun set_motor_speed (speed_index divisor)
 {
-    (set-rpm (calculate_rpm speed_index divisor))
+    (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
+        (set-duty (test_fixture_duty_at speed_index divisor))
+        (set-rpm (calculate_rpm speed_index divisor))
+    )
+})
+
+; Soft start first uses a constrained duty command and then hands over to RPM
+; control. Some cold-start traces show the first RPM command not producing
+; sustained output, while Smart Cruise's later identical command does. Repeat
+; the already-approved command once after the speed-change interval, but only
+; while the same held-trigger start is still active. This applies whether the
+; optional safe-start telemetry check is enabled or not, and does not alter
+; the selected speed or any current/duty safety limit.
+(defun soft_start_handoff_to_speed (target_speed)
+{
+    (set_motor_speed target_speed RPM_PERCENT_DENOMINATOR)
+    ; foc-beep takes exclusive FOC control and ends by commanding zero current.
+    ; A start request cancels the tune, but an in-progress note cannot be
+    ; interrupted. Wait for that note to return before the final RPM command.
+    (if (= startup_tune_active 1)
+        (debug_log "Motor: Waiting for startup tune to stop"))
+    (loopwhile (and (= startup_tune_active 1)
+                    (= sw_state STATE_PRESSED)
+                    (= speed target_speed)) {
+        (sleep SLEEP_MOTOR_CONTROL)
+    })
+    (sleep SLEEP_MOTOR_SPEED_CHANGE)
+    (if (and (= sw_state STATE_PRESSED) (= speed target_speed)) {
+        (debug_log "Motor: Reasserting speed after soft start")
+        (set_motor_speed target_speed RPM_PERCENT_DENOMINATOR)
+    })
 })
 
 ; =============================================================================
@@ -1553,11 +1632,11 @@
                         ; Check safe-start completion
                         (if (safe_start_met_success_criteria rpm duty current)
                             {
-                                (debug_log "Motor: Soft start completed (telemetry)")
-                                (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
-                                (set_motor_speed speed RPM_PERCENT_DENOMINATOR)
+                                 (debug_log "Motor: Soft start completed (telemetry)")
+                                 (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
+                                 (safe_start_success)
+                                (soft_start_handoff_to_speed speed)
                                 (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
-                                (safe_start_success)
                                 (soft_start_set_active 0)
                                 (setvar 'last_speed speed)
                             } {
@@ -1582,7 +1661,7 @@
                             {
                                 (debug_log "Motor: Soft start completed (timer)")
                                 (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
-                                (set_motor_speed speed RPM_PERCENT_DENOMINATOR)
+                                (soft_start_handoff_to_speed speed)
                                 (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
                                 ; Clear timers without changing safe-start status (feature disabled)
                                 (setvar 'soft_start_timer 0)
@@ -2025,7 +2104,7 @@
 {
     (if (or (= 0 hardware_configuration) (= 3 hardware_configuration)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
             (i2c-start 'rate-400k 'pin-swdio 'pin-swclk) ; Works HW 60 with screen on SWD Connector. Screen SDA pin to Vesc SWDIO (2), Screen SCL pin to Vesc SWCLK (4)
-            (if (or (= 1 hardware_configuration) ( = 4 hardware_configuration)) ; 1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth
+            (if (or (= 1 hardware_configuration) (= 4 hardware_configuration) (= HARDWARE_TEST_FIXTURE hardware_configuration)) ; 1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth, 5 = test fixture
                 (i2c-start 'rate-400k 'pin-rx 'pin-tx) ; Works HW 60 with screen on Comm Connector. Screen SDA pin to Vesc RX/SDA (5), Screen SCL pin to Vesc TX/SCL (6)
                 (if ( = 2 hardware_configuration)
                     (i2c-start 'rate-400k 'pin-tx 'pin-rx) ; tested on HW 410 Tested: SN 189, SN 1691
@@ -2144,7 +2223,7 @@
             (eeprom_store_i_if_changed 16 60) ; How long before Smart Cruise times out and requires reactivation in sec.
             (eeprom_store_i_if_changed 17 0) ; rotation of Display, 0-3 . Each number rotates display 90 deg.
             (eeprom_store_i_if_changed 18 5) ; Display Brighness 0-5
-            (eeprom_store_i_if_changed 19 0) ; Hardware configuration, 0 = Blacktip HW60 + Ble, 1 = Blacktip HW60 - Ble, 2 = Blacktip HW410 - Ble, 3 = Cuda-X HW60 + Ble, 4 = Cuda-X HW60 - Ble
+            (eeprom_store_i_if_changed 19 0) ; Hardware configuration, 0 = Blacktip HW60 + Ble, 1 = Blacktip HW60 - Ble, 2 = Blacktip HW410 - Ble, 3 = Cuda-X HW60 + Ble, 4 = Cuda-X HW60 - Ble, 5 = Blacktip test fixture
             (eeprom_store_i_if_changed 20 0) ; Battery Beeps
             (eeprom_store_i_if_changed 21 3) ; Beep Volume
             (eeprom_store_i_if_changed 22 0) ; CudaX Flip Screens

@@ -27,6 +27,13 @@ This package gives your DPV advanced features like Smart Cruise control, enhance
 - first generation (Flipsky 6.0 based)
 - second generation (Flipsky 6.0 MK5 based, with Bluetooth)
 
+**Blacktip test fixture:**
+
+- local Blacktip series 2, no-Bluetooth controller with the fixture-specific gimbal-motor and ballast configuration
+- select **Blacktip test fixture** in Scooter Hardware Configuration, then use **Reset Defaults** to restore its captured motor and app settings
+- the captured ±28,000 ERPM controller limit and 29,268.3 ERPM overspeed fault limit remain protection limits, not speed targets; the fixture uses signed duty commands only: reverse/untangle are -0.35/-0.30 and forward selectors 1–8 are 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, and 0.65 respectively. Only the 0.30–0.65 duty magnitude range has been hardware-validated.
+- this profile is only for the local test rig and must not be selected for a production DPV
+
 **Scroll down for [installation instructions](#installation).**
 
 ## Instructions

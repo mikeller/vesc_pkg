@@ -25,6 +25,7 @@ Item {
         "Blacktip series 1, no Bluetooth",
         "CudaX, with Bluetooth",
         "CudaX, no Bluetooth",
+        "Blacktip test fixture",
     ]
 
     readonly property int const_RELOAD_DELAY_MS: 1000
@@ -37,12 +38,16 @@ Item {
 
     property bool readSettingsDone: false
 
-    // Firmware defaults arrive asynchronously. Apply a DPV profile only after
-    // both complete configuration objects have been replaced.
+    // Production profiles reset from complete firmware-compatible defaults.
     property bool profileResetPending: false
     property bool profileMotorDefaultsLoaded: false
     property bool profileAppDefaultsLoaded: false
     property string profileResetTarget: ""
+
+    // Fixture reset is asynchronous: default responses replace these objects.
+    property bool fixtureResetPending: false
+    property bool fixtureMotorDefaultsLoaded: false
+    property bool fixtureAppDefaultsLoaded: false
 
     // Callback holder for delay timer
     property var _delayCb: null
@@ -499,7 +504,7 @@ Item {
                             decimals: 0
                             prefix: "Untangle Speed: "
                             suffix: " %"
-                            realFrom: (hardware_configuration.currentIndex < 2) ? 20 : 10
+                            realFrom: (hardware_configuration.currentIndex < 2 || isTestFixture(hardware_configuration.currentIndex)) ? 20 : 10
                             realTo: 30
                             realValue: 20
                             realStepSize: 1.0
@@ -747,7 +752,7 @@ Item {
         if (detectedHardwareModel == "410") {
             possibleScooterModels = "\n- " + const_SCOOTER_MODELS[2]
         } else if (detectedHardwareModel == "60") {
-            possibleScooterModels = "\n- " + const_SCOOTER_MODELS[1] + "\n- " + const_SCOOTER_MODELS[4] + "\nIf upgraded with Bluetooth adaptor:\n- " + const_SCOOTER_MODELS[0] + "\n- " + const_SCOOTER_MODELS[3]
+            possibleScooterModels = "\n- " + const_SCOOTER_MODELS[1] + "\n- " + const_SCOOTER_MODELS[4] + "\n- " + const_SCOOTER_MODELS[5] + "\nIf upgraded with Bluetooth adaptor:\n- " + const_SCOOTER_MODELS[0] + "\n- " + const_SCOOTER_MODELS[3]
         } else if (detectedHardwareModel == "60_MK5") {
             possibleScooterModels = "\n- " + const_SCOOTER_MODELS[0] + "\n- " + const_SCOOTER_MODELS[3]
         } else {
@@ -991,6 +996,149 @@ Item {
         console.log("Defaults Reset for Blacktip")
     }
 
+    function reset_defaults_test_fixture() {
+        if (fixtureResetPending) {
+            console.warn("Test-fixture reset already in progress")
+            return
+        }
+
+        // The default commands return the complete configuration for the connected
+        // firmware. Their responses replace mMcConf and mAppConf asynchronously.
+        fixtureResetPending = true
+        fixtureMotorDefaultsLoaded = false
+        fixtureAppDefaultsLoaded = false
+        mCommands.getMcconfDefault()
+        mCommands.getAppConfDefault()
+    }
+
+    function apply_test_fixture_profile() {
+        if (!fixtureResetPending || !fixtureMotorDefaultsLoaded || !fixtureAppDefaultsLoaded) {
+            return
+        }
+
+        fixtureResetPending = false
+
+        var buffer1 = new ArrayBuffer(33)
+        var da1 = new DataView(buffer1)
+        da1.setUint8(0, 45)
+        da1.setUint8(1, 20)
+        da1.setUint8(2, 30)
+        da1.setUint8(3, 38)
+        da1.setUint8(4, 46)
+        da1.setUint8(5, 54)
+        da1.setUint8(6, 62)
+        da1.setUint8(7, 70)
+        da1.setUint8(8, 78)
+        da1.setUint8(9, 100)
+        da1.setUint8(10, 9)
+        da1.setUint8(11, 4)
+        da1.setUint8(12, 7)
+        da1.setUint8(13, 1)
+        da1.setUint8(14, 0)
+        da1.setUint8(15, 0)
+        da1.setUint8(16, 60)
+        da1.setUint8(17, 0)
+        da1.setUint8(18, 5)
+        da1.setUint8(19, 5) // Blacktip test fixture
+        da1.setUint8(20, 0)
+        da1.setUint8(21, 3)
+        da1.setUint8(22, 0)
+        da1.setUint8(23, 0)
+        da1.setUint8(24, 0)
+        da1.setUint8(25, 0)
+        da1.setUint8(26, 10)
+        da1.setUint8(27, 0)
+        da1.setUint8(28, 0)
+        da1.setUint8(29, 0)
+        da1.setUint8(30, 200)
+        da1.setUint8(31, 162)
+        da1.setUint8(32, 0)
+        mCommands.sendCustomAppData(buffer1)
+
+        // Apply only the captured fixture differences over the controller's
+        // complete, firmware-compatible motor defaults.
+        mMcConf.updateParamInt("si_motor_poles", 14, null)
+        mMcConf.updateParamDouble("l_erpm_start", 0.9, null)
+        mMcConf.updateParamDouble("l_in_current_map_start", 0.9, null)
+        mMcConf.updateParamDouble("l_in_current_map_filter", 0.002, null)
+        mMcConf.updateParamDouble("l_current_max", 1, null)
+        mMcConf.updateParamDouble("l_current_min", -1, null)
+        mMcConf.updateParamDouble("l_in_current_max", 22.8, null)
+        mMcConf.updateParamDouble("l_in_current_min", -60, null)
+        mMcConf.updateParamDouble("l_abs_current_max", 150, null)
+        // Captured controller protection limits. The package selects fixture
+        // speeds from its verified 5500-13500 ERPM table, independently.
+        mMcConf.updateParamDouble("l_min_erpm", -28000, null)
+        mMcConf.updateParamDouble("l_max_erpm", 28000, null)
+        mMcConf.updateParamDouble("l_erpm_abs_overspeed", 29268.3, null)
+
+        mMcConf.updateParamInt("l_temp_motor_start", 85, null)
+        mMcConf.updateParamInt("l_temp_motor_end", 100, null)
+        mMcConf.updateParamDouble("l_temp_accel_dec", 0.15, null)
+        mMcConf.updateParamEnum("m_motor_temp_sens_type", 0, null)
+        mMcConf.updateParamDouble("m_ntc_motor_beta", 3380, null)
+        mMcConf.updateParamBool("foc_temp_comp", 0, null)
+        mMcConf.updateParamDouble("foc_temp_comp_base_temp", 25, null)
+
+        mMcConf.updateParamDouble("foc_motor_r", 32.5, null)
+        mMcConf.updateParamDouble("foc_motor_l", 0.00758, null)
+        mMcConf.updateParamDouble("foc_motor_ld_lq_diff", 0, null)
+        mMcConf.updateParamDouble("foc_motor_flux_linkage", 0.0079, null)
+        mMcConf.updateParamDouble("foc_current_kp", 3.79, null)
+        mMcConf.updateParamDouble("foc_current_ki", 21250, null)
+        mMcConf.updateParamDouble("foc_observer_gain", 4e+06, null)
+        mMcConf.updateParamDouble("foc_observer_gain_slow", 0.01, null)
+        mMcConf.updateParamEnum("foc_observer_type", 4, null)
+        mMcConf.updateParamDouble("foc_openloop_rpm", 1000, null)
+        mMcConf.updateParamDouble("foc_openloop_rpm_low", 1, null)
+        mMcConf.updateParamDouble("foc_sl_openloop_hyst", 0.05, null)
+        mMcConf.updateParamDouble("foc_sl_openloop_time_lock", 0, null)
+        mMcConf.updateParamDouble("foc_sl_openloop_time_ramp", 0.25, null)
+        mMcConf.updateParamDouble("foc_sl_openloop_time", 0.15, null)
+        mMcConf.updateParamDouble("foc_sl_openloop_boost_q", 0, null)
+        mMcConf.updateParamDouble("foc_sl_openloop_max_q", 0.4, null)
+        mMcConf.updateParamEnum("foc_offsets_cal_mode", 2, null)
+        mMcConf.updateParamBool("foc_phase_filter_enable", 0, null)
+
+        mMcConf.updateParamDouble("s_pid_kp", 0.002, null)
+        mMcConf.updateParamDouble("s_pid_ki", 0.0006, null)
+        mMcConf.updateParamDouble("s_pid_kd", 0, null)
+        mMcConf.updateParamDouble("s_pid_kd_filter", 0.1, null)
+        mMcConf.updateParamDouble("s_pid_min_erpm", 5, null)
+        mMcConf.updateParamBool("s_pid_allow_braking", 1, null)
+        mMcConf.updateParamDouble("s_pid_ramp_erpms_s", 5000, null)
+        mMcConf.updateParamEnum("s_pid_speed_source", 1, null)
+
+        // Captured fixture value. This VESC current-control boost is distinct
+        // from the package's SAFE_START_DUTY fixed-duty start command.
+        mMcConf.updateParamDouble("cc_startup_boost_duty", 0.01, null)
+        // Captured VESC fault-stop hold time, not a package safe-start delay.
+        mMcConf.updateParamInt("m_fault_stop_time_ms", 500, null)
+
+        mMcConf.updateParamEnum("si_battery_type", 0, null)
+        mMcConf.updateParamInt("si_battery_cells", 10, null)
+        mMcConf.updateParamDouble("si_battery_ah", 8, null)
+        mMcConf.updateParamDouble("l_min_vin", 29, null)
+        mMcConf.updateParamDouble("l_battery_cut_start", 32, null)
+        mMcConf.updateParamDouble("l_battery_cut_end", 30, null)
+
+        // Apply only the fixture differences over the complete app defaults.
+        mAppConf.updateParamEnum("app_to_use", 0)
+        mAppConf.updateParamInt("app_uart_baudrate", 115200)
+        mAppConf.updateParamEnum("shutdown_mode", 7)
+        mAppConf.updateParamInt("timeout_msec", 15000)
+
+        mCommands.setMcconf(false)
+
+        delay(2000, function() {
+            mCommands.setAppConf()
+
+            doReboot(2000)
+        })
+
+        console.log("Defaults Reset for Blacktip test fixture")
+    }
+
     function apply_defaults_cudax() {
         var buffer1 = new ArrayBuffer(33)
         var da1 = new DataView(buffer1)
@@ -1102,7 +1250,11 @@ Item {
     }
 
     function isBlacktip(hardware_type) {
-        return hardware_type < 3
+        return hardware_type < 3 || hardware_type === 5
+    }
+
+    function isTestFixture(hardware_type) {
+        return hardware_type === 5
     }
 
     Connections {
@@ -1112,6 +1264,10 @@ Item {
             if (profileResetPending) {
                 profileMotorDefaultsLoaded = true
                 apply_reset_profile()
+            }
+            if (fixtureResetPending) {
+                fixtureMotorDefaultsLoaded = true
+                apply_test_fixture_profile()
             }
         }
     }
@@ -1123,6 +1279,10 @@ Item {
             if (profileResetPending) {
                 profileAppDefaultsLoaded = true
                 apply_reset_profile()
+            }
+            if (fixtureResetPending) {
+                fixtureAppDefaultsLoaded = true
+                apply_test_fixture_profile()
             }
         }
     }
@@ -1816,7 +1976,15 @@ Item {
 
 	    onAccepted: {
             if (original_hardware_configuration != hardware_configuration.currentIndex) {
-                if (isBlacktip(hardware_configuration.currentIndex) && !isBlacktip(original_hardware_configuration)) {
+                if (isTestFixture(hardware_configuration.currentIndex)) {
+                    reset_defaults_test_fixture()
+                } else if (isTestFixture(original_hardware_configuration)) {
+                    if (isBlacktip(hardware_configuration.currentIndex)) {
+                        reset_defaults_blacktip()
+                    } else {
+                        reset_defaults_cudax()
+                    }
+                } else if (isBlacktip(hardware_configuration.currentIndex) && !isBlacktip(original_hardware_configuration)) {
                     reset_defaults_blacktip()
                 } else if (!isBlacktip(hardware_configuration.currentIndex) && isBlacktip(original_hardware_configuration)) {
                     reset_defaults_cudax()
@@ -1910,7 +2078,9 @@ Item {
                     text: "Reset Defaults*"
                     enabled: hardwareDialog.original_hardware_configuration == hardware_configuration.currentIndex
                     onClicked: {
-                        if (isBlacktip(hardware_configuration.currentIndex)) {
+                        if (isTestFixture(hardware_configuration.currentIndex)) {
+                            reset_defaults_test_fixture()
+                        } else if (isBlacktip(hardware_configuration.currentIndex)) {
                             reset_defaults_blacktip()
                         } else {
                             reset_defaults_cudax()
