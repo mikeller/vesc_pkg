@@ -805,7 +805,7 @@ Item {
             return
         }
 
-        var buffer = new ArrayBuffer(35)
+        var buffer = new ArrayBuffer(36)
         var da = new DataView(buffer)
 
         da.setUint8(0, reverse_speed.realValue)
@@ -847,6 +847,10 @@ Item {
         // Bench-only diagnostic (test fixture hardware only, see set_motor_speed
         // in blacktip_dpv.lisp): 0 = baseline (set-duty, validated), 1 = test variant (set-rpm)
         da.setUint8(34, fixture_control_mode.currentIndex)
+        // Bench-only diagnostic (test fixture hardware only, see
+        // fixture_launch_kick_extra_hold_s in blacktip_dpv.lisp): 0 = baseline
+        // (~0.5s hold), 1 = +0.5s extra (~1.0s total), 2 = +1.5s extra (~2.0s total)
+        da.setUint8(35, fixture_launch_kick_hold_variant.currentIndex)
         mCommands.sendCustomAppData(buffer)
 
         console.log("Sent values")
@@ -894,7 +898,7 @@ Item {
     }
 
     function apply_defaults_blacktip() {
-        var buffer1 = new ArrayBuffer(35)
+        var buffer1 = new ArrayBuffer(36)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 45)
         da1.setUint8(1, 20)
@@ -931,6 +935,7 @@ Item {
         da1.setUint8(32, 0) // Five-click deep shutdown default: off
         da1.setUint8(33, 0) // Fixture launch-kick diagnostic default: baseline (not applicable to production hardware)
         da1.setUint8(34, 0) // Fixture control-mode diagnostic default: baseline (not applicable to production hardware)
+        da1.setUint8(35, 0) // Fixture launch-kick hold diagnostic default: baseline (not applicable to production hardware)
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/master/datatypes.h
@@ -1026,7 +1031,7 @@ Item {
 
         fixtureResetPending = false
 
-        var buffer1 = new ArrayBuffer(35)
+        var buffer1 = new ArrayBuffer(36)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 45)
         da1.setUint8(1, 20)
@@ -1062,10 +1067,11 @@ Item {
         da1.setUint8(31, 162)
         da1.setUint8(32, 0)
         // Bench diagnostic defaults: baseline (no candidate kick-duty active,
-        // set-duty steady-state path active). Reset Defaults always reverts
-        // these; neither is ever a shipped default.
+        // set-duty steady-state path active, no extra launch-kick hold).
+        // Reset Defaults always reverts these; none is ever a shipped default.
         da1.setUint8(33, 0)
         da1.setUint8(34, 0)
+        da1.setUint8(35, 0)
         mCommands.sendCustomAppData(buffer1)
 
         // Apply only the captured fixture differences over the controller's
@@ -1214,7 +1220,7 @@ Item {
     }
 
     function apply_defaults_cudax() {
-        var buffer1 = new ArrayBuffer(35)
+        var buffer1 = new ArrayBuffer(36)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 30)
         da1.setUint8(1, 10)
@@ -1251,6 +1257,7 @@ Item {
         da1.setUint8(32, 0) // Five-click deep shutdown default: off
         da1.setUint8(33, 0) // Fixture launch-kick diagnostic default: baseline (not applicable to production hardware)
         da1.setUint8(34, 0) // Fixture control-mode diagnostic default: baseline (not applicable to production hardware)
+        da1.setUint8(35, 0) // Fixture launch-kick hold diagnostic default: baseline (not applicable to production hardware)
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/f6b06bc9f8d02d2ba262166127c3f2ffaedbb17e/datatypes.h#L369
@@ -1419,6 +1426,9 @@ Item {
             // Bench diagnostic selector (test fixture only). Older devices without
             // slot 34 default to 0 (baseline/set-duty), same pattern as slot 33 above.
             fixture_control_mode.currentIndex = dv.byteLength > 34 ? dv.getUint8(34) : 0
+            // Bench diagnostic selector (test fixture only). Older devices without
+            // slot 35 default to 0 (baseline/no extra hold), same pattern as above.
+            fixture_launch_kick_hold_variant.currentIndex = dv.byteLength > 35 ? dv.getUint8(35) : 0
 
             ramp_rate.realValue = mMcConf.getParamDouble("s_pid_ramp_erpms_s")
             battery_ah.realValue = mMcConf.getParamDouble("si_battery_ah")
@@ -2203,7 +2213,7 @@ Item {
                     wrapMode: Text.WordWrap
                     color: Utility.getAppHexColor("lightText")
                     visible: isTestFixture(hardware_configuration.currentIndex)
-                    text: "These controls exist only to let a human confirm on the HW60 bench rig whether four specific open bench-tuning questions are viable. None of them are a shipped fix. Apply Reset Defaults above first to establish the known baseline, then try one control at a time, noting the result before trying the next. Switching away from the test fixture model, or using Reset Defaults again, reverts everything below to its package baseline."
+                    text: "These controls exist only to let a human confirm on the HW60 bench rig whether specific open bench-tuning questions are viable. None of them are a shipped fix. Apply Reset Defaults above first to establish the known baseline, then try one control at a time, noting the result before trying the next. Switching away from the test fixture model, or using Reset Defaults again, reverts everything below to its package baseline."
                 }
 
                 Text {
@@ -2221,6 +2231,28 @@ Item {
                     visible: isTestFixture(hardware_configuration.currentIndex)
                     currentIndex: 0
                     model: ["Baseline (package default, 0.06 duty)", "Candidate A: 0.30 duty kick", "Candidate B: 0.40 duty kick"]
+                    onActivated: {
+                        if (!loading_values) {
+                            write_settings()
+                        }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    topPadding: 15
+                    color: "#ffffff"
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    text: "1b) Launch-kick hold duration before handoff, independent of the duty selector above so the two can be combined. Baseline is the existing ~0.5s hold; the two candidates add +0.5s (~1.0s total) or +1.5s (~2.0s total), giving the sensorless observer longer to settle on a known-stable duty before handoff. This pairs most directly with item 5 (set-rpm) below: a longer hold is meant to let the speed estimate stabilise before the speed-PID has to regulate against it, which is the open question for whether set-rpm can work here at all. Try combinations of duty and hold duration with set-rpm active (item 5), watching standstill starts as in item 1. PASS = a longer hold measurably improves set-rpm start reliability over the ~0.5s baseline; FAIL = no improvement, or starts take noticeably longer without becoming more reliable."
+                }
+
+                ComboBox {
+                    id: fixture_launch_kick_hold_variant
+                    Layout.fillWidth: true
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    currentIndex: 0
+                    model: ["Baseline (~0.5s hold)", "+0.5s extra (~1.0s total)", "+1.5s extra (~2.0s total)"]
                     onActivated: {
                         if (!loading_values) {
                             write_settings()
@@ -2300,7 +2332,7 @@ Item {
                     topPadding: 15
                     color: "#ffffff"
                     visible: isTestFixture(hardware_configuration.currentIndex)
-                    text: "5) Steady-state control mode: set-duty (current, validated by prior bench sessions) vs set-rpm (test variant, matches the production DPV's control scheme exactly). This is the biggest change here and the least likely to work cleanly: a prior, separate fixture implementation tried RPM control for steady-state and was reverted after it proved unreliable, specifically during the standstill-to-running transition where the sensorless speed estimate is still weak. The launch kick is unchanged either way; only the command issued once running changes. Try at least 10 standstill starts, then run through several gear changes, with set-rpm active, comparing against set-duty. PASS = starts and gear changes are as clean and reliable as set-duty, with no RPM collapse/jerk while running. FAIL = starts become unreliable again, or running becomes jerky/unstable, matching the previously-reverted behaviour. Restore the baseline afterwards regardless of outcome; set-duty remains the only validated path."
+                    text: "5) Steady-state control mode: set-duty (current, validated by prior bench sessions) vs set-rpm (test variant, matches the production DPV's control scheme exactly). This is the biggest change here and the least likely to work cleanly: a prior, separate fixture implementation tried RPM control for steady-state and was reverted after it proved unreliable, specifically during the standstill-to-running transition where the sensorless speed estimate is still weak. Item 1b above (launch-kick hold duration) exists specifically to test whether giving the observer more time before handoff addresses that weakness; try it alongside this item, not only on its own. The launch kick duty/hold are unchanged by this selector; only the command issued once running changes. Try at least 10 standstill starts, then run through several gear changes, with set-rpm active, comparing against set-duty. PASS = starts and gear changes are as clean and reliable as set-duty, with no RPM collapse/jerk while running. FAIL = starts become unreliable again, or running becomes jerky/unstable, matching the previously-reverted behaviour. Restore the baseline afterwards regardless of outcome; set-duty remains the only validated path."
                 }
 
                 ComboBox {

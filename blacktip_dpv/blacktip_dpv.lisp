@@ -159,9 +159,11 @@
 ; Slot 33 is the test-fixture-only launch-kick duty diagnostic selector
 ; (see fixture_launch_kick_variant / soft_start_kick_duty below). Slot 34 is
 ; the test-fixture-only steady-state control mode selector (see
-; fixture_control_mode / set_motor_speed below). Both are always 0 (baseline)
+; fixture_control_mode / set_motor_speed below). Slot 35 is the test-fixture-
+; only launch-kick hold-duration selector (see fixture_launch_kick_hold_variant
+; / fixture_launch_kick_extra_hold_s below). All three are always 0 (baseline)
 ; outside HARDWARE_TEST_FIXTURE.
-(define EEPROM_SETTINGS_COUNT 35)
+(define EEPROM_SETTINGS_COUNT 36)
 
 ; Battery polynomial coefficients (for voltage-based calculation)
 (define BATTERY_COEFF_4 4.3867)
@@ -277,6 +279,15 @@
 ; matching the production DPV's control scheme). See set_motor_speed. Always
 ; 0 outside HARDWARE_TEST_FIXTURE; production always uses set-rpm regardless.
 (define fixture_control_mode 0)
+; Test-fixture-only bench diagnostic (confirmation-01b): 0 = baseline (no
+; change, ~0.5s hold as today), 1 = +0.5s extra hold (~1.0s total), 2 = +1.5s
+; extra hold (~2.0s total), before the launch kick is allowed to hand off to
+; steady-state control. Independent of fixture_launch_kick_variant (duty) so
+; the two can be combined; pairs most directly with confirmation-05
+; (set-rpm), to let the sensorless observer settle longer on a known-stable
+; duty before the speed-PID has to regulate against its estimate. See
+; fixture_launch_kick_extra_hold_s. Always 0 outside HARDWARE_TEST_FIXTURE.
+(define fixture_launch_kick_hold_variant 0)
 
 ; --- Runtime state machine / motor / display vars ---
 (define sw_state 0)
@@ -769,6 +780,7 @@
     (setvar 'enable_five_click_shutdown (or (eeprom-read-i 32) 0))
     (setvar 'fixture_launch_kick_variant (or (eeprom-read-i 33) 0))
     (setvar 'fixture_control_mode (or (eeprom-read-i 34) 0))
+    (setvar 'fixture_launch_kick_hold_variant (or (eeprom-read-i 35) 0))
 
     (setvar 'speed_set (list
         (eeprom-read-i 0) ; Reverse Speed 2 %
@@ -821,6 +833,7 @@
         "\n- enable_five_click_shutdown: " (to-str (to-i enable_five_click_shutdown))
         "\n- fixture_launch_kick_variant: " (to-str (to-i fixture_launch_kick_variant))
         "\n- fixture_control_mode: " (to-str (to-i fixture_control_mode))
+        "\n- fixture_launch_kick_hold_variant: " (to-str (to-i fixture_launch_kick_hold_variant))
     ))
 })
 
@@ -1114,6 +1127,8 @@
 ; compare that baseline against two candidate launch-kick duties without
 ; reflashing between trials. Selecting a candidate only ever affects
 ; HARDWARE_TEST_FIXTURE; production hardware always uses SAFE_START_DUTY.
+; Pairs with fixture_launch_kick_extra_hold_s (confirmation-01b) below, which
+; independently controls how long the kick is held before handoff.
 (defun soft_start_kick_duty ()
 {
     (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
@@ -1132,6 +1147,23 @@
 ; separate table. Checked before scooter_type because the fixture reports
 ; scooter_type SCOOTER_BLACKTIP and would otherwise take the production
 ; Blacktip branch (wrong physical scale for this motor).
+; Bench diagnostic for the test fixture only (confirmation-01b). Returns
+; EXTRA hold time in seconds, added on top of the existing SAFE_START_TIMEOUT
+; / SOFT_START_DURATION, before the launch kick may hand off to steady-state
+; control. Baseline (0) is a no-op: the existing timeout/duration arithmetic
+; is unchanged and this file's prior soft-start behaviour is identical.
+; Always 0 outside HARDWARE_TEST_FIXTURE.
+(defun fixture_launch_kick_extra_hold_s ()
+{
+    (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
+        (cond
+            ((= fixture_launch_kick_hold_variant 1) 0.5) ; total hold ~1.0s
+            ((= fixture_launch_kick_hold_variant 2) 1.5) ; total hold ~2.0s
+            (t 0))
+        0
+    )
+})
+
 (defun calculate_rpm (speed_index divisor)
 {
     (var speed_percent (speed_percentage_at speed_index))
@@ -1723,8 +1755,12 @@
                             (safe_start_abort_with_reason "invalid telemetry")
                         )
 
-                        ; Check safe-start completion
-                        (if (safe_start_met_success_criteria rpm duty current)
+                        ; Check safe-start completion. The extra-hold term is 0
+                        ; (no-op) outside the fixture's confirmation-01b
+                        ; bench diagnostic: elapsed is always > 0 by the time
+                        ; this runs, so baseline behaviour is unchanged.
+                        (if (and (safe_start_met_success_criteria rpm duty current)
+                                 (> elapsed (fixture_launch_kick_extra_hold_s)))
                             {
                                  (debug_log "Motor: Soft start completed (telemetry)")
                                  (test_fixture_log_offsets "soft-start-success")
@@ -1735,8 +1771,11 @@
                                 (soft_start_set_active 0)
                                 (setvar 'last_speed speed)
                             } {
-                                ; Check timeout
-                                (if (> elapsed (+ SAFE_START_TIMEOUT SAFE_START_TIMEOUT_GRACE))
+                                ; Check timeout. Extended by the same extra-hold
+                                ; term so a longer confirmation-01b hold is not
+                                ; aborted before it is ever reached; 0 outside
+                                ; the fixture, so this ceiling is unchanged.
+                                (if (> elapsed (+ SAFE_START_TIMEOUT SAFE_START_TIMEOUT_GRACE (fixture_launch_kick_extra_hold_s)))
                                     (safe_start_abort_with_reason "timeout")
                                 )
 
@@ -1751,8 +1790,10 @@
                                 )
                             })
                     } {
-                        ; For safe-start disabled: just wait for timer
-                        (if (> soft_elapsed SOFT_START_DURATION)
+                        ; For safe-start disabled: just wait for timer, extended
+                        ; by the fixture's confirmation-01b extra-hold term (0,
+                        ; a no-op, outside the fixture).
+                        (if (> soft_elapsed (+ SOFT_START_DURATION (fixture_launch_kick_extra_hold_s)))
                             {
                                 (debug_log "Motor: Soft start completed (timer)")
                                 (test_fixture_log_offsets "soft-start-success")
@@ -2359,10 +2400,18 @@
         (eeprom_store_i_if_changed 34 0)
     })
 
+    ; Migration for the test-fixture bench launch-kick hold-duration
+    ; diagnostic. Also a bench-only comparison aid; must default to no extra
+    ; hold (0) on every existing install.
+    (if (< stored_version 6) {
+        (puts "EEPROM: Initializing defaults for fixture launch-kick hold diagnostic")
+        (eeprom_store_i_if_changed 35 0)
+    })
+
     ; Advance older markers to this schema version. Do not rewrite markers from
     ; newer firmware, so downgrade/upgrade cycles remain monotonic.
-    (if (< stored_version 5)
-        (eeprom_store_i_if_changed 127 5))
+    (if (< stored_version 6)
+        (eeprom_store_i_if_changed 127 6))
 })
 
 (defun init ()

@@ -45,7 +45,7 @@ def assert_near(actual, expected, tolerance, test_name):
 
 SPEED_REVERSE_THRESHOLD = 5
 HARDWARE_TEST_FIXTURE = 5
-EEPROM_SETTINGS_COUNT = 35
+EEPROM_SETTINGS_COUNT = 36
 MAX_ERPM_TEST_FIXTURE = 20000
 TEST_FIXTURE_MIN_DUTY = 0.30
 TEST_FIXTURE_MAX_DUTY = 0.65
@@ -199,8 +199,9 @@ def trigger_arm_after_ready_sample(trigger_input_ready, sw_pressed):
     return 1 if trigger_input_ready == 1 and sw_pressed == 0 else 0
 
 
-def migrate_eeprom_v5(eeprom, stored_version):
-    """Mirror the layered v3 (slot 32), v4 (slot 33) and v5 (slot 34) migrations."""
+def migrate_eeprom_v6(eeprom, stored_version):
+    """Mirror the layered v3 (slot 32), v4 (slot 33), v5 (slot 34) and
+    v6 (slot 35) migrations."""
     result = dict(eeprom)
     if stored_version < 3:
         result[32] = 0
@@ -208,7 +209,9 @@ def migrate_eeprom_v5(eeprom, stored_version):
         result[33] = 0
     if stored_version < 5:
         result[34] = 0
-        result[127] = 5
+    if stored_version < 6:
+        result[35] = 0
+        result[127] = 6
     return result
 
 
@@ -255,6 +258,19 @@ def fixture_steady_state_mode(hardware_configuration, control_mode):
     if hardware_configuration != HARDWARE_TEST_FIXTURE:
         return 'rpm'
     return 'rpm' if control_mode == 1 else 'duty'
+
+
+def fixture_launch_kick_extra_hold_s(hardware_configuration, hold_variant):
+    """Mirror fixture_launch_kick_extra_hold_s's HARDWARE_TEST_FIXTURE-gated
+    extra-hold selection. 0 is a no-op added on top of the existing
+    SAFE_START_TIMEOUT/SOFT_START_DURATION."""
+    if hardware_configuration != HARDWARE_TEST_FIXTURE:
+        return 0
+    if hold_variant == 1:
+        return 0.5
+    if hold_variant == 2:
+        return 1.5
+    return 0
 
 
 def is_blacktip_hardware(hardware_configuration):
@@ -915,26 +931,29 @@ def test_five_click_settings_and_migration():
     assert_eq(defaults[32], 0, "five-click setting: default disabled")
     assert_eq(defaults[33], 0, "fixture launch-kick diagnostic: default baseline")
     assert_eq(defaults[34], 0, "fixture control-mode diagnostic: default baseline (set-duty)")
+    assert_eq(defaults[35], 0, "fixture launch-kick hold diagnostic: default baseline (no extra hold)")
 
     eeprom = {index: (index * 7) % 256 for index in range(32)}
     before = dict(eeprom)
-    migrated = migrate_eeprom_v5(eeprom, 2)
+    migrated = migrate_eeprom_v6(eeprom, 2)
     assert_eq(migrated[32], 0, "EEPROM v3: slot 32 initialized disabled")
     assert_eq(migrated[33], 0, "EEPROM v4: slot 33 initialized to baseline")
     assert_eq(migrated[34], 0, "EEPROM v5: slot 34 initialized to baseline")
+    assert_eq(migrated[35], 0, "EEPROM v6: slot 35 initialized to baseline")
     assert_eq({index: migrated[index] for index in range(32)}, before,
-              "EEPROM v5: slots 0-31 preserved")
-    assert_eq(migrated[127], 5, "EEPROM v5: schema marker advanced to 5")
+              "EEPROM v6: slots 0-31 preserved")
+    assert_eq(migrated[127], 6, "EEPROM v6: schema marker advanced to 6")
 
-    current = bytes(list(range(32)) + [1, 2, 1])
+    current = bytes(list(range(32)) + [1, 2, 1, 2])
     accepted, received = receive_settings_simulate(migrated, current)
-    assert_eq(accepted, True, "settings receive: 35-byte buffer accepted")
+    assert_eq(accepted, True, "settings receive: 36-byte buffer accepted")
     assert_eq(received[32], 1, "settings receive: slot 32 round-trips enabled")
     assert_eq(received[33], 2, "settings receive: slot 33 round-trips fixture launch-kick variant")
     assert_eq(received[34], 1, "settings receive: slot 34 round-trips fixture control mode")
+    assert_eq(received[35], 2, "settings receive: slot 35 round-trips fixture launch-kick hold variant")
 
-    accepted, rejected = receive_settings_simulate(received, bytes(34))
-    assert_eq(accepted, False, "settings receive: buffer shorter than 35 rejected")
+    accepted, rejected = receive_settings_simulate(received, bytes(35))
+    assert_eq(accepted, False, "settings receive: buffer shorter than 36 rejected")
     assert_eq(rejected, received, "settings receive: rejected buffer changes nothing")
 
 
@@ -1097,19 +1116,23 @@ def test_fixture_bench_diagnostics():
     lisp_source = (root / 'blacktip_dpv.lisp').read_text()
     ui_source = (root / 'ui.qml').read_text()
 
-    # EEPROM schema: slots 33 and 34 added and migrated like slot 32 was.
-    assert_eq('(define EEPROM_SETTINGS_COUNT 35)' in lisp_source, True,
-               "bench diagnostics: EEPROM settings buffer grew by two slots")
+    # EEPROM schema: slots 33, 34 and 35 added and migrated like slot 32 was.
+    assert_eq('(define EEPROM_SETTINGS_COUNT 36)' in lisp_source, True,
+               "bench diagnostics: EEPROM settings buffer grew by three slots")
     assert_eq("(setvar 'fixture_launch_kick_variant (or (eeprom-read-i 33) 0))" in lisp_source, True,
                "bench diagnostics: launch-kick variant is read with a safe baseline default")
     assert_eq("(setvar 'fixture_control_mode (or (eeprom-read-i 34) 0))" in lisp_source, True,
                "bench diagnostics: control-mode selector is read with a safe baseline default")
+    assert_eq("(setvar 'fixture_launch_kick_hold_variant (or (eeprom-read-i 35) 0))" in lisp_source, True,
+               "bench diagnostics: launch-kick hold selector is read with a safe baseline default")
     assert_eq('(if (< stored_version 4) {' in lisp_source, True,
                "bench diagnostics: a v4 migration block initializes slot 33")
     assert_eq('(if (< stored_version 5) {' in lisp_source, True,
                "bench diagnostics: a v5 migration block initializes slot 34")
-    assert_eq('(eeprom_store_i_if_changed 127 5))' in lisp_source, True,
-               "bench diagnostics: schema marker advances to 5")
+    assert_eq('(if (< stored_version 6) {' in lisp_source, True,
+               "bench diagnostics: a v6 migration block initializes slot 35")
+    assert_eq('(eeprom_store_i_if_changed 127 6))' in lisp_source, True,
+               "bench diagnostics: schema marker advances to 6")
 
     # Item 1: current-offset drift diagnostic (conf-dc-cal read-only call).
     assert_eq('(defun test_fixture_log_offsets (label)' in lisp_source, True,
@@ -1150,6 +1173,33 @@ def test_fixture_bench_diagnostics():
                "confirmation-02: launch-kick selector is a distinct UI control")
     assert_eq('da.setUint8(33, fixture_launch_kick_variant.currentIndex)' in ui_source, True,
                "confirmation-02: the selector persists through the normal settings-write path")
+
+    # Item 1b: launch-kick hold duration before handoff, independent of duty,
+    # and additive on top of the existing SAFE_START_TIMEOUT/SOFT_START_DURATION
+    # so baseline (0) reproduces the original fixed ~0.5s behaviour exactly.
+    assert_eq('(defun fixture_launch_kick_extra_hold_s ()' in lisp_source, True,
+               "confirmation-01b: launch-kick extra-hold helper exists")
+    assert_eq(fixture_launch_kick_extra_hold_s(HARDWARE_TEST_FIXTURE, 0) == 0, True,
+               "confirmation-01b: baseline adds no extra hold")
+    assert_eq(fixture_launch_kick_extra_hold_s(HARDWARE_TEST_FIXTURE, 1) == 0.5, True,
+               "confirmation-01b: candidate 1 adds +0.5s (~1.0s total)")
+    assert_eq(fixture_launch_kick_extra_hold_s(HARDWARE_TEST_FIXTURE, 2) == 1.5, True,
+               "confirmation-01b: candidate 2 adds +1.5s (~2.0s total)")
+    assert_eq(fixture_launch_kick_extra_hold_s(0, 2) == 0, True,
+               "confirmation-01b: extra hold never applies to production hardware")
+    assert_eq('(> elapsed (fixture_launch_kick_extra_hold_s))' in lisp_source, True,
+               "confirmation-01b: the safe-start success condition requires the extra hold to elapse")
+    assert_eq('(+ SAFE_START_TIMEOUT SAFE_START_TIMEOUT_GRACE (fixture_launch_kick_extra_hold_s))' in lisp_source, True,
+               "confirmation-01b: the safe-start abort timeout is extended by the same amount, "
+               "so a longer hold is not aborted before it is reached")
+    assert_eq('(+ SOFT_START_DURATION (fixture_launch_kick_extra_hold_s))' in lisp_source, True,
+               "confirmation-01b: the non-safe-start timer path is extended by the same amount")
+    assert_eq('id: fixture_launch_kick_hold_variant' in ui_source, True,
+               "confirmation-01b: the hold-duration selector is a distinct UI control")
+    assert_eq('model: ["Baseline (~0.5s hold)", "+0.5s extra (~1.0s total)", "+1.5s extra (~2.0s total)"]' in ui_source,
+               True, "confirmation-01b: UI exposes a 3-way selector matching the lisp variants")
+    assert_eq('da.setUint8(35, fixture_launch_kick_hold_variant.currentIndex)' in ui_source, True,
+               "confirmation-01b: the selector persists through the normal settings-write path")
 
     # Item 3: foc_sl_erpm_start / foc_sl_erpm candidates (motor config, QML only).
     for setting in (
@@ -1212,11 +1262,11 @@ def test_fixture_bench_diagnostics():
     assert_eq('da.setUint8(34, fixture_control_mode.currentIndex)' in ui_source, True,
                "confirmation-05: the selector persists through the normal settings-write path")
 
-    # All 5 confirmation controls must be gated to the test fixture model only,
+    # All confirmation controls must be gated to the test fixture model only,
     # and not touch the production Blacktip/CudaX reset profiles.
     diagnostics_panel = ui_source[ui_source.index('Test fixture bench diagnostics'):
                                    ui_source.index('id: rebootDialog')]
-    assert_eq(diagnostics_panel.count('visible: isTestFixture(hardware_configuration.currentIndex)') >= 10, True,
+    assert_eq(diagnostics_panel.count('visible: isTestFixture(hardware_configuration.currentIndex)') >= 12, True,
                "bench diagnostics: every diagnostic control is gated to the test fixture model")
 
     blacktip_profile_body = ui_source[ui_source.index('function apply_defaults_blacktip()'):
@@ -1428,14 +1478,16 @@ def test_click_and_beep_regressions():
               "README rendering: unsupported check-mark glyphs are absent")
 
     ui_source = (Path(__file__).resolve().parents[1] / 'ui.qml').read_text()
-    assert_eq(ui_source.count('new ArrayBuffer(35)'), 4,
-               "QML settings: write and all reset buffers are 35 bytes")
+    assert_eq(ui_source.count('new ArrayBuffer(36)'), 4,
+               "QML settings: write and all reset buffers are 36 bytes")
     assert_eq(ui_source.count('setUint8(32, 0)'), 3,
                "QML defaults: all profiles disable five-click shutdown")
     assert_eq(ui_source.count('setUint8(33, 0)'), 3,
                "QML defaults: all profiles reset the fixture launch-kick diagnostic to baseline")
     assert_eq(ui_source.count('setUint8(34, 0)'), 3,
                "QML defaults: all profiles reset the fixture control-mode diagnostic to baseline")
+    assert_eq(ui_source.count('setUint8(35, 0)'), 3,
+               "QML defaults: all profiles reset the fixture launch-kick hold diagnostic to baseline")
     payload_guard = 'if (dv.byteLength < 31)'
     first_settings_read = 'hardware_configuration.currentIndex =  dv.getUint8(19)'
     assert_eq(payload_guard in ui_source and
@@ -1447,6 +1499,8 @@ def test_click_and_beep_regressions():
               "QML settings: missing slot 33 safely defaults the fixture diagnostic to baseline")
     assert_eq('fixture_control_mode.currentIndex = dv.byteLength > 34 ? dv.getUint8(34) : 0' in ui_source, True,
               "QML settings: missing slot 34 safely defaults the fixture control mode to baseline")
+    assert_eq('fixture_launch_kick_hold_variant.currentIndex = dv.byteLength > 35 ? dv.getUint8(35) : 0' in ui_source, True,
+              "QML settings: missing slot 35 safely defaults the fixture launch-kick hold to baseline")
     assert_eq('params.hw === "60_MK5"' in ui_source, True,
               "QML shutdown capability: VESC Tool MK5 hardware name is recognized")
     assert_eq('enabled: fiveClickShutdownHardwareSupported && fiveClickShutdownFirmwareSupported' in ui_source,
