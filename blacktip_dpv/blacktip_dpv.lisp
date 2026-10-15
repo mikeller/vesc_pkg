@@ -80,39 +80,6 @@
 ; Motor control constants
 (define MAX_ERPM_BLACKTIP 4100)
 (define MAX_ERPM_CUDAX 7100)
-; The fixture's controller protection limits are configured separately in QML.
-; Its gimbal motor was validated only at duty magnitudes 0.30 through 0.65.
-; Selector 0 is strong reverse, selector 1 is untangle reverse, and selectors
-; 2-9 are the eight forward speeds. Do not derive these commands from the
-; controller ERPM limits or use this table for production hardware.
-(define TEST_FIXTURE_MIN_DUTY 0.30)
-(define TEST_FIXTURE_MAX_DUTY 0.65)
-(define TEST_FIXTURE_DUTY (list -0.35 -0.30 0.30 0.35 0.40 0.45 0.50 0.55 0.60 0.65))
-; Bench diagnostic only (confirmation-05/06, see fixture_control_mode below).
-; An earlier version of this table used MAX_ERPM_TEST_FIXTURE=20000 (a
-; straight percentage scale against the full speed_set table), which put the
-; top few gears in the ~14000-20000 eRPM range. Bench testing of set-rpm
-; confirmed gear 6 (14000 eRPM) ran for only ~40s before desyncing and gear
-; 7/8 were worse -- the same voltage-headroom ceiling already documented for
-; this motor/ballast (back-EMF + I*R exceeds available bus voltage at this
-; eRPM), now reproduced under closed-loop RPM control rather than chased
-; further. Rather than keep tuning against a hard physical limit, the whole
-; usable gear range is rescaled into the band gears 1-5 already demonstrated
-; solid (~6000-12400 eRPM, ~1.4% sample sigma), the same philosophy already
-; applied to TEST_FIXTURE_DUTY above: a short, hand-picked, monotonic table
-; within a validated range, not a formula extending into the failure zone.
-; The top entry (12300) stays strictly below the ~12400 eRPM ceiling where
-; gear 5 was last fully solid, leaving a small margin rather than hugging it
-; exactly, since gear 6 (marginal, not solid) was only 1600 eRPM higher and
-; still failed. Untangle matches the lowest forward gear's magnitude and
-; reverse is one gear-step stronger, mirroring TEST_FIXTURE_DUTY's own
-; untangle/reverse relationship (same selector indexing as that table).
-; Field weakening (confirmation-04) can still extend duty-mode's TEST_FIXTURE_DUTY
-; range toward the ceiling if that is deliberately exercised; this rescaled
-; set-rpm table no longer reaches it during normal gear selection.
-(define TEST_FIXTURE_RPM_MIN_ERPM 6000)
-(define TEST_FIXTURE_RPM_MAX_ERPM 12300)
-(define TEST_FIXTURE_RPM (list -6900 -6000 6000 6900 7800 8700 9600 10500 11400 12300))
 (define MAX_CURRENT_BLACKTIP 22.8)
 (define MAX_CURRENT_CUDAX 46)
 (define MIN_CURRENT_BLACKTIP 1.7)
@@ -120,6 +87,21 @@
 
 ; RPM scaling
 (define RPM_PERCENT_DENOMINATOR 100)
+
+; TEST FIXTURE ONLY (not read by production BlackTip/CudaX), grouped
+; separately from production constants above to reduce future rebase
+; collisions. Duty validated at 0.30-0.65; set-rpm rescaled to ~6000-12300
+; eRPM after gear 6+ desynced at the documented voltage-headroom ceiling
+; (gears 1-5 demonstrated solid there, ~1.4% sample sigma). Selector 0 =
+; strong reverse, 1 = untangle, 2-9 = the 8 forward speeds; see
+; test_fixture_scale_at below for how values are derived from the 4 bounds
+; here (both ranges are exactly linear across gears, so no table is needed;
+; see tests/run_tests.py for proof this reproduces the old tables exactly).
+(define TEST_FIXTURE_FORWARD_GEAR_COUNT 8)
+(define TEST_FIXTURE_MIN_DUTY 0.30)
+(define TEST_FIXTURE_MAX_DUTY 0.65)
+(define TEST_FIXTURE_RPM_MIN_ERPM 6000)
+(define TEST_FIXTURE_RPM_MAX_ERPM 12300)
 
 ; Safe start parameters. These are package timing and duty settings, independent
 ; of VESC's cc_startup_boost_duty and m_fault_stop_time_ms motor parameters.
@@ -285,24 +267,12 @@
 (define battery_imbalance_threshold_centi 0)
 (define adc_balance_wire_multiplier_x10 ADC_BAL_MULT_X10_DEFAULT)
 (define enable_five_click_shutdown 0)
-; Test-fixture-only bench diagnostic: 0 = baseline (SAFE_START_DUTY unchanged),
-; 1 = candidate A (0.30 duty launch kick), 2 = candidate B (0.40 duty launch
-; kick). See soft_start_kick_duty. Always 0 outside HARDWARE_TEST_FIXTURE.
-(define fixture_launch_kick_variant 0)
-; Test-fixture-only bench diagnostic (confirmation-05): 0 = baseline (the
-; validated set-duty steady-state path, default), 1 = test variant (set-rpm,
-; matching the production DPV's control scheme). See set_motor_speed. Always
-; 0 outside HARDWARE_TEST_FIXTURE; production always uses set-rpm regardless.
-(define fixture_control_mode 0)
-; Test-fixture-only bench diagnostic (confirmation-01b): 0 = baseline (no
-; change, ~0.5s hold as today), 1 = +0.5s extra hold (~1.0s total), 2 = +1.5s
-; extra hold (~2.0s total), before the launch kick is allowed to hand off to
-; steady-state control. Independent of fixture_launch_kick_variant (duty) so
-; the two can be combined; pairs most directly with confirmation-05
-; (set-rpm), to let the sensorless observer settle longer on a known-stable
-; duty before the speed-PID has to regulate against its estimate. See
-; fixture_launch_kick_extra_hold_s. Always 0 outside HARDWARE_TEST_FIXTURE.
-(define fixture_launch_kick_hold_variant 0)
+
+; --- EEPROM-backed, TEST FIXTURE ONLY (slots 33-35, grouped) ---
+; All default 0/baseline; always 0 outside HARDWARE_TEST_FIXTURE.
+(define fixture_launch_kick_variant 0) ; 0=baseline 1=0.30 duty 2=0.40 duty, see soft_start_kick_duty
+(define fixture_control_mode 0)        ; 0=set-duty (validated) 1=set-rpm (test), see set_motor_speed
+(define fixture_launch_kick_hold_variant 0) ; 0=~0.5s 1=+0.5s 2=+1.5s extra hold, see fixture_launch_kick_extra_hold_s
 
 ; --- Runtime state machine / motor / display vars ---
 (define sw_state 0)
@@ -793,6 +763,7 @@
     (setvar 'battery_imbalance_threshold_centi (eeprom-read-i 30))
     (setvar 'adc_balance_wire_multiplier_x10 (eeprom-read-i 31))
     (setvar 'enable_five_click_shutdown (or (eeprom-read-i 32) 0))
+    ; TEST FIXTURE ONLY (slots 33-35), appended together as a block.
     (setvar 'fixture_launch_kick_variant (or (eeprom-read-i 33) 0))
     (setvar 'fixture_control_mode (or (eeprom-read-i 34) 0))
     (setvar 'fixture_launch_kick_hold_variant (or (eeprom-read-i 35) 0))
@@ -837,6 +808,10 @@
     ))
 })
 
+; TEST FIXTURE ONLY: a separate, appended debug_log_format call rather than
+; splicing these lines into log_settings_2's own str-merge below, so a future
+; upstream change to that shared production settings dump is less likely to
+; textually collide with fixture-only additions here.
 (defun log_settings_2 ()
 {
     (debug_log_format (str-merge "- enable_smart_cruise_auto_engage: " (to-str (to-i enable_smart_cruise_auto_engage))
@@ -846,7 +821,11 @@
         "\n- battery_imbalance_threshold_centi: " (to-str (to-i battery_imbalance_threshold_centi))
         "\n- adc_balance_wire_multiplier_x10: " (to-str (to-i adc_balance_wire_multiplier_x10))
         "\n- enable_five_click_shutdown: " (to-str (to-i enable_five_click_shutdown))
-        "\n- fixture_launch_kick_variant: " (to-str (to-i fixture_launch_kick_variant))
+    ))
+    ; TEST FIXTURE ONLY: a separate, appended debug_log_format call rather
+    ; than splicing into the str-merge above, so a future upstream change to
+    ; that shared production dump is less likely to collide with this.
+    (debug_log_format (str-merge "- fixture_launch_kick_variant: " (to-str (to-i fixture_launch_kick_variant))
         "\n- fixture_control_mode: " (to-str (to-i fixture_control_mode))
         "\n- fixture_launch_kick_hold_variant: " (to-str (to-i fixture_launch_kick_hold_variant))
     ))
@@ -1096,27 +1075,32 @@
     })
 })
 
-(defun test_fixture_duty_at (speed_index divisor)
+; Shared selector scaling for the test fixture: reverse = floor+1 step,
+; untangle = floor, forward gears evenly spaced floor..ceiling. Smart
+; Cruise's slowdown is clamped back into [floor,ceiling] afterwards.
+(defun test_fixture_scale_at (speed_index divisor floor_val ceiling_val)
 {
-    (var max_index (- (length TEST_FIXTURE_DUTY) 1))
+    (var max_index (+ SPEED_UNTANGLE TEST_FIXTURE_FORWARD_GEAR_COUNT))
     (var clamped (clamp speed_index SPEED_REVERSE_2 max_index))
-    (var target (ix TEST_FIXTURE_DUTY clamped))
-    ; Smart Cruise's warning slowdown is bounded to the validated duty range.
-    ; This preserves direction and avoids commanding an unvalidated duty below
-    ; 0.30 at the lowest selectable forward speed.
+    (var step (/ (- ceiling_val floor_val) (- TEST_FIXTURE_FORWARD_GEAR_COUNT 1)))
+    (var target
+        (cond
+            ((= clamped SPEED_REVERSE_2) (- 0 (+ floor_val step)))
+            ((= clamped SPEED_UNTANGLE) (- 0 floor_val))
+            (t (+ floor_val (* step (- clamped (+ SPEED_UNTANGLE 1)))))
+        ))
     (var scaled (* (/ target divisor) RPM_PERCENT_DENOMINATOR))
     (if (< target 0)
-        (- 0 (clamp (abs scaled) TEST_FIXTURE_MIN_DUTY TEST_FIXTURE_MAX_DUTY))
-        (clamp scaled TEST_FIXTURE_MIN_DUTY TEST_FIXTURE_MAX_DUTY))
+        (- 0 (clamp (abs scaled) floor_val ceiling_val))
+        (clamp scaled floor_val ceiling_val))
 })
 
-; Bench diagnostic for the test fixture only (confirmation-01). Logs the live
-; FOC current/voltage offsets (conf-dc-cal with no arguments only reads the
-; offsets in use; it does not run calibration or disturb the motor) so a
-; human can compare them across failed vs successful standstill starts
-; without a separate manual `info` terminal step. No-op outside the fixture
-; and when Debug Logging is off, so production hardware never calls
-; conf-dc-cal.
+(defun test_fixture_duty_at (speed_index divisor)
+    (test_fixture_scale_at speed_index divisor TEST_FIXTURE_MIN_DUTY TEST_FIXTURE_MAX_DUTY))
+
+; Fixture-only: logs live FOC offsets (conf-dc-cal with no args is read-only,
+; no calibration/disturbance) so starts can be compared via debug log instead
+; of a manual `info` terminal step. No-op off-fixture or with debug off.
 (defun test_fixture_log_offsets (label)
 {
     (if (and (= hardware_configuration HARDWARE_TEST_FIXTURE)
@@ -1135,15 +1119,9 @@
     })
 })
 
-; Bench diagnostic for the test fixture only (confirmation-02). The shared
-; SAFE_START_DUTY (0.06) is tuned for the production BlackTip/CudaX motors
-; and is below the fixture's own documented validated duty floor (see
-; TEST_FIXTURE_MIN_DUTY above). fixture_launch_kick_variant lets a human
-; compare that baseline against two candidate launch-kick duties without
-; reflashing between trials. Selecting a candidate only ever affects
-; HARDWARE_TEST_FIXTURE; production hardware always uses SAFE_START_DUTY.
-; Pairs with fixture_launch_kick_extra_hold_s (confirmation-01b) below, which
-; independently controls how long the kick is held before handoff.
+; Fixture-only: SAFE_START_DUTY (0.06) is below the fixture's validated duty
+; floor (TEST_FIXTURE_MIN_DUTY); lets a human compare launch-kick duties.
+; Pairs with fixture_launch_kick_extra_hold_s below (hold duration).
 (defun soft_start_kick_duty ()
 {
     (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
@@ -1155,12 +1133,8 @@
     )
 })
 
-; Bench diagnostic for the test fixture only (confirmation-01b). Returns
-; EXTRA hold time in seconds, added on top of the existing SAFE_START_TIMEOUT
-; / SOFT_START_DURATION, before the launch kick may hand off to steady-state
-; control. Baseline (0) is a no-op: the existing timeout/duration arithmetic
-; is unchanged and this file's prior soft-start behaviour is identical.
-; Always 0 outside HARDWARE_TEST_FIXTURE.
+; Fixture-only: EXTRA hold seconds added on top of SAFE_START_TIMEOUT /
+; SOFT_START_DURATION before handoff. Baseline (0) is a no-op.
 (defun fixture_launch_kick_extra_hold_s ()
 {
     (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
@@ -1172,31 +1146,11 @@
     )
 })
 
-; Bench-only rescaled RPM table for the test fixture (see TEST_FIXTURE_RPM
-; above for the full rationale). Structurally identical to
-; test_fixture_duty_at: a short hand-picked table clamped into a validated
-; range, not a formula extending toward the failure zone.
 (defun test_fixture_rpm_at (speed_index divisor)
-{
-    (var max_index (- (length TEST_FIXTURE_RPM) 1))
-    (var clamped (clamp speed_index SPEED_REVERSE_2 max_index))
-    (var target (ix TEST_FIXTURE_RPM clamped))
-    ; Smart Cruise's warning slowdown is bounded to the validated eRPM range,
-    ; same rationale as test_fixture_duty_at.
-    (var scaled (* (/ target divisor) RPM_PERCENT_DENOMINATOR))
-    (if (< target 0)
-        (- 0 (clamp (abs scaled) TEST_FIXTURE_RPM_MIN_ERPM TEST_FIXTURE_RPM_MAX_ERPM))
-        (clamp scaled TEST_FIXTURE_RPM_MIN_ERPM TEST_FIXTURE_RPM_MAX_ERPM))
-})
+    (test_fixture_scale_at speed_index divisor TEST_FIXTURE_RPM_MIN_ERPM TEST_FIXTURE_RPM_MAX_ERPM))
 
-; calculate_rpm is the shared gear-to-ERPM mapping for production hardware.
-; The test fixture's set-rpm diagnostic variant (fixture_control_mode,
-; confirmation-05) is checked first and delegates entirely to
-; test_fixture_rpm_at's dedicated table, since the fixture reports
-; scooter_type SCOOTER_BLACKTIP and would otherwise take the production
-; Blacktip branch (wrong physical scale, and previously the wrong eRPM range
-; for this motor -- see TEST_FIXTURE_RPM above). Production behaviour below
-; is unchanged.
+; Fixture checked first and delegated to test_fixture_rpm_at: it reports
+; scooter_type SCOOTER_BLACKTIP and would otherwise take the wrong branch.
 (defun calculate_rpm (speed_index divisor)
 {
     (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
@@ -1216,18 +1170,10 @@
     )
 })
 
-; Keep the fixture's steady-state command behind the same state-machine and
-; safe-start gates as production hardware. The controller's configured
-; current, ERPM and fault limits remain in force either way.
-;
-; fixture_control_mode (confirmation-05) is a bench diagnostic: baseline (0)
-; is the set-duty path validated by prior bench sessions; the test variant
-; (1) switches to set-rpm, matching the production DPV's control scheme
-; exactly (same calculate_rpm call), to let a human compare them without
-; reflashing. This is a genuine re-introduction of RPM control for the
-; fixture, which an earlier, reverted fixture implementation also tried and
-; abandoned (see git history and tests/run_tests.py) -- it is deliberately
-; opt-in and defaults to the validated duty path, not a silent reversion.
+; Fixture-only: fixture_control_mode 0=set-duty (validated, default),
+; 1=set-rpm (test variant, same calculate_rpm call as production). An
+; earlier fixture implementation tried and abandoned RPM control; this is a
+; deliberate, opt-in re-introduction, not a silent reversion.
 (defun set_motor_speed (speed_index divisor)
 {
     (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
@@ -1792,10 +1738,7 @@
                             (safe_start_abort_with_reason "invalid telemetry")
                         )
 
-                        ; Check safe-start completion. The extra-hold term is 0
-                        ; (no-op) outside the fixture's confirmation-01b
-                        ; bench diagnostic: elapsed is always > 0 by the time
-                        ; this runs, so baseline behaviour is unchanged.
+                        ; extra-hold term is 0/no-op outside the fixture
                         (if (and (safe_start_met_success_criteria rpm duty current)
                                  (> elapsed (fixture_launch_kick_extra_hold_s)))
                             {
@@ -1808,10 +1751,7 @@
                                 (soft_start_set_active 0)
                                 (setvar 'last_speed speed)
                             } {
-                                ; Check timeout. Extended by the same extra-hold
-                                ; term so a longer confirmation-01b hold is not
-                                ; aborted before it is ever reached; 0 outside
-                                ; the fixture, so this ceiling is unchanged.
+                                ; Check timeout
                                 (if (> elapsed (+ SAFE_START_TIMEOUT SAFE_START_TIMEOUT_GRACE (fixture_launch_kick_extra_hold_s)))
                                     (safe_start_abort_with_reason "timeout")
                                 )
@@ -1827,9 +1767,7 @@
                                 )
                             })
                     } {
-                        ; For safe-start disabled: just wait for timer, extended
-                        ; by the fixture's confirmation-01b extra-hold term (0,
-                        ; a no-op, outside the fixture).
+                        ; For safe-start disabled: wait for timer + extra-hold (0 off-fixture)
                         (if (> soft_elapsed (+ SOFT_START_DURATION (fixture_launch_kick_extra_hold_s)))
                             {
                                 (debug_log "Motor: Soft start completed (timer)")
@@ -2421,25 +2359,16 @@
         (eeprom_store_i_if_changed 32 0)
     })
 
-    ; Migration for the test-fixture bench launch-kick diagnostic. This is a
-    ; bench-only comparison aid and must stay at baseline (0) on every existing
-    ; install, including production BlackTip/CudaX hardware.
+    ; Test-fixture bench diagnostics: bench-only, always baseline (0) on
+    ; every existing install, including production BlackTip/CudaX.
     (if (< stored_version 4) {
         (puts "EEPROM: Initializing defaults for fixture launch-kick diagnostic")
         (eeprom_store_i_if_changed 33 0)
     })
-
-    ; Migration for the test-fixture bench steady-state control-mode
-    ; diagnostic. Also a bench-only comparison aid; must default to the
-    ; validated set-duty path (0) on every existing install.
     (if (< stored_version 5) {
         (puts "EEPROM: Initializing defaults for fixture control-mode diagnostic")
         (eeprom_store_i_if_changed 34 0)
     })
-
-    ; Migration for the test-fixture bench launch-kick hold-duration
-    ; diagnostic. Also a bench-only comparison aid; must default to no extra
-    ; hold (0) on every existing install.
     (if (< stored_version 6) {
         (puts "EEPROM: Initializing defaults for fixture launch-kick hold diagnostic")
         (eeprom_store_i_if_changed 35 0)

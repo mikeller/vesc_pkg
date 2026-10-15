@@ -46,14 +46,21 @@ def assert_near(actual, expected, tolerance, test_name):
 SPEED_REVERSE_THRESHOLD = 5
 HARDWARE_TEST_FIXTURE = 5
 EEPROM_SETTINGS_COUNT = 36
+SPEED_REVERSE_2 = 0
+SPEED_UNTANGLE = 1
+TEST_FIXTURE_FORWARD_GEAR_COUNT = 8
 TEST_FIXTURE_MIN_DUTY = 0.30
 TEST_FIXTURE_MAX_DUTY = 0.65
-TEST_FIXTURE_DUTY = [-0.35, -0.30, 0.30, 0.35, 0.40,
-                     0.45, 0.50, 0.55, 0.60, 0.65]
 TEST_FIXTURE_RPM_MIN_ERPM = 6000
 TEST_FIXTURE_RPM_MAX_ERPM = 12300
-TEST_FIXTURE_RPM = [-6900, -6000, 6000, 6900, 7800,
-                    8700, 9600, 10500, 11400, 12300]
+# Reference tables matching the old, now-retired flat lists exactly, kept
+# here only so the formula-based mirror below can be checked against them
+# (both ranges turned out to already be exactly linear across all 8 forward
+# gears -- see blacktip_dpv.lisp's TEST FIXTURE ONLY constants section).
+_TEST_FIXTURE_DUTY_REFERENCE = [-0.35, -0.30, 0.30, 0.35, 0.40,
+                                0.45, 0.50, 0.55, 0.60, 0.65]
+_TEST_FIXTURE_RPM_REFERENCE = [-6900, -6000, 6000, 6900, 7800,
+                               8700, 9600, 10500, 11400, 12300]
 DISPLAY_LUT_PATH = Path(__file__).resolve().parents[1] / 'assets' / 'display_lut.csv'
 DISPLAY_LUT_HEADERS = ['index', 'name', 'rotation'] + [f'b{i}' for i in range(16)]
 TIMER_BAR_MASKS = [0x00, 0x40, 0x60, 0x70, 0x78, 0x7C, 0x7E, 0x7F, 0xFF]
@@ -112,21 +119,33 @@ def calculate_rpm(speed_index, divisor, max_erpm=50000):
         return base_rpm
 
 
-def calculate_fixture_duty(speed_index, divisor=100):
-    """Mirror test_fixture_duty_at, including Smart Cruise's safety bound."""
-    target = TEST_FIXTURE_DUTY[clamp(speed_index, 0, len(TEST_FIXTURE_DUTY) - 1)]
+def calculate_fixture_scale(speed_index, divisor, floor_val, ceiling_val):
+    """Mirror test_fixture_scale_at: reverse is floor_val plus one gear-step,
+    untangle is floor_val, and the forward gears are evenly spaced between
+    floor_val and ceiling_val, bounded back into range for Smart Cruise's
+    slowdown divisor."""
+    max_index = SPEED_UNTANGLE + TEST_FIXTURE_FORWARD_GEAR_COUNT
+    clamped = clamp(speed_index, SPEED_REVERSE_2, max_index)
+    step = (ceiling_val - floor_val) / (TEST_FIXTURE_FORWARD_GEAR_COUNT - 1)
+    if clamped == SPEED_REVERSE_2:
+        target = -(floor_val + step)
+    elif clamped == SPEED_UNTANGLE:
+        target = -floor_val
+    else:
+        target = floor_val + step * (clamped - (SPEED_UNTANGLE + 1))
     scaled = target * 100 / divisor
-    magnitude = clamp(abs(scaled), TEST_FIXTURE_MIN_DUTY, TEST_FIXTURE_MAX_DUTY)
+    magnitude = clamp(abs(scaled), floor_val, ceiling_val)
     return -magnitude if target < 0 else magnitude
+
+
+def calculate_fixture_duty(speed_index, divisor=100):
+    """Mirror test_fixture_duty_at."""
+    return calculate_fixture_scale(speed_index, divisor, TEST_FIXTURE_MIN_DUTY, TEST_FIXTURE_MAX_DUTY)
 
 
 def calculate_fixture_rpm(speed_index, divisor=100):
-    """Mirror test_fixture_rpm_at, structurally identical to
-    calculate_fixture_duty but for the rescaled eRPM table."""
-    target = TEST_FIXTURE_RPM[clamp(speed_index, 0, len(TEST_FIXTURE_RPM) - 1)]
-    scaled = target * 100 / divisor
-    magnitude = clamp(abs(scaled), TEST_FIXTURE_RPM_MIN_ERPM, TEST_FIXTURE_RPM_MAX_ERPM)
-    return -magnitude if target < 0 else magnitude
+    """Mirror test_fixture_rpm_at."""
+    return calculate_fixture_scale(speed_index, divisor, TEST_FIXTURE_RPM_MIN_ERPM, TEST_FIXTURE_RPM_MAX_ERPM)
 
 
 def physical_display_matrix(frame_bytes):
@@ -1032,8 +1051,8 @@ def test_test_fixture_model_configuration():
                "test fixture: runtime defines the validated duty minimum")
     assert_eq('(define TEST_FIXTURE_MAX_DUTY 0.65)' in lisp_source, True,
                "test fixture: runtime defines the validated duty maximum")
-    assert_eq('(define TEST_FIXTURE_DUTY (list -0.35 -0.30 0.30 0.35 0.40 0.45 0.50 0.55 0.60 0.65))' in lisp_source, True,
-               "test fixture: runtime contains the signed selector duty table")
+    assert_eq('(defun test_fixture_scale_at (speed_index divisor floor_val ceiling_val)' in lisp_source, True,
+               "test fixture: runtime computes selector values from floor/ceiling, not a flat table")
     # This guard previously asserted the fixture NEVER used ERPM at all,
     # because an earlier, separate fixture implementation invented its own
     # bespoke ERPM table and was reverted after bench testing found it
@@ -1046,9 +1065,10 @@ def test_test_fixture_model_configuration():
     assert_eq('(define fixture_control_mode 0)' in lisp_source, True,
                "test fixture: steady-state control-mode diagnostic defaults to the validated set-duty path")
     fixture_speeds = [calculate_fixture_duty(speed_index)
-                      for speed_index in range(2, len(TEST_FIXTURE_DUTY))]
-    assert_eq(fixture_speeds, TEST_FIXTURE_DUTY[2:],
-               "test fixture: every forward selector uses the duty table")
+                      for speed_index in range(2, len(_TEST_FIXTURE_DUTY_REFERENCE))]
+    expected_duty_speeds = _TEST_FIXTURE_DUTY_REFERENCE[2:]
+    assert_eq(all(abs(a - b) < 1e-9 for a, b in zip(fixture_speeds, expected_duty_speeds)), True,
+               "test fixture: every forward selector reproduces the previous flat duty table (within float epsilon)")
     assert_eq(fixture_speeds[0], TEST_FIXTURE_MIN_DUTY,
                "test fixture: first forward selector commands the validated minimum")
     assert_eq(fixture_speeds[-1], TEST_FIXTURE_MAX_DUTY,
@@ -1198,46 +1218,33 @@ def test_fixture_bench_diagnostics():
     assert_eq('da.setUint8(35, fixture_launch_kick_hold_variant.currentIndex)' in ui_source, True,
                "confirmation-01b: the selector persists through the normal settings-write path")
 
-    # Item 3: foc_sl_erpm_start / foc_sl_erpm candidates (motor config, QML only).
-    for setting in (
-            'mMcConf.updateParamDouble("foc_sl_erpm_start", 1200, null)',
-            'mMcConf.updateParamDouble("foc_sl_erpm", 2000, null)',
-            'mMcConf.updateParamDouble("foc_sl_erpm_start", 4000, null)',
-            'mMcConf.updateParamDouble("foc_sl_erpm", 5500, null)',
-            'mMcConf.updateParamDouble("foc_sl_erpm_start", 2500, null)',
-            'mMcConf.updateParamDouble("foc_sl_erpm", 3500, null)',
+    # Items 2 (sl-erpm) and 3 (field weakening) were removed after bench
+    # confirmation: sl-erpm showed no effect once the duty/hold combination
+    # below was in place, and field weakening's old ceiling is no longer
+    # reachable now the set-rpm range is rescaled (confirmation-06). Guard
+    # against the dedicated package buttons quietly reappearing; the
+    # underlying foc_sl_erpm_start/foc_sl_erpm/foc_fw_* fields remain fully
+    # available via VESC Tool's own Motor Settings (see README), just not as
+    # one-click package shortcuts any more.
+    for removed_function in (
+            'function apply_test_fixture_sl_erpm_candidate_a()',
+            'function apply_test_fixture_sl_erpm_candidate_b()',
+            'function restore_test_fixture_sl_erpm_baseline()',
+            'function apply_test_fixture_field_weakening_candidate()',
+            'function restore_test_fixture_field_weakening_baseline()',
     ):
-        assert_eq(setting in ui_source, True,
-                   f"confirmation-03: sl-erpm candidate/baseline profile contains {setting}")
-    assert_eq('function apply_test_fixture_sl_erpm_candidate_a()' in ui_source, True,
-               "confirmation-03: candidate A (earlier handoff) is a distinct, separately applicable profile")
-    assert_eq('function apply_test_fixture_sl_erpm_candidate_b()' in ui_source, True,
-               "confirmation-03: candidate B (later handoff) is a distinct, separately applicable profile")
-    assert_eq('function restore_test_fixture_sl_erpm_baseline()' in ui_source, True,
-               "confirmation-03: the baseline can be restored without a full Reset Defaults cycle")
+        assert_eq(removed_function in ui_source, False,
+                   f"removed diagnostics: {removed_function} stays removed, not shipped-but-unused")
+    # Neither field was ever set directly by apply_test_fixture_profile() --
+    # only by the now-removed candidate functions above. Reset Defaults still
+    # leaves both at the firmware's own defaults (foc_sl_erpm_start 2500,
+    # foc_sl_erpm 3500, foc_fw_current_max 0), inherited from
+    # mCommands.getMcconfDefault(), which happen to equal the documented
+    # baseline values; nothing in the fixture profile needs to change.
+    assert_eq('foc_sl_erpm_start' not in ui_source and 'foc_fw_current_max' not in ui_source, True,
+               "removed diagnostics: no lingering references to the removed candidates' motor-config fields")
 
-    # Item 4: field weakening candidate for the gear 6+ voltage ceiling.
-    for setting in (
-            'mMcConf.updateParamDouble("foc_fw_current_max", 0.4, null)',
-            'mMcConf.updateParamDouble("foc_fw_duty_start", 0.7, null)',
-            'mMcConf.updateParamDouble("foc_fw_ramp_time", 0.5, null)',
-            'mMcConf.updateParamDouble("foc_fw_current_max", 0, null)',
-            'mMcConf.updateParamDouble("foc_fw_duty_start", 0.8, null)',
-            'mMcConf.updateParamDouble("foc_fw_ramp_time", 0, null)',
-    ):
-        assert_eq(setting in ui_source, True,
-                   f"confirmation-04: field-weakening candidate/baseline profile contains {setting}")
-    assert_eq('function apply_test_fixture_field_weakening_candidate()' in ui_source, True,
-               "confirmation-04: field-weakening candidate is a distinct, separately applicable profile")
-    assert_eq('function restore_test_fixture_field_weakening_baseline()' in ui_source, True,
-               "confirmation-04: field weakening can be restored to disabled without a full Reset Defaults cycle")
-    # The fixture's conservative current limit (1 A) must stay well above the
-    # candidate's field-weakening current ceiling, otherwise the candidate
-    # could never apply the current it requests.
-    assert_eq(0.4 < 1.0, True,
-               "confirmation-04: candidate field-weakening current stays within the fixture's 1 A motor current limit")
-
-    # Item 5: steady-state control mode (set-duty vs set-rpm), the most
+    # Item 3 (confirmation-05/06): steady-state control mode (set-duty vs set-rpm), the most
     # speculative of the five checks. Deliberately opt-in; defaults to the
     # validated duty path and reuses the production calculate_rpm mapping.
     assert_eq('(define fixture_control_mode 0)' in lisp_source, True,
@@ -1260,22 +1267,25 @@ def test_fixture_bench_diagnostics():
     # Item 6 (confirmation-06): rescaled set-rpm gear table. Bench testing of
     # confirmation-05 found gear 6+ desyncs at the same voltage-headroom
     # ceiling already documented under direct duty control; the whole usable
-    # range is rescaled into the gear 1-5 band already demonstrated solid,
-    # mirroring exactly how TEST_FIXTURE_DUTY was already scaled.
+    # range is rescaled into the gear 1-5 band already demonstrated solid.
+    # Both this range and the duty range turned out to be exactly linear, so
+    # both now share one formula (test_fixture_scale_at) instead of two flat
+    # tables; the assertions below confirm that formula reproduces every
+    # value the old flat tables had, exactly (not approximately).
     assert_eq('(define TEST_FIXTURE_RPM_MIN_ERPM 6000)' in lisp_source, True,
                "confirmation-06: rescaled RPM floor matches the validated gear-1 eRPM")
     assert_eq('(define TEST_FIXTURE_RPM_MAX_ERPM 12300)' in lisp_source, True,
                "confirmation-06: rescaled RPM ceiling stays below the ~12400 eRPM gear-5 ceiling")
-    assert_eq('(define TEST_FIXTURE_RPM (list -6900 -6000 6000 6900 7800 8700 9600 10500 11400 12300))' in lisp_source,
-               True, "confirmation-06: rescaled RPM table is a short, hand-picked, monotonic table like TEST_FIXTURE_DUTY")
     assert_eq('(defun test_fixture_rpm_at (speed_index divisor)' in lisp_source, True,
                "confirmation-06: rescaled RPM lookup mirrors test_fixture_duty_at structurally")
+    assert_eq('(test_fixture_scale_at speed_index divisor TEST_FIXTURE_RPM_MIN_ERPM TEST_FIXTURE_RPM_MAX_ERPM)' in lisp_source, True,
+               "confirmation-06: test_fixture_rpm_at delegates to the shared floor/ceiling formula")
     assert_eq('(test_fixture_rpm_at speed_index divisor)' in lisp_source, True,
-               "confirmation-06: calculate_rpm delegates to the rescaled table for the fixture")
+               "confirmation-06: calculate_rpm delegates to the rescaled range for the fixture")
     fixture_rpms = [calculate_fixture_rpm(speed_index)
-                    for speed_index in range(2, len(TEST_FIXTURE_RPM))]
-    assert_eq(fixture_rpms, TEST_FIXTURE_RPM[2:],
-               "confirmation-06: every forward selector uses the rescaled RPM table")
+                    for speed_index in range(2, len(_TEST_FIXTURE_RPM_REFERENCE))]
+    assert_eq(fixture_rpms, _TEST_FIXTURE_RPM_REFERENCE[2:],
+               "confirmation-06: every forward selector reproduces the previous flat RPM table exactly")
     assert_eq(fixture_rpms[0], TEST_FIXTURE_RPM_MIN_ERPM,
                "confirmation-06: first forward selector commands the rescaled minimum")
     assert_eq(fixture_rpms[-1], TEST_FIXTURE_RPM_MAX_ERPM,
@@ -1285,18 +1295,36 @@ def test_fixture_bench_diagnostics():
     assert_eq(all(lower < upper for lower, upper in zip(fixture_rpms, fixture_rpms[1:])), True,
                "confirmation-06: rescaled forward selector speeds are strictly monotonic")
     assert_eq(calculate_fixture_rpm(0), -6900,
-               "confirmation-06: strong reverse is one gear-step above untangle, mirroring TEST_FIXTURE_DUTY")
+               "confirmation-06: strong reverse is one gear-step above untangle, mirroring the duty range")
     assert_eq(calculate_fixture_rpm(1), -6000,
-               "confirmation-06: untangle matches the lowest forward gear's magnitude, mirroring TEST_FIXTURE_DUTY")
+               "confirmation-06: untangle matches the lowest forward gear's magnitude, mirroring the duty range")
     assert_eq('(define MAX_ERPM_TEST_FIXTURE 20000)' in lisp_source, False,
                "confirmation-06: the old unscaled 20000 ceiling constant is fully retired, not left dangling "
                "(a historical mention in an explanatory comment is fine and expected)")
+
+    # Part 3 (this turn): both validated ranges are exactly linear, so the
+    # single shared formula must reproduce every value of BOTH old flat
+    # tables exactly -- this is the concrete evidence that switching to a
+    # formula was lossless, not an approximation.
+    # Near-exact (not exact) comparison: both sides go through the same
+    # floating-point division/multiplication a real LispBM runtime would,
+    # which can differ from the flat table's literals by float epsilon
+    # (e.g. 0.6000000000000001 vs 0.6) -- negligible for a duty/RPM command,
+    # but not literal `==` equality.
+    duty_matches = all(abs(calculate_fixture_duty(i) - _TEST_FIXTURE_DUTY_REFERENCE[i]) < 1e-9 for i in range(10))
+    assert_eq(duty_matches, True,
+               "formula check: calculate_fixture_duty reproduces every entry of the old flat duty table (within float epsilon)")
+    rpm_matches = all(abs(calculate_fixture_rpm(i) - _TEST_FIXTURE_RPM_REFERENCE[i]) < 1e-6 for i in range(10))
+    assert_eq(rpm_matches, True,
+               "formula check: calculate_fixture_rpm reproduces every entry of the old flat RPM table (within float epsilon)")
+    assert_eq('(define TEST_FIXTURE_FORWARD_GEAR_COUNT 8)' in lisp_source, True,
+               "formula check: the shared 8-forward-gear count is a single named constant, not repeated magic numbers")
 
     # All confirmation controls must be gated to the test fixture model only,
     # and not touch the production Blacktip/CudaX reset profiles.
     diagnostics_panel = ui_source[ui_source.index('Test fixture bench diagnostics'):
                                    ui_source.index('id: rebootDialog')]
-    assert_eq(diagnostics_panel.count('visible: isTestFixture(hardware_configuration.currentIndex)') >= 12, True,
+    assert_eq(diagnostics_panel.count('visible: isTestFixture(hardware_configuration.currentIndex)') >= 8, True,
                "bench diagnostics: every diagnostic control is gated to the test fixture model")
 
     blacktip_profile_body = ui_source[ui_source.index('function apply_defaults_blacktip()'):

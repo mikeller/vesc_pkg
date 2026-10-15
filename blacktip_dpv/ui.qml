@@ -1164,63 +1164,6 @@ Item {
         console.log("Defaults Reset for Blacktip test fixture")
     }
 
-    // Test-fixture bench diagnostics (confirmation-03 / confirmation-04). These
-    // apply single motor-config parameters directly on top of whatever is
-    // currently loaded (normally the Blacktip test fixture baseline above).
-    // They are deliberately separate from apply_test_fixture_profile: a human
-    // comparing candidates on the bench needs to layer and revert one change
-    // at a time without repeating the full defaults-reset/reboot cycle.
-    // None of these are shipped defaults; see README for the bench procedure.
-    function apply_test_fixture_sl_erpm_candidate_a() {
-        // Candidate A: transition to full sensorless tracking earlier (at a
-        // lower ERPM) than the fixture baseline (2500 / 3500), to test
-        // whether a shorter open-loop phase improves standstill reliability.
-        mMcConf.updateParamDouble("foc_sl_erpm_start", 1200, null)
-        mMcConf.updateParamDouble("foc_sl_erpm", 2000, null)
-        mCommands.setMcconf(false)
-    }
-
-    function apply_test_fixture_sl_erpm_candidate_b() {
-        // Candidate B: stay in open-loop longer (higher ERPM) than the
-        // fixture baseline (2500 / 3500), to test whether giving the motor
-        // more time under open-loop control before sensorless takeover
-        // improves standstill reliability.
-        mMcConf.updateParamDouble("foc_sl_erpm_start", 4000, null)
-        mMcConf.updateParamDouble("foc_sl_erpm", 5500, null)
-        mCommands.setMcconf(false)
-    }
-
-    function restore_test_fixture_sl_erpm_baseline() {
-        // Restores the Blacktip test fixture profile's own baseline values
-        // (unchanged firmware defaults for this motor family).
-        mMcConf.updateParamDouble("foc_sl_erpm_start", 2500, null)
-        mMcConf.updateParamDouble("foc_sl_erpm", 3500, null)
-        mCommands.setMcconf(false)
-    }
-
-    function apply_test_fixture_field_weakening_candidate() {
-        // Field weakening is off by default (foc_fw_current_max 0) on both
-        // the fixture and production profiles; this was never swept in the
-        // bench tuning log. foc_fw_current_max is kept well below the
-        // fixture's already-conservative 1 A motor current limit, and
-        // foc_fw_duty_start is lowered from the firmware default (0.8) so
-        // field weakening has room to act before duty reaches the ~0.95
-        // ceiling observed when gear 6+ loses lock. foc_fw_ramp_time smooths
-        // the current injection so it does not itself disturb the observer.
-        mMcConf.updateParamDouble("foc_fw_current_max", 0.4, null)
-        mMcConf.updateParamDouble("foc_fw_duty_start", 0.7, null)
-        mMcConf.updateParamDouble("foc_fw_ramp_time", 0.5, null)
-        mCommands.setMcconf(false)
-    }
-
-    function restore_test_fixture_field_weakening_baseline() {
-        // Restores the firmware/fixture baseline: field weakening disabled.
-        mMcConf.updateParamDouble("foc_fw_current_max", 0, null)
-        mMcConf.updateParamDouble("foc_fw_duty_start", 0.8, null)
-        mMcConf.updateParamDouble("foc_fw_ramp_time", 0, null)
-        mCommands.setMcconf(false)
-    }
-
     function apply_defaults_cudax() {
         var buffer1 = new ArrayBuffer(36)
         var da1 = new DataView(buffer1)
@@ -2266,66 +2209,9 @@ Item {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
                     topPadding: 15
-                    color: "#ffffff"
-                    visible: isTestFixture(hardware_configuration.currentIndex)
-                    text: "2) Open-loop-to-sensorless handoff threshold (foc_sl_erpm_start / foc_sl_erpm), an unswept value from the bench tuning log. Apply one candidate, retry standstill starts, restore the baseline below, then try the other candidate. PASS = a candidate starts more reliably than Baseline; FAIL = no change, or worse."
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: isTestFixture(hardware_configuration.currentIndex)
-
-                    Button {
-                        Layout.fillWidth: true
-                        text: "Apply candidate A (earlier handoff)"
-                        onClicked: apply_test_fixture_sl_erpm_candidate_a()
-                    }
-                    Button {
-                        Layout.fillWidth: true
-                        text: "Apply candidate B (later handoff)"
-                        onClicked: apply_test_fixture_sl_erpm_candidate_b()
-                    }
-                }
-
-                Button {
-                    Layout.fillWidth: true
-                    visible: isTestFixture(hardware_configuration.currentIndex)
-                    text: "Restore sl-erpm baseline (2500 / 3500)"
-                    onClicked: restore_test_fixture_sl_erpm_baseline()
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    topPadding: 15
-                    color: "#ffffff"
-                    visible: isTestFixture(hardware_configuration.currentIndex)
-                    text: "3) Field weakening, as a targeted attempt at the voltage-headroom ceiling found near 14000 eRPM. Neither selector-based gear table normally reaches that zone (set-duty tops out at 0.65 duty; the rescaled set-rpm table tops out at 12300 eRPM, see item 5), so testing this item means commanding a speed/duty near or above the ceiling directly from the VESC Tool terminal (e.g. (set-rpm 14000) or similar) rather than by selecting a gear. Apply the candidate, then issue that direct command. PASS = sustained lock at a higher commanded speed than Baseline without excess current or new faults; FAIL = no change, or new instability/overcurrent. Restore the baseline afterwards regardless of outcome."
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: isTestFixture(hardware_configuration.currentIndex)
-
-                    Button {
-                        Layout.fillWidth: true
-                        text: "Apply field-weakening candidate"
-                        onClicked: apply_test_fixture_field_weakening_candidate()
-                    }
-                    Button {
-                        Layout.fillWidth: true
-                        text: "Restore field-weakening baseline (disabled)"
-                        onClicked: restore_test_fixture_field_weakening_baseline()
-                    }
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    topPadding: 15
                     color: Utility.getAppHexColor("lightText")
                     visible: isTestFixture(hardware_configuration.currentIndex)
-                    text: "4) Current-offset calibration drift: there is no control for this here. Turn on Debug Logging in General Settings, then watch the VESC Tool Lisp console (or connect a terminal) around each start attempt for lines starting 'Fixture: FOC offsets at ...', logged automatically at boot, at the launch kick, at a successful soft start, and at any soft-start abort. Compare the i0/i1/i2 values between a failed start and a successful start; a difference of a few counts or more is the signal this check is looking for. This cannot be scaffolded as a button because the result is a comparison a human has to read and judge, not a value the package can apply."
+                    text: "2) Current-offset calibration drift: there is no control for this here. Turn on Debug Logging in General Settings, then watch the VESC Tool Lisp console (or connect a terminal) around each start attempt for lines starting 'Fixture: FOC offsets at ...', logged automatically at boot, at the launch kick, at a successful soft start, and at any soft-start abort. Compare the i0/i1/i2 values between a failed start and a successful start; a difference of a few counts or more is the signal this check is looking for. This cannot be scaffolded as a button because the result is a comparison a human has to read and judge, not a value the package can apply."
                 }
 
                 Text {
@@ -2334,7 +2220,7 @@ Item {
                     topPadding: 15
                     color: "#ffffff"
                     visible: isTestFixture(hardware_configuration.currentIndex)
-                    text: "5) Steady-state control mode: set-duty (current, validated by prior bench sessions) vs set-rpm (test variant, matches the production DPV's control scheme exactly). A prior, separate fixture implementation tried RPM control for steady-state and was reverted after it proved unreliable at the standstill-to-running transition; item 1b (launch-kick hold duration) combined with a good launch-kick duty has since been bench-confirmed to fix that transition for this variant, across gears 1-5 for over a minute of sustained running. The open item now is gear 6 and above: bench testing found steady-state desync there too (gear 6 ran only ~40s before failing), matching the same voltage-headroom ceiling already documented for this motor/ballast under direct duty control, not a new RPM-PID-specific problem. Because of that, the set-rpm gear table (TEST_FIXTURE_RPM) is rescaled so the whole range stays within the gear 1-5 band already demonstrated solid (~6000-12300 eRPM) -- the same ceiling is still there, it is just no longer reachable through normal gear selection; field weakening (item 3) is the separate, optional lever for probing past it, via duty mode. Try at least 10 standstill starts, then run through all gear changes, with set-rpm active, comparing against set-duty. PASS = starts and gear changes are as clean and reliable as set-duty, with no RPM collapse/jerk while running, across the full rescaled range. FAIL = starts become unreliable again, or running becomes jerky/unstable anywhere in the rescaled range. Restore the baseline afterwards regardless of outcome; set-duty remains the only fully production-equivalent path."
+                    text: "3) Steady-state control mode: set-duty (current, validated by prior bench sessions) vs set-rpm (test variant, matches the production DPV's control scheme exactly). A prior, separate fixture implementation tried RPM control for steady-state and was reverted after it proved unreliable at the standstill-to-running transition; item 1b (launch-kick hold duration) combined with a good launch-kick duty has since been bench-confirmed to fix that transition for this variant, including clean starts and transitions across the full rescaled gear range. The set-rpm gear table is rescaled (see README) to stay within the band already demonstrated solid, after gear 6+ on the old unscaled range was found to desync at the same voltage-headroom ceiling already documented for this motor/ballast under direct duty control -- that ceiling is still there, it is simply no longer reachable through normal gear selection. Probing past it deliberately (e.g. field weakening) now requires direct VESC Tool terminal commands rather than package UI; see README. Try at least 10 standstill starts, then run through all gear changes, with set-rpm active, comparing against set-duty. PASS = starts and gear changes are as clean and reliable as set-duty, with no RPM collapse/jerk while running, across the full rescaled range. FAIL = starts become unreliable again, or running becomes jerky/unstable anywhere in the rescaled range. Restore the baseline afterwards regardless of outcome; set-duty remains the only fully production-equivalent path."
                 }
 
                 ComboBox {
