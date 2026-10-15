@@ -1089,8 +1089,10 @@ Item {
         // selects fixture speeds from its fixed TEST_FIXTURE_DUTY table
         // (duty, not ERPM); the bench-only set-rpm diagnostic variant (see
         // the test fixture diagnostics panel below) reuses calculate_rpm
-        // with MAX_ERPM_TEST_FIXTURE (20000), which stays comfortably inside
-        // this controller-level protection limit either way.
+        // with the rescaled TEST_FIXTURE_RPM table (max 12300 eRPM, kept
+        // within the gear 1-5 band already demonstrated solid, after gear 6+
+        // was confirmed to desync), which stays comfortably inside this
+        // controller-level protection limit either way.
         mMcConf.updateParamDouble("l_min_erpm", -28000, null)
         mMcConf.updateParamDouble("l_max_erpm", 28000, null)
         mMcConf.updateParamDouble("l_erpm_abs_overspeed", 29268.3, null)
@@ -2298,7 +2300,7 @@ Item {
                     topPadding: 15
                     color: "#ffffff"
                     visible: isTestFixture(hardware_configuration.currentIndex)
-                    text: "3) Field weakening, as a targeted attempt at the gear 6+ voltage-headroom ceiling. Apply the candidate, then try gear 6 and above. PASS = sustained lock at a higher gear than Baseline without excess current or new faults; FAIL = no change, or new instability/overcurrent. Restore the baseline afterwards regardless of outcome."
+                    text: "3) Field weakening, as a targeted attempt at the voltage-headroom ceiling found near 14000 eRPM. Neither selector-based gear table normally reaches that zone (set-duty tops out at 0.65 duty; the rescaled set-rpm table tops out at 12300 eRPM, see item 5), so testing this item means commanding a speed/duty near or above the ceiling directly from the VESC Tool terminal (e.g. (set-rpm 14000) or similar) rather than by selecting a gear. Apply the candidate, then issue that direct command. PASS = sustained lock at a higher commanded speed than Baseline without excess current or new faults; FAIL = no change, or new instability/overcurrent. Restore the baseline afterwards regardless of outcome."
                 }
 
                 RowLayout {
@@ -2332,7 +2334,7 @@ Item {
                     topPadding: 15
                     color: "#ffffff"
                     visible: isTestFixture(hardware_configuration.currentIndex)
-                    text: "5) Steady-state control mode: set-duty (current, validated by prior bench sessions) vs set-rpm (test variant, matches the production DPV's control scheme exactly). This is the biggest change here and the least likely to work cleanly: a prior, separate fixture implementation tried RPM control for steady-state and was reverted after it proved unreliable, specifically during the standstill-to-running transition where the sensorless speed estimate is still weak. Item 1b above (launch-kick hold duration) exists specifically to test whether giving the observer more time before handoff addresses that weakness; try it alongside this item, not only on its own. The launch kick duty/hold are unchanged by this selector; only the command issued once running changes. Try at least 10 standstill starts, then run through several gear changes, with set-rpm active, comparing against set-duty. PASS = starts and gear changes are as clean and reliable as set-duty, with no RPM collapse/jerk while running. FAIL = starts become unreliable again, or running becomes jerky/unstable, matching the previously-reverted behaviour. Restore the baseline afterwards regardless of outcome; set-duty remains the only validated path."
+                    text: "5) Steady-state control mode: set-duty (current, validated by prior bench sessions) vs set-rpm (test variant, matches the production DPV's control scheme exactly). A prior, separate fixture implementation tried RPM control for steady-state and was reverted after it proved unreliable at the standstill-to-running transition; item 1b (launch-kick hold duration) combined with a good launch-kick duty has since been bench-confirmed to fix that transition for this variant, across gears 1-5 for over a minute of sustained running. The open item now is gear 6 and above: bench testing found steady-state desync there too (gear 6 ran only ~40s before failing), matching the same voltage-headroom ceiling already documented for this motor/ballast under direct duty control, not a new RPM-PID-specific problem. Because of that, the set-rpm gear table (TEST_FIXTURE_RPM) is rescaled so the whole range stays within the gear 1-5 band already demonstrated solid (~6000-12300 eRPM) -- the same ceiling is still there, it is just no longer reachable through normal gear selection; field weakening (item 3) is the separate, optional lever for probing past it, via duty mode. Try at least 10 standstill starts, then run through all gear changes, with set-rpm active, comparing against set-duty. PASS = starts and gear changes are as clean and reliable as set-duty, with no RPM collapse/jerk while running, across the full rescaled range. FAIL = starts become unreliable again, or running becomes jerky/unstable anywhere in the rescaled range. Restore the baseline afterwards regardless of outcome; set-duty remains the only fully production-equivalent path."
                 }
 
                 ComboBox {

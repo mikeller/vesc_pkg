@@ -80,16 +80,6 @@
 ; Motor control constants
 (define MAX_ERPM_BLACKTIP 4100)
 (define MAX_ERPM_CUDAX 7100)
-; Bench diagnostic only (confirmation-05, see fixture_control_mode below): the
-; production MAX_ERPM_BLACKTIP (4100) targets this motor's physical scale and
-; would land fixture speed commands in the low-ERPM range the bench tuning log
-; found least reliable for sensorless tracking on this surrogate motor/ballast.
-; 20000 matches the scaled range used in that same tuning log's RPM-based
-; experiments, where steady-state tracking was demonstrated reliable for the
-; lower/mid gears (roughly 6000-12400 eRPM, ~1.4% sample sigma) once the
-; MXV/Fast-Estimator/current-PI tuning now captured in this fixture profile
-; was in place. It is not a new guess; it reuses an already-tested range.
-(define MAX_ERPM_TEST_FIXTURE 20000)
 ; The fixture's controller protection limits are configured separately in QML.
 ; Its gimbal motor was validated only at duty magnitudes 0.30 through 0.65.
 ; Selector 0 is strong reverse, selector 1 is untangle reverse, and selectors
@@ -98,6 +88,31 @@
 (define TEST_FIXTURE_MIN_DUTY 0.30)
 (define TEST_FIXTURE_MAX_DUTY 0.65)
 (define TEST_FIXTURE_DUTY (list -0.35 -0.30 0.30 0.35 0.40 0.45 0.50 0.55 0.60 0.65))
+; Bench diagnostic only (confirmation-05/06, see fixture_control_mode below).
+; An earlier version of this table used MAX_ERPM_TEST_FIXTURE=20000 (a
+; straight percentage scale against the full speed_set table), which put the
+; top few gears in the ~14000-20000 eRPM range. Bench testing of set-rpm
+; confirmed gear 6 (14000 eRPM) ran for only ~40s before desyncing and gear
+; 7/8 were worse -- the same voltage-headroom ceiling already documented for
+; this motor/ballast (back-EMF + I*R exceeds available bus voltage at this
+; eRPM), now reproduced under closed-loop RPM control rather than chased
+; further. Rather than keep tuning against a hard physical limit, the whole
+; usable gear range is rescaled into the band gears 1-5 already demonstrated
+; solid (~6000-12400 eRPM, ~1.4% sample sigma), the same philosophy already
+; applied to TEST_FIXTURE_DUTY above: a short, hand-picked, monotonic table
+; within a validated range, not a formula extending into the failure zone.
+; The top entry (12300) stays strictly below the ~12400 eRPM ceiling where
+; gear 5 was last fully solid, leaving a small margin rather than hugging it
+; exactly, since gear 6 (marginal, not solid) was only 1600 eRPM higher and
+; still failed. Untangle matches the lowest forward gear's magnitude and
+; reverse is one gear-step stronger, mirroring TEST_FIXTURE_DUTY's own
+; untangle/reverse relationship (same selector indexing as that table).
+; Field weakening (confirmation-04) can still extend duty-mode's TEST_FIXTURE_DUTY
+; range toward the ceiling if that is deliberately exercised; this rescaled
+; set-rpm table no longer reaches it during normal gear selection.
+(define TEST_FIXTURE_RPM_MIN_ERPM 6000)
+(define TEST_FIXTURE_RPM_MAX_ERPM 12300)
+(define TEST_FIXTURE_RPM (list -6900 -6000 6000 6900 7800 8700 9600 10500 11400 12300))
 (define MAX_CURRENT_BLACKTIP 22.8)
 (define MAX_CURRENT_CUDAX 46)
 (define MIN_CURRENT_BLACKTIP 1.7)
@@ -1140,13 +1155,6 @@
     )
 })
 
-; calculate_rpm is the one shared gear-to-ERPM mapping. The test fixture's
-; set-rpm diagnostic variant (fixture_control_mode, confirmation-05) reuses
-; this function and its speed_set percentage table exactly as production
-; does, via a dedicated MAX_ERPM_TEST_FIXTURE scale, rather than inventing a
-; separate table. Checked before scooter_type because the fixture reports
-; scooter_type SCOOTER_BLACKTIP and would otherwise take the production
-; Blacktip branch (wrong physical scale for this motor).
 ; Bench diagnostic for the test fixture only (confirmation-01b). Returns
 ; EXTRA hold time in seconds, added on top of the existing SAFE_START_TIMEOUT
 ; / SOFT_START_DURATION, before the launch kick may hand off to steady-state
@@ -1164,18 +1172,47 @@
     )
 })
 
+; Bench-only rescaled RPM table for the test fixture (see TEST_FIXTURE_RPM
+; above for the full rationale). Structurally identical to
+; test_fixture_duty_at: a short hand-picked table clamped into a validated
+; range, not a formula extending toward the failure zone.
+(defun test_fixture_rpm_at (speed_index divisor)
+{
+    (var max_index (- (length TEST_FIXTURE_RPM) 1))
+    (var clamped (clamp speed_index SPEED_REVERSE_2 max_index))
+    (var target (ix TEST_FIXTURE_RPM clamped))
+    ; Smart Cruise's warning slowdown is bounded to the validated eRPM range,
+    ; same rationale as test_fixture_duty_at.
+    (var scaled (* (/ target divisor) RPM_PERCENT_DENOMINATOR))
+    (if (< target 0)
+        (- 0 (clamp (abs scaled) TEST_FIXTURE_RPM_MIN_ERPM TEST_FIXTURE_RPM_MAX_ERPM))
+        (clamp scaled TEST_FIXTURE_RPM_MIN_ERPM TEST_FIXTURE_RPM_MAX_ERPM))
+})
+
+; calculate_rpm is the shared gear-to-ERPM mapping for production hardware.
+; The test fixture's set-rpm diagnostic variant (fixture_control_mode,
+; confirmation-05) is checked first and delegates entirely to
+; test_fixture_rpm_at's dedicated table, since the fixture reports
+; scooter_type SCOOTER_BLACKTIP and would otherwise take the production
+; Blacktip branch (wrong physical scale, and previously the wrong eRPM range
+; for this motor -- see TEST_FIXTURE_RPM above). Production behaviour below
+; is unchanged.
 (defun calculate_rpm (speed_index divisor)
 {
-    (var speed_percent (speed_percentage_at speed_index))
-    (var base_rpm (cond
-        ((= hardware_configuration HARDWARE_TEST_FIXTURE) (* (/ MAX_ERPM_TEST_FIXTURE divisor) speed_percent))
-        ((= scooter_type SCOOTER_BLACKTIP) (* (/ MAX_ERPM_BLACKTIP divisor) speed_percent))
-        ((= scooter_type SCOOTER_CUDAX) (* (/ MAX_ERPM_CUDAX divisor) speed_percent))
-        (t (debug_log "Invalid scooter_type, defaulting to Blacktip") (* (/ MAX_ERPM_BLACKTIP divisor) speed_percent))
-    ))
-    (if (< speed_index SPEED_REVERSE_THRESHOLD)
-        (- 0 base_rpm)
-        base_rpm
+    (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
+        (test_fixture_rpm_at speed_index divisor)
+        {
+            (var speed_percent (speed_percentage_at speed_index))
+            (var base_rpm (cond
+                ((= scooter_type SCOOTER_BLACKTIP) (* (/ MAX_ERPM_BLACKTIP divisor) speed_percent))
+                ((= scooter_type SCOOTER_CUDAX) (* (/ MAX_ERPM_CUDAX divisor) speed_percent))
+                (t (debug_log "Invalid scooter_type, defaulting to Blacktip") (* (/ MAX_ERPM_BLACKTIP divisor) speed_percent))
+            ))
+            (if (< speed_index SPEED_REVERSE_THRESHOLD)
+                (- 0 base_rpm)
+                base_rpm
+            )
+        }
     )
 })
 

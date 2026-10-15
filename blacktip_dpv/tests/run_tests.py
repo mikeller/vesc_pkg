@@ -46,11 +46,14 @@ def assert_near(actual, expected, tolerance, test_name):
 SPEED_REVERSE_THRESHOLD = 5
 HARDWARE_TEST_FIXTURE = 5
 EEPROM_SETTINGS_COUNT = 36
-MAX_ERPM_TEST_FIXTURE = 20000
 TEST_FIXTURE_MIN_DUTY = 0.30
 TEST_FIXTURE_MAX_DUTY = 0.65
 TEST_FIXTURE_DUTY = [-0.35, -0.30, 0.30, 0.35, 0.40,
                      0.45, 0.50, 0.55, 0.60, 0.65]
+TEST_FIXTURE_RPM_MIN_ERPM = 6000
+TEST_FIXTURE_RPM_MAX_ERPM = 12300
+TEST_FIXTURE_RPM = [-6900, -6000, 6000, 6900, 7800,
+                    8700, 9600, 10500, 11400, 12300]
 DISPLAY_LUT_PATH = Path(__file__).resolve().parents[1] / 'assets' / 'display_lut.csv'
 DISPLAY_LUT_HEADERS = ['index', 'name', 'rotation'] + [f'b{i}' for i in range(16)]
 TIMER_BAR_MASKS = [0x00, 0x40, 0x60, 0x70, 0x78, 0x7C, 0x7E, 0x7F, 0xFF]
@@ -114,6 +117,15 @@ def calculate_fixture_duty(speed_index, divisor=100):
     target = TEST_FIXTURE_DUTY[clamp(speed_index, 0, len(TEST_FIXTURE_DUTY) - 1)]
     scaled = target * 100 / divisor
     magnitude = clamp(abs(scaled), TEST_FIXTURE_MIN_DUTY, TEST_FIXTURE_MAX_DUTY)
+    return -magnitude if target < 0 else magnitude
+
+
+def calculate_fixture_rpm(speed_index, divisor=100):
+    """Mirror test_fixture_rpm_at, structurally identical to
+    calculate_fixture_duty but for the rescaled eRPM table."""
+    target = TEST_FIXTURE_RPM[clamp(speed_index, 0, len(TEST_FIXTURE_RPM) - 1)]
+    scaled = target * 100 / divisor
+    magnitude = clamp(abs(scaled), TEST_FIXTURE_RPM_MIN_ERPM, TEST_FIXTURE_RPM_MAX_ERPM)
     return -magnitude if target < 0 else magnitude
 
 
@@ -233,23 +245,6 @@ def fixture_launch_kick_duty(hardware_configuration, variant):
     if variant == 2:
         return 0.40
     return 0.06
-
-
-def calculate_rpm_hw_aware(hardware_configuration, scooter_type, speed_index, divisor):
-    """Mirror calculate_rpm's updated hardware_configuration-first branch:
-    the fixture always uses MAX_ERPM_TEST_FIXTURE, regardless of scooter_type
-    (which reports SCOOTER_BLACKTIP for the fixture and would otherwise take
-    the production Blacktip branch)."""
-    SCOOTER_BLACKTIP_LOCAL = 0
-    speed_percent = speed_percentage_at(speed_index)
-    if hardware_configuration == HARDWARE_TEST_FIXTURE:
-        max_erpm = MAX_ERPM_TEST_FIXTURE
-    elif scooter_type == SCOOTER_BLACKTIP_LOCAL:
-        max_erpm = 4100
-    else:
-        max_erpm = 7100
-    base_rpm = (max_erpm / divisor) * (speed_percent / 100.0)
-    return -base_rpm if speed_index < SPEED_REVERSE_THRESHOLD else base_rpm
 
 
 def fixture_steady_state_mode(hardware_configuration, control_mode):
@@ -372,16 +367,18 @@ def test_calculate_rpm():
     assert_near(calculate_rpm(4, 1), -20000, 0.1, "calculate_rpm: speed 4 (just below threshold)")
     assert_near(calculate_rpm(5, 1), 25000, 0.1, "calculate_rpm: speed 5 (at threshold, forward)")
 
-    # Hardware-aware branch (confirmation-05): the fixture must use
-    # MAX_ERPM_TEST_FIXTURE regardless of scooter_type, since scooter_type
-    # reports SCOOTER_BLACKTIP for the fixture too. speed_index 10 / divisor 1
-    # is this mirror's "100% of max scale" convention, matching the plain
-    # calculate_rpm() assertions above.
-    assert_near(calculate_rpm_hw_aware(HARDWARE_TEST_FIXTURE, 0, 10, 1), MAX_ERPM_TEST_FIXTURE, 0.1,
-                "calculate_rpm: fixture top speed uses MAX_ERPM_TEST_FIXTURE, not MAX_ERPM_BLACKTIP")
-    assert_near(calculate_rpm_hw_aware(0, 0, 10, 1), 4100, 0.1,
+    # Hardware-aware branch (confirmation-05/06): the fixture must delegate
+    # entirely to the rescaled TEST_FIXTURE_RPM table, not the percentage
+    # formula, since scooter_type reports SCOOTER_BLACKTIP for the fixture
+    # too and would otherwise take the production Blacktip branch (divisor
+    # 100 is calculate_fixture_rpm's own "no scaling" convention).
+    assert_near(calculate_fixture_rpm(9, 100), TEST_FIXTURE_RPM_MAX_ERPM, 0.1,
+                "calculate_rpm: fixture top gear uses the rescaled TEST_FIXTURE_RPM table, not MAX_ERPM_BLACKTIP")
+    # speed_index 10 / divisor 1 is the plain calculate_rpm() mirror's own
+    # "100% of max scale" convention (divisor baked in as 1 = full scale).
+    assert_near(calculate_rpm(10, 1, max_erpm=4100), 4100, 0.1,
                 "calculate_rpm: production Blacktip top speed is unaffected (still 4100)")
-    assert_near(calculate_rpm_hw_aware(3, 1, 10, 1), 7100, 0.1,
+    assert_near(calculate_rpm(10, 1, max_erpm=7100), 7100, 0.1,
                 "calculate_rpm: production CudaX top speed is unaffected (still 7100)")
 
 
@@ -1247,8 +1244,6 @@ def test_fixture_bench_diagnostics():
                "confirmation-05: steady-state mode selector defaults to the validated duty path")
     assert_eq("(setvar 'fixture_control_mode (or (eeprom-read-i 34) 0))" in lisp_source, True,
                "confirmation-05: the selector is read with a safe baseline default")
-    assert_eq('(define MAX_ERPM_TEST_FIXTURE 20000)' in lisp_source, True,
-               "confirmation-05: the fixture's RPM scale reuses a historically-tested value, not a new guess")
     assert_eq(fixture_steady_state_mode(HARDWARE_TEST_FIXTURE, 0) == 'duty', True,
                "confirmation-05: baseline (0) keeps the fixture on set-duty")
     assert_eq(fixture_steady_state_mode(HARDWARE_TEST_FIXTURE, 1) == 'rpm', True,
@@ -1261,6 +1256,41 @@ def test_fixture_bench_diagnostics():
                True, "confirmation-05: UI exposes a 2-way selector matching the lisp modes")
     assert_eq('da.setUint8(34, fixture_control_mode.currentIndex)' in ui_source, True,
                "confirmation-05: the selector persists through the normal settings-write path")
+
+    # Item 6 (confirmation-06): rescaled set-rpm gear table. Bench testing of
+    # confirmation-05 found gear 6+ desyncs at the same voltage-headroom
+    # ceiling already documented under direct duty control; the whole usable
+    # range is rescaled into the gear 1-5 band already demonstrated solid,
+    # mirroring exactly how TEST_FIXTURE_DUTY was already scaled.
+    assert_eq('(define TEST_FIXTURE_RPM_MIN_ERPM 6000)' in lisp_source, True,
+               "confirmation-06: rescaled RPM floor matches the validated gear-1 eRPM")
+    assert_eq('(define TEST_FIXTURE_RPM_MAX_ERPM 12300)' in lisp_source, True,
+               "confirmation-06: rescaled RPM ceiling stays below the ~12400 eRPM gear-5 ceiling")
+    assert_eq('(define TEST_FIXTURE_RPM (list -6900 -6000 6000 6900 7800 8700 9600 10500 11400 12300))' in lisp_source,
+               True, "confirmation-06: rescaled RPM table is a short, hand-picked, monotonic table like TEST_FIXTURE_DUTY")
+    assert_eq('(defun test_fixture_rpm_at (speed_index divisor)' in lisp_source, True,
+               "confirmation-06: rescaled RPM lookup mirrors test_fixture_duty_at structurally")
+    assert_eq('(test_fixture_rpm_at speed_index divisor)' in lisp_source, True,
+               "confirmation-06: calculate_rpm delegates to the rescaled table for the fixture")
+    fixture_rpms = [calculate_fixture_rpm(speed_index)
+                    for speed_index in range(2, len(TEST_FIXTURE_RPM))]
+    assert_eq(fixture_rpms, TEST_FIXTURE_RPM[2:],
+               "confirmation-06: every forward selector uses the rescaled RPM table")
+    assert_eq(fixture_rpms[0], TEST_FIXTURE_RPM_MIN_ERPM,
+               "confirmation-06: first forward selector commands the rescaled minimum")
+    assert_eq(fixture_rpms[-1], TEST_FIXTURE_RPM_MAX_ERPM,
+               "confirmation-06: last forward selector commands the rescaled maximum, not the old 20000 ceiling")
+    assert_eq(TEST_FIXTURE_RPM_MAX_ERPM < 12400, True,
+               "confirmation-06: the rescaled ceiling leaves margin below the point gear 5 was last fully solid")
+    assert_eq(all(lower < upper for lower, upper in zip(fixture_rpms, fixture_rpms[1:])), True,
+               "confirmation-06: rescaled forward selector speeds are strictly monotonic")
+    assert_eq(calculate_fixture_rpm(0), -6900,
+               "confirmation-06: strong reverse is one gear-step above untangle, mirroring TEST_FIXTURE_DUTY")
+    assert_eq(calculate_fixture_rpm(1), -6000,
+               "confirmation-06: untangle matches the lowest forward gear's magnitude, mirroring TEST_FIXTURE_DUTY")
+    assert_eq('(define MAX_ERPM_TEST_FIXTURE 20000)' in lisp_source, False,
+               "confirmation-06: the old unscaled 20000 ceiling constant is fully retired, not left dangling "
+               "(a historical mention in an explanatory comment is fine and expected)")
 
     # All confirmation controls must be gated to the test fixture model only,
     # and not touch the production Blacktip/CudaX reset profiles.
