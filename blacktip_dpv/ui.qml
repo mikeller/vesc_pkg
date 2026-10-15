@@ -1067,7 +1067,9 @@ Item {
         mMcConf.updateParamDouble("l_in_current_min", -60, null)
         mMcConf.updateParamDouble("l_abs_current_max", 150, null)
         // Captured controller protection limits. The package selects fixture
-        // speeds from its verified 5500-13500 ERPM table, independently.
+        // speeds from its fixed TEST_FIXTURE_DUTY table (duty, not ERPM);
+        // these controller-level ERPM limits are a separate protection
+        // backstop and do not govern the commanded fixture speeds.
         mMcConf.updateParamDouble("l_min_erpm", -28000, null)
         mMcConf.updateParamDouble("l_max_erpm", 28000, null)
         mMcConf.updateParamDouble("l_erpm_abs_overspeed", 29268.3, null)
