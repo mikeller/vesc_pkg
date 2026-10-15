@@ -805,7 +805,7 @@ Item {
             return
         }
 
-        var buffer = new ArrayBuffer(34)
+        var buffer = new ArrayBuffer(35)
         var da = new DataView(buffer)
 
         da.setUint8(0, reverse_speed.realValue)
@@ -844,6 +844,9 @@ Item {
         // Bench-only diagnostic (test fixture hardware only, see soft_start_kick_duty
         // in blacktip_dpv.lisp): 0 = baseline, 1 = candidate A (0.30 duty), 2 = candidate B (0.40 duty)
         da.setUint8(33, fixture_launch_kick_variant.currentIndex)
+        // Bench-only diagnostic (test fixture hardware only, see set_motor_speed
+        // in blacktip_dpv.lisp): 0 = baseline (set-duty, validated), 1 = test variant (set-rpm)
+        da.setUint8(34, fixture_control_mode.currentIndex)
         mCommands.sendCustomAppData(buffer)
 
         console.log("Sent values")
@@ -891,7 +894,7 @@ Item {
     }
 
     function apply_defaults_blacktip() {
-        var buffer1 = new ArrayBuffer(34)
+        var buffer1 = new ArrayBuffer(35)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 45)
         da1.setUint8(1, 20)
@@ -927,6 +930,7 @@ Item {
         da1.setUint8(31, 162) // Balance-wire ADC multiplier x10 default: 162 = 16.2x (measured on reference Blacktip)
         da1.setUint8(32, 0) // Five-click deep shutdown default: off
         da1.setUint8(33, 0) // Fixture launch-kick diagnostic default: baseline (not applicable to production hardware)
+        da1.setUint8(34, 0) // Fixture control-mode diagnostic default: baseline (not applicable to production hardware)
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/master/datatypes.h
@@ -1022,7 +1026,7 @@ Item {
 
         fixtureResetPending = false
 
-        var buffer1 = new ArrayBuffer(34)
+        var buffer1 = new ArrayBuffer(35)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 45)
         da1.setUint8(1, 20)
@@ -1057,9 +1061,11 @@ Item {
         da1.setUint8(30, 200)
         da1.setUint8(31, 162)
         da1.setUint8(32, 0)
-        // Bench diagnostic default: baseline (no candidate kick-duty active).
-        // Reset Defaults always reverts this; it is never a shipped default.
+        // Bench diagnostic defaults: baseline (no candidate kick-duty active,
+        // set-duty steady-state path active). Reset Defaults always reverts
+        // these; neither is ever a shipped default.
         da1.setUint8(33, 0)
+        da1.setUint8(34, 0)
         mCommands.sendCustomAppData(buffer1)
 
         // Apply only the captured fixture differences over the controller's
@@ -1073,10 +1079,12 @@ Item {
         mMcConf.updateParamDouble("l_in_current_max", 22.8, null)
         mMcConf.updateParamDouble("l_in_current_min", -60, null)
         mMcConf.updateParamDouble("l_abs_current_max", 150, null)
-        // Captured controller protection limits. The package selects fixture
-        // speeds from its fixed TEST_FIXTURE_DUTY table (duty, not ERPM);
-        // these controller-level ERPM limits are a separate protection
-        // backstop and do not govern the commanded fixture speeds.
+        // Captured controller protection limits. By default the package
+        // selects fixture speeds from its fixed TEST_FIXTURE_DUTY table
+        // (duty, not ERPM); the bench-only set-rpm diagnostic variant (see
+        // the test fixture diagnostics panel below) reuses calculate_rpm
+        // with MAX_ERPM_TEST_FIXTURE (20000), which stays comfortably inside
+        // this controller-level protection limit either way.
         mMcConf.updateParamDouble("l_min_erpm", -28000, null)
         mMcConf.updateParamDouble("l_max_erpm", 28000, null)
         mMcConf.updateParamDouble("l_erpm_abs_overspeed", 29268.3, null)
@@ -1206,7 +1214,7 @@ Item {
     }
 
     function apply_defaults_cudax() {
-        var buffer1 = new ArrayBuffer(34)
+        var buffer1 = new ArrayBuffer(35)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 30)
         da1.setUint8(1, 10)
@@ -1242,6 +1250,7 @@ Item {
         da1.setUint8(31, 162) // Balance-wire ADC multiplier x10 default: 162 = 16.2x (measured on reference Blacktip)
         da1.setUint8(32, 0) // Five-click deep shutdown default: off
         da1.setUint8(33, 0) // Fixture launch-kick diagnostic default: baseline (not applicable to production hardware)
+        da1.setUint8(34, 0) // Fixture control-mode diagnostic default: baseline (not applicable to production hardware)
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/f6b06bc9f8d02d2ba262166127c3f2ffaedbb17e/datatypes.h#L369
@@ -1407,6 +1416,9 @@ Item {
             // Bench diagnostic selector (test fixture only). Older devices without
             // slot 33 default to 0 (baseline), same pattern as slot 32 above.
             fixture_launch_kick_variant.currentIndex = dv.byteLength > 33 ? dv.getUint8(33) : 0
+            // Bench diagnostic selector (test fixture only). Older devices without
+            // slot 34 default to 0 (baseline/set-duty), same pattern as slot 33 above.
+            fixture_control_mode.currentIndex = dv.byteLength > 34 ? dv.getUint8(34) : 0
 
             ramp_rate.realValue = mMcConf.getParamDouble("s_pid_ramp_erpms_s")
             battery_ah.realValue = mMcConf.getParamDouble("si_battery_ah")
@@ -2280,6 +2292,28 @@ Item {
                     color: Utility.getAppHexColor("lightText")
                     visible: isTestFixture(hardware_configuration.currentIndex)
                     text: "4) Current-offset calibration drift: there is no control for this here. Turn on Debug Logging in General Settings, then watch the VESC Tool Lisp console (or connect a terminal) around each start attempt for lines starting 'Fixture: FOC offsets at ...', logged automatically at boot, at the launch kick, at a successful soft start, and at any soft-start abort. Compare the i0/i1/i2 values between a failed start and a successful start; a difference of a few counts or more is the signal this check is looking for. This cannot be scaffolded as a button because the result is a comparison a human has to read and judge, not a value the package can apply."
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    topPadding: 15
+                    color: "#ffffff"
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    text: "5) Steady-state control mode: set-duty (current, validated by prior bench sessions) vs set-rpm (test variant, matches the production DPV's control scheme exactly). This is the biggest change here and the least likely to work cleanly: a prior, separate fixture implementation tried RPM control for steady-state and was reverted after it proved unreliable, specifically during the standstill-to-running transition where the sensorless speed estimate is still weak. The launch kick is unchanged either way; only the command issued once running changes. Try at least 10 standstill starts, then run through several gear changes, with set-rpm active, comparing against set-duty. PASS = starts and gear changes are as clean and reliable as set-duty, with no RPM collapse/jerk while running. FAIL = starts become unreliable again, or running becomes jerky/unstable, matching the previously-reverted behaviour. Restore the baseline afterwards regardless of outcome; set-duty remains the only validated path."
+                }
+
+                ComboBox {
+                    id: fixture_control_mode
+                    Layout.fillWidth: true
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    currentIndex: 0
+                    model: ["Baseline (set-duty, validated)", "Test variant (set-rpm, matches production DPV)"]
+                    onActivated: {
+                        if (!loading_values) {
+                            write_settings()
+                        }
+                    }
                 }
             }
         }

@@ -45,7 +45,8 @@ def assert_near(actual, expected, tolerance, test_name):
 
 SPEED_REVERSE_THRESHOLD = 5
 HARDWARE_TEST_FIXTURE = 5
-EEPROM_SETTINGS_COUNT = 34
+EEPROM_SETTINGS_COUNT = 35
+MAX_ERPM_TEST_FIXTURE = 20000
 TEST_FIXTURE_MIN_DUTY = 0.30
 TEST_FIXTURE_MAX_DUTY = 0.65
 TEST_FIXTURE_DUTY = [-0.35, -0.30, 0.30, 0.35, 0.40,
@@ -198,14 +199,16 @@ def trigger_arm_after_ready_sample(trigger_input_ready, sw_pressed):
     return 1 if trigger_input_ready == 1 and sw_pressed == 0 else 0
 
 
-def migrate_eeprom_v4(eeprom, stored_version):
-    """Mirror the layered v3 (slot 32) and v4 (slot 33) migrations."""
+def migrate_eeprom_v5(eeprom, stored_version):
+    """Mirror the layered v3 (slot 32), v4 (slot 33) and v5 (slot 34) migrations."""
     result = dict(eeprom)
     if stored_version < 3:
         result[32] = 0
     if stored_version < 4:
         result[33] = 0
-        result[127] = 4
+    if stored_version < 5:
+        result[34] = 0
+        result[127] = 5
     return result
 
 
@@ -227,6 +230,31 @@ def fixture_launch_kick_duty(hardware_configuration, variant):
     if variant == 2:
         return 0.40
     return 0.06
+
+
+def calculate_rpm_hw_aware(hardware_configuration, scooter_type, speed_index, divisor):
+    """Mirror calculate_rpm's updated hardware_configuration-first branch:
+    the fixture always uses MAX_ERPM_TEST_FIXTURE, regardless of scooter_type
+    (which reports SCOOTER_BLACKTIP for the fixture and would otherwise take
+    the production Blacktip branch)."""
+    SCOOTER_BLACKTIP_LOCAL = 0
+    speed_percent = speed_percentage_at(speed_index)
+    if hardware_configuration == HARDWARE_TEST_FIXTURE:
+        max_erpm = MAX_ERPM_TEST_FIXTURE
+    elif scooter_type == SCOOTER_BLACKTIP_LOCAL:
+        max_erpm = 4100
+    else:
+        max_erpm = 7100
+    base_rpm = (max_erpm / divisor) * (speed_percent / 100.0)
+    return -base_rpm if speed_index < SPEED_REVERSE_THRESHOLD else base_rpm
+
+
+def fixture_steady_state_mode(hardware_configuration, control_mode):
+    """Mirror set_motor_speed's HARDWARE_TEST_FIXTURE-gated command choice.
+    Returns 'duty' or 'rpm'. Production hardware is always 'rpm'."""
+    if hardware_configuration != HARDWARE_TEST_FIXTURE:
+        return 'rpm'
+    return 'rpm' if control_mode == 1 else 'duty'
 
 
 def is_blacktip_hardware(hardware_configuration):
@@ -327,6 +355,18 @@ def test_calculate_rpm():
     # Edge case at threshold
     assert_near(calculate_rpm(4, 1), -20000, 0.1, "calculate_rpm: speed 4 (just below threshold)")
     assert_near(calculate_rpm(5, 1), 25000, 0.1, "calculate_rpm: speed 5 (at threshold, forward)")
+
+    # Hardware-aware branch (confirmation-05): the fixture must use
+    # MAX_ERPM_TEST_FIXTURE regardless of scooter_type, since scooter_type
+    # reports SCOOTER_BLACKTIP for the fixture too. speed_index 10 / divisor 1
+    # is this mirror's "100% of max scale" convention, matching the plain
+    # calculate_rpm() assertions above.
+    assert_near(calculate_rpm_hw_aware(HARDWARE_TEST_FIXTURE, 0, 10, 1), MAX_ERPM_TEST_FIXTURE, 0.1,
+                "calculate_rpm: fixture top speed uses MAX_ERPM_TEST_FIXTURE, not MAX_ERPM_BLACKTIP")
+    assert_near(calculate_rpm_hw_aware(0, 0, 10, 1), 4100, 0.1,
+                "calculate_rpm: production Blacktip top speed is unaffected (still 4100)")
+    assert_near(calculate_rpm_hw_aware(3, 1, 10, 1), 7100, 0.1,
+                "calculate_rpm: production CudaX top speed is unaffected (still 7100)")
 
 
 def test_motor_speed_command_centralisation():
@@ -874,24 +914,27 @@ def test_five_click_settings_and_migration():
     defaults = bytes([0] * EEPROM_SETTINGS_COUNT)
     assert_eq(defaults[32], 0, "five-click setting: default disabled")
     assert_eq(defaults[33], 0, "fixture launch-kick diagnostic: default baseline")
+    assert_eq(defaults[34], 0, "fixture control-mode diagnostic: default baseline (set-duty)")
 
     eeprom = {index: (index * 7) % 256 for index in range(32)}
     before = dict(eeprom)
-    migrated = migrate_eeprom_v4(eeprom, 2)
+    migrated = migrate_eeprom_v5(eeprom, 2)
     assert_eq(migrated[32], 0, "EEPROM v3: slot 32 initialized disabled")
     assert_eq(migrated[33], 0, "EEPROM v4: slot 33 initialized to baseline")
+    assert_eq(migrated[34], 0, "EEPROM v5: slot 34 initialized to baseline")
     assert_eq({index: migrated[index] for index in range(32)}, before,
-              "EEPROM v4: slots 0-31 preserved")
-    assert_eq(migrated[127], 4, "EEPROM v4: schema marker advanced to 4")
+              "EEPROM v5: slots 0-31 preserved")
+    assert_eq(migrated[127], 5, "EEPROM v5: schema marker advanced to 5")
 
-    current = bytes(list(range(32)) + [1, 2])
+    current = bytes(list(range(32)) + [1, 2, 1])
     accepted, received = receive_settings_simulate(migrated, current)
-    assert_eq(accepted, True, "settings receive: 34-byte buffer accepted")
+    assert_eq(accepted, True, "settings receive: 35-byte buffer accepted")
     assert_eq(received[32], 1, "settings receive: slot 32 round-trips enabled")
     assert_eq(received[33], 2, "settings receive: slot 33 round-trips fixture launch-kick variant")
+    assert_eq(received[34], 1, "settings receive: slot 34 round-trips fixture control mode")
 
-    accepted, rejected = receive_settings_simulate(received, bytes(33))
-    assert_eq(accepted, False, "settings receive: buffer shorter than 34 rejected")
+    accepted, rejected = receive_settings_simulate(received, bytes(34))
+    assert_eq(accepted, False, "settings receive: buffer shorter than 35 rejected")
     assert_eq(rejected, received, "settings receive: rejected buffer changes nothing")
 
 
@@ -975,8 +1018,17 @@ def test_test_fixture_model_configuration():
                "test fixture: runtime defines the validated duty maximum")
     assert_eq('(define TEST_FIXTURE_DUTY (list -0.35 -0.30 0.30 0.35 0.40 0.45 0.50 0.55 0.60 0.65))' in lisp_source, True,
                "test fixture: runtime contains the signed selector duty table")
+    # This guard previously asserted the fixture NEVER used ERPM at all,
+    # because an earlier, separate fixture implementation invented its own
+    # bespoke ERPM table and was reverted after bench testing found it
+    # unreliable at standstill. confirmation-05 deliberately reintroduces an
+    # ERPM path, but as an opt-in diagnostic that reuses the shared
+    # calculate_rpm function (not a bespoke table), defaulting to the
+    # validated duty path. The guard is updated accordingly, not bypassed.
     assert_eq('TEST_FIXTURE_FORWARD_ERPM' in lisp_source, False,
-               "test fixture: runtime does not use ERPM as a fixture speed scale")
+               "test fixture: does not invent a bespoke ERPM table (reuses calculate_rpm instead)")
+    assert_eq('(define fixture_control_mode 0)' in lisp_source, True,
+               "test fixture: steady-state control-mode diagnostic defaults to the validated set-duty path")
     fixture_speeds = [calculate_fixture_duty(speed_index)
                       for speed_index in range(2, len(TEST_FIXTURE_DUTY))]
     assert_eq(fixture_speeds, TEST_FIXTURE_DUTY[2:],
@@ -998,9 +1050,12 @@ def test_test_fixture_model_configuration():
     assert_eq('(defun set_motor_speed (speed_index divisor)' in lisp_source, True,
                "test fixture: all normal commands use the guarded motor command helper")
     assert_eq('(set-duty (test_fixture_duty_at speed_index divisor))' in lisp_source, True,
-               "test fixture: guarded helper uses duty only for the fixture")
-    assert_eq('(set-rpm (calculate_rpm speed_index divisor))' in lisp_source, True,
-               "test fixture: guarded helper retains production RPM control")
+               "test fixture: guarded helper defaults the fixture to duty")
+    assert_eq(lisp_source.count('(set-rpm (calculate_rpm speed_index divisor))') == 2, True,
+               "test fixture: guarded helper retains production RPM control, and reuses the "
+               "same call for the fixture's opt-in confirmation-05 set-rpm test variant")
+    assert_eq('(if (= fixture_control_mode 1)' in lisp_source, True,
+               "test fixture: the set-rpm test variant is behind its own explicit, opt-in gate")
     assert_eq(lisp_source.count('(set_motor_speed speed ') == 5, True,
                "test fixture: normal commands use the guarded helper outside soft-start handoff")
     assert_eq('(set-rpm (calculate_rpm speed RPM_PERCENT_DENOMINATOR))' in lisp_source,
@@ -1042,15 +1097,19 @@ def test_fixture_bench_diagnostics():
     lisp_source = (root / 'blacktip_dpv.lisp').read_text()
     ui_source = (root / 'ui.qml').read_text()
 
-    # EEPROM schema: new slot 33 added and migrated like slot 32 was.
-    assert_eq('(define EEPROM_SETTINGS_COUNT 34)' in lisp_source, True,
-               "bench diagnostics: EEPROM settings buffer grew by one slot")
+    # EEPROM schema: slots 33 and 34 added and migrated like slot 32 was.
+    assert_eq('(define EEPROM_SETTINGS_COUNT 35)' in lisp_source, True,
+               "bench diagnostics: EEPROM settings buffer grew by two slots")
     assert_eq("(setvar 'fixture_launch_kick_variant (or (eeprom-read-i 33) 0))" in lisp_source, True,
                "bench diagnostics: launch-kick variant is read with a safe baseline default")
+    assert_eq("(setvar 'fixture_control_mode (or (eeprom-read-i 34) 0))" in lisp_source, True,
+               "bench diagnostics: control-mode selector is read with a safe baseline default")
     assert_eq('(if (< stored_version 4) {' in lisp_source, True,
                "bench diagnostics: a v4 migration block initializes slot 33")
-    assert_eq('(eeprom_store_i_if_changed 127 4))' in lisp_source, True,
-               "bench diagnostics: schema marker advances to 4")
+    assert_eq('(if (< stored_version 5) {' in lisp_source, True,
+               "bench diagnostics: a v5 migration block initializes slot 34")
+    assert_eq('(eeprom_store_i_if_changed 127 5))' in lisp_source, True,
+               "bench diagnostics: schema marker advances to 5")
 
     # Item 1: current-offset drift diagnostic (conf-dc-cal read-only call).
     assert_eq('(defun test_fixture_log_offsets (label)' in lisp_source, True,
@@ -1131,11 +1190,33 @@ def test_fixture_bench_diagnostics():
     assert_eq(0.4 < 1.0, True,
                "confirmation-04: candidate field-weakening current stays within the fixture's 1 A motor current limit")
 
-    # All 4 confirmation controls must be gated to the test fixture model only,
+    # Item 5: steady-state control mode (set-duty vs set-rpm), the most
+    # speculative of the five checks. Deliberately opt-in; defaults to the
+    # validated duty path and reuses the production calculate_rpm mapping.
+    assert_eq('(define fixture_control_mode 0)' in lisp_source, True,
+               "confirmation-05: steady-state mode selector defaults to the validated duty path")
+    assert_eq("(setvar 'fixture_control_mode (or (eeprom-read-i 34) 0))" in lisp_source, True,
+               "confirmation-05: the selector is read with a safe baseline default")
+    assert_eq('(define MAX_ERPM_TEST_FIXTURE 20000)' in lisp_source, True,
+               "confirmation-05: the fixture's RPM scale reuses a historically-tested value, not a new guess")
+    assert_eq(fixture_steady_state_mode(HARDWARE_TEST_FIXTURE, 0) == 'duty', True,
+               "confirmation-05: baseline (0) keeps the fixture on set-duty")
+    assert_eq(fixture_steady_state_mode(HARDWARE_TEST_FIXTURE, 1) == 'rpm', True,
+               "confirmation-05: the test variant (1) switches the fixture to set-rpm")
+    assert_eq(fixture_steady_state_mode(0, 1) == 'rpm', True,
+               "confirmation-05: production hardware always uses set-rpm regardless of this selector")
+    assert_eq('id: fixture_control_mode' in ui_source, True,
+               "confirmation-05: the steady-state mode selector is a distinct UI control")
+    assert_eq('model: ["Baseline (set-duty, validated)", "Test variant (set-rpm, matches production DPV)"]' in ui_source,
+               True, "confirmation-05: UI exposes a 2-way selector matching the lisp modes")
+    assert_eq('da.setUint8(34, fixture_control_mode.currentIndex)' in ui_source, True,
+               "confirmation-05: the selector persists through the normal settings-write path")
+
+    # All 5 confirmation controls must be gated to the test fixture model only,
     # and not touch the production Blacktip/CudaX reset profiles.
     diagnostics_panel = ui_source[ui_source.index('Test fixture bench diagnostics'):
                                    ui_source.index('id: rebootDialog')]
-    assert_eq(diagnostics_panel.count('visible: isTestFixture(hardware_configuration.currentIndex)') >= 8, True,
+    assert_eq(diagnostics_panel.count('visible: isTestFixture(hardware_configuration.currentIndex)') >= 10, True,
                "bench diagnostics: every diagnostic control is gated to the test fixture model")
 
     blacktip_profile_body = ui_source[ui_source.index('function apply_defaults_blacktip()'):
@@ -1347,12 +1428,14 @@ def test_click_and_beep_regressions():
               "README rendering: unsupported check-mark glyphs are absent")
 
     ui_source = (Path(__file__).resolve().parents[1] / 'ui.qml').read_text()
-    assert_eq(ui_source.count('new ArrayBuffer(34)'), 4,
-               "QML settings: write and all reset buffers are 34 bytes")
+    assert_eq(ui_source.count('new ArrayBuffer(35)'), 4,
+               "QML settings: write and all reset buffers are 35 bytes")
     assert_eq(ui_source.count('setUint8(32, 0)'), 3,
                "QML defaults: all profiles disable five-click shutdown")
     assert_eq(ui_source.count('setUint8(33, 0)'), 3,
                "QML defaults: all profiles reset the fixture launch-kick diagnostic to baseline")
+    assert_eq(ui_source.count('setUint8(34, 0)'), 3,
+               "QML defaults: all profiles reset the fixture control-mode diagnostic to baseline")
     payload_guard = 'if (dv.byteLength < 31)'
     first_settings_read = 'hardware_configuration.currentIndex =  dv.getUint8(19)'
     assert_eq(payload_guard in ui_source and
@@ -1362,6 +1445,8 @@ def test_click_and_beep_regressions():
               "QML settings: missing slot 32 safely defaults shutdown to disabled")
     assert_eq('fixture_launch_kick_variant.currentIndex = dv.byteLength > 33 ? dv.getUint8(33) : 0' in ui_source, True,
               "QML settings: missing slot 33 safely defaults the fixture diagnostic to baseline")
+    assert_eq('fixture_control_mode.currentIndex = dv.byteLength > 34 ? dv.getUint8(34) : 0' in ui_source, True,
+              "QML settings: missing slot 34 safely defaults the fixture control mode to baseline")
     assert_eq('params.hw === "60_MK5"' in ui_source, True,
               "QML shutdown capability: VESC Tool MK5 hardware name is recognized")
     assert_eq('enabled: fiveClickShutdownHardwareSupported && fiveClickShutdownFirmwareSupported' in ui_source,

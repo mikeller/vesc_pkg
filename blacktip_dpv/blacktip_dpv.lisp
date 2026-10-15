@@ -80,6 +80,16 @@
 ; Motor control constants
 (define MAX_ERPM_BLACKTIP 4100)
 (define MAX_ERPM_CUDAX 7100)
+; Bench diagnostic only (confirmation-05, see fixture_control_mode below): the
+; production MAX_ERPM_BLACKTIP (4100) targets this motor's physical scale and
+; would land fixture speed commands in the low-ERPM range the bench tuning log
+; found least reliable for sensorless tracking on this surrogate motor/ballast.
+; 20000 matches the scaled range used in that same tuning log's RPM-based
+; experiments, where steady-state tracking was demonstrated reliable for the
+; lower/mid gears (roughly 6000-12400 eRPM, ~1.4% sample sigma) once the
+; MXV/Fast-Estimator/current-PI tuning now captured in this fixture profile
+; was in place. It is not a new guess; it reuses an already-tested range.
+(define MAX_ERPM_TEST_FIXTURE 20000)
 ; The fixture's controller protection limits are configured separately in QML.
 ; Its gimbal motor was validated only at duty magnitudes 0.30 through 0.65.
 ; Selector 0 is strong reverse, selector 1 is untangle reverse, and selectors
@@ -147,9 +157,11 @@
 
 ; EEPROM settings buffer size. Five-click shutdown is stored in slot 32.
 ; Slot 33 is the test-fixture-only launch-kick duty diagnostic selector
-; (see fixture_launch_kick_variant / soft_start_kick_duty below). It is
-; always 0 (baseline) outside HARDWARE_TEST_FIXTURE.
-(define EEPROM_SETTINGS_COUNT 34)
+; (see fixture_launch_kick_variant / soft_start_kick_duty below). Slot 34 is
+; the test-fixture-only steady-state control mode selector (see
+; fixture_control_mode / set_motor_speed below). Both are always 0 (baseline)
+; outside HARDWARE_TEST_FIXTURE.
+(define EEPROM_SETTINGS_COUNT 35)
 
 ; Battery polynomial coefficients (for voltage-based calculation)
 (define BATTERY_COEFF_4 4.3867)
@@ -260,6 +272,11 @@
 ; 1 = candidate A (0.30 duty launch kick), 2 = candidate B (0.40 duty launch
 ; kick). See soft_start_kick_duty. Always 0 outside HARDWARE_TEST_FIXTURE.
 (define fixture_launch_kick_variant 0)
+; Test-fixture-only bench diagnostic (confirmation-05): 0 = baseline (the
+; validated set-duty steady-state path, default), 1 = test variant (set-rpm,
+; matching the production DPV's control scheme). See set_motor_speed. Always
+; 0 outside HARDWARE_TEST_FIXTURE; production always uses set-rpm regardless.
+(define fixture_control_mode 0)
 
 ; --- Runtime state machine / motor / display vars ---
 (define sw_state 0)
@@ -751,6 +768,7 @@
     (setvar 'adc_balance_wire_multiplier_x10 (eeprom-read-i 31))
     (setvar 'enable_five_click_shutdown (or (eeprom-read-i 32) 0))
     (setvar 'fixture_launch_kick_variant (or (eeprom-read-i 33) 0))
+    (setvar 'fixture_control_mode (or (eeprom-read-i 34) 0))
 
     (setvar 'speed_set (list
         (eeprom-read-i 0) ; Reverse Speed 2 %
@@ -801,6 +819,8 @@
         "\n- battery_imbalance_threshold_centi: " (to-str (to-i battery_imbalance_threshold_centi))
         "\n- adc_balance_wire_multiplier_x10: " (to-str (to-i adc_balance_wire_multiplier_x10))
         "\n- enable_five_click_shutdown: " (to-str (to-i enable_five_click_shutdown))
+        "\n- fixture_launch_kick_variant: " (to-str (to-i fixture_launch_kick_variant))
+        "\n- fixture_control_mode: " (to-str (to-i fixture_control_mode))
     ))
 })
 
@@ -1105,10 +1125,18 @@
     )
 })
 
+; calculate_rpm is the one shared gear-to-ERPM mapping. The test fixture's
+; set-rpm diagnostic variant (fixture_control_mode, confirmation-05) reuses
+; this function and its speed_set percentage table exactly as production
+; does, via a dedicated MAX_ERPM_TEST_FIXTURE scale, rather than inventing a
+; separate table. Checked before scooter_type because the fixture reports
+; scooter_type SCOOTER_BLACKTIP and would otherwise take the production
+; Blacktip branch (wrong physical scale for this motor).
 (defun calculate_rpm (speed_index divisor)
 {
     (var speed_percent (speed_percentage_at speed_index))
     (var base_rpm (cond
+        ((= hardware_configuration HARDWARE_TEST_FIXTURE) (* (/ MAX_ERPM_TEST_FIXTURE divisor) speed_percent))
         ((= scooter_type SCOOTER_BLACKTIP) (* (/ MAX_ERPM_BLACKTIP divisor) speed_percent))
         ((= scooter_type SCOOTER_CUDAX) (* (/ MAX_ERPM_CUDAX divisor) speed_percent))
         (t (debug_log "Invalid scooter_type, defaulting to Blacktip") (* (/ MAX_ERPM_BLACKTIP divisor) speed_percent))
@@ -1119,13 +1147,25 @@
     )
 })
 
-; Keep the fixture duty path behind the same state-machine and safe-start
-; gates as RPM-controlled production hardware. The controller's configured
-; current, ERPM and fault limits remain in force.
+; Keep the fixture's steady-state command behind the same state-machine and
+; safe-start gates as production hardware. The controller's configured
+; current, ERPM and fault limits remain in force either way.
+;
+; fixture_control_mode (confirmation-05) is a bench diagnostic: baseline (0)
+; is the set-duty path validated by prior bench sessions; the test variant
+; (1) switches to set-rpm, matching the production DPV's control scheme
+; exactly (same calculate_rpm call), to let a human compare them without
+; reflashing. This is a genuine re-introduction of RPM control for the
+; fixture, which an earlier, reverted fixture implementation also tried and
+; abandoned (see git history and tests/run_tests.py) -- it is deliberately
+; opt-in and defaults to the validated duty path, not a silent reversion.
 (defun set_motor_speed (speed_index divisor)
 {
     (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
-        (set-duty (test_fixture_duty_at speed_index divisor))
+        (if (= fixture_control_mode 1)
+            (set-rpm (calculate_rpm speed_index divisor))
+            (set-duty (test_fixture_duty_at speed_index divisor))
+        )
         (set-rpm (calculate_rpm speed_index divisor))
     )
 })
@@ -2311,10 +2351,18 @@
         (eeprom_store_i_if_changed 33 0)
     })
 
+    ; Migration for the test-fixture bench steady-state control-mode
+    ; diagnostic. Also a bench-only comparison aid; must default to the
+    ; validated set-duty path (0) on every existing install.
+    (if (< stored_version 5) {
+        (puts "EEPROM: Initializing defaults for fixture control-mode diagnostic")
+        (eeprom_store_i_if_changed 34 0)
+    })
+
     ; Advance older markers to this schema version. Do not rewrite markers from
     ; newer firmware, so downgrade/upgrade cycles remain monotonic.
-    (if (< stored_version 4)
-        (eeprom_store_i_if_changed 127 4))
+    (if (< stored_version 5)
+        (eeprom_store_i_if_changed 127 5))
 })
 
 (defun init ()
