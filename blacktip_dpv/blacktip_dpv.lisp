@@ -146,7 +146,10 @@
 (define TIMER_BAR_ROTATION_2_BITS (list 0x40 0x20 0x10 0x08 0x04 0x02 0x01 0x80))
 
 ; EEPROM settings buffer size. Five-click shutdown is stored in slot 32.
-(define EEPROM_SETTINGS_COUNT 33)
+; Slot 33 is the test-fixture-only launch-kick duty diagnostic selector
+; (see fixture_launch_kick_variant / soft_start_kick_duty below). It is
+; always 0 (baseline) outside HARDWARE_TEST_FIXTURE.
+(define EEPROM_SETTINGS_COUNT 34)
 
 ; Battery polynomial coefficients (for voltage-based calculation)
 (define BATTERY_COEFF_4 4.3867)
@@ -253,6 +256,10 @@
 (define battery_imbalance_threshold_centi 0)
 (define adc_balance_wire_multiplier_x10 ADC_BAL_MULT_X10_DEFAULT)
 (define enable_five_click_shutdown 0)
+; Test-fixture-only bench diagnostic: 0 = baseline (SAFE_START_DUTY unchanged),
+; 1 = candidate A (0.30 duty launch kick), 2 = candidate B (0.40 duty launch
+; kick). See soft_start_kick_duty. Always 0 outside HARDWARE_TEST_FIXTURE.
+(define fixture_launch_kick_variant 0)
 
 ; --- Runtime state machine / motor / display vars ---
 (define sw_state 0)
@@ -590,6 +597,7 @@
 
 (defun safe_start_log_abort_telemetry (reason)
 {
+    (test_fixture_log_offsets (str-merge "soft-start-abort (" reason ")"))
     ; Timeout logs alone cannot distinguish a controller that did not accept the
     ; duty command from a prop that did not reach the safe-start RPM threshold.
     ; Sample only on an abort and only with debug enabled: never add telemetry
@@ -742,6 +750,7 @@
     (setvar 'battery_imbalance_threshold_centi (eeprom-read-i 30))
     (setvar 'adc_balance_wire_multiplier_x10 (eeprom-read-i 31))
     (setvar 'enable_five_click_shutdown (or (eeprom-read-i 32) 0))
+    (setvar 'fixture_launch_kick_variant (or (eeprom-read-i 33) 0))
 
     (setvar 'speed_set (list
         (eeprom-read-i 0) ; Reverse Speed 2 %
@@ -1051,6 +1060,49 @@
     (if (< target 0)
         (- 0 (clamp (abs scaled) TEST_FIXTURE_MIN_DUTY TEST_FIXTURE_MAX_DUTY))
         (clamp scaled TEST_FIXTURE_MIN_DUTY TEST_FIXTURE_MAX_DUTY))
+})
+
+; Bench diagnostic for the test fixture only (confirmation-01). Logs the live
+; FOC current/voltage offsets (conf-dc-cal with no arguments only reads the
+; offsets in use; it does not run calibration or disturb the motor) so a
+; human can compare them across failed vs successful standstill starts
+; without a separate manual `info` terminal step. No-op outside the fixture
+; and when Debug Logging is off, so production hardware never calls
+; conf-dc-cal.
+(defun test_fixture_log_offsets (label)
+{
+    (if (and (= hardware_configuration HARDWARE_TEST_FIXTURE)
+             (not-eq debug_enabled nil) (= debug_enabled 1)) {
+        (var offsets (conf-dc-cal))
+        (if offsets
+            (debug_log (str-merge "Fixture: FOC offsets at " label
+                                   " i0=" (to-str (ix offsets 0))
+                                   " i1=" (to-str (ix offsets 1))
+                                   " i2=" (to-str (ix offsets 2))
+                                   " v0=" (to-str (ix offsets 3))
+                                   " v1=" (to-str (ix offsets 4))
+                                   " v2=" (to-str (ix offsets 5))))
+            (debug_log (str-merge "Fixture: FOC offsets unavailable at " label))
+        )
+    })
+})
+
+; Bench diagnostic for the test fixture only (confirmation-02). The shared
+; SAFE_START_DUTY (0.06) is tuned for the production BlackTip/CudaX motors
+; and is below the fixture's own documented validated duty floor (see
+; TEST_FIXTURE_MIN_DUTY above). fixture_launch_kick_variant lets a human
+; compare that baseline against two candidate launch-kick duties without
+; reflashing between trials. Selecting a candidate only ever affects
+; HARDWARE_TEST_FIXTURE; production hardware always uses SAFE_START_DUTY.
+(defun soft_start_kick_duty ()
+{
+    (if (= hardware_configuration HARDWARE_TEST_FIXTURE)
+        (cond
+            ((= fixture_launch_kick_variant 1) TEST_FIXTURE_MIN_DUTY) ; Candidate A: 0.30
+            ((= fixture_launch_kick_variant 2) 0.40)                  ; Candidate B: 0.40
+            (t SAFE_START_DUTY))
+        SAFE_START_DUTY
+    )
 })
 
 (defun calculate_rpm (speed_index divisor)
@@ -1550,6 +1602,7 @@
 (defun start_motor_speed_loop ()
 {
     (debug_log "Motor: Starting motor speed loop")
+    (test_fixture_log_offsets "boot")
 
     (safe_start_reset_state)
 
@@ -1600,9 +1653,10 @@
                         (safe_start_begin speed)
                         (safe_start_set_status 'idle)) ; keep safe_start_status idle when disabled
                     (setvar 'last_speed SPEED_SOFT_START_SENTINEL)
+                    (test_fixture_log_offsets "launch-kick")
                     (if (< speed SPEED_REVERSE_THRESHOLD)
-                        (set-duty (- 0 SAFE_START_DUTY))
-                        (set-duty SAFE_START_DUTY)
+                        (set-duty (- 0 (soft_start_kick_duty)))
+                        (set-duty (soft_start_kick_duty))
                     )
                 } {
                     ; Speed change while already running (not from off, not during soft-start)
@@ -1633,6 +1687,7 @@
                         (if (safe_start_met_success_criteria rpm duty current)
                             {
                                  (debug_log "Motor: Soft start completed (telemetry)")
+                                 (test_fixture_log_offsets "soft-start-success")
                                  (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
                                  (safe_start_success)
                                 (soft_start_handoff_to_speed speed)
@@ -1660,6 +1715,7 @@
                         (if (> soft_elapsed SOFT_START_DURATION)
                             {
                                 (debug_log "Motor: Soft start completed (timer)")
+                                (test_fixture_log_offsets "soft-start-success")
                                 (conf-set 'l-in-current-max (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX))
                                 (soft_start_handoff_to_speed speed)
                                 (setvar 'disp_num (+ speed DISPLAY_SPEED_OFFSET))
@@ -2247,10 +2303,18 @@
         (eeprom_store_i_if_changed 32 0)
     })
 
+    ; Migration for the test-fixture bench launch-kick diagnostic. This is a
+    ; bench-only comparison aid and must stay at baseline (0) on every existing
+    ; install, including production BlackTip/CudaX hardware.
+    (if (< stored_version 4) {
+        (puts "EEPROM: Initializing defaults for fixture launch-kick diagnostic")
+        (eeprom_store_i_if_changed 33 0)
+    })
+
     ; Advance older markers to this schema version. Do not rewrite markers from
     ; newer firmware, so downgrade/upgrade cycles remain monotonic.
-    (if (< stored_version 3)
-        (eeprom_store_i_if_changed 127 3))
+    (if (< stored_version 4)
+        (eeprom_store_i_if_changed 127 4))
 })
 
 (defun init ()

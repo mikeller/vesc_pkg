@@ -805,7 +805,7 @@ Item {
             return
         }
 
-        var buffer = new ArrayBuffer(33)
+        var buffer = new ArrayBuffer(34)
         var da = new DataView(buffer)
 
         da.setUint8(0, reverse_speed.realValue)
@@ -841,6 +841,9 @@ Item {
         da.setUint8(30, enable_battery_imbalance_detection.checked ? Math.round(battery_imbalance_threshold.realValue * 100) : 0)
         da.setUint8(31, receivedAdcMultiplierX10) // Balance-wire ADC multiplier x10 (5.0..25.5x, default 16.2x)
         da.setUint8(32, enable_five_click_shutdown.checked ? 1 : 0)
+        // Bench-only diagnostic (test fixture hardware only, see soft_start_kick_duty
+        // in blacktip_dpv.lisp): 0 = baseline, 1 = candidate A (0.30 duty), 2 = candidate B (0.40 duty)
+        da.setUint8(33, fixture_launch_kick_variant.currentIndex)
         mCommands.sendCustomAppData(buffer)
 
         console.log("Sent values")
@@ -888,7 +891,7 @@ Item {
     }
 
     function apply_defaults_blacktip() {
-        var buffer1 = new ArrayBuffer(33)
+        var buffer1 = new ArrayBuffer(34)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 45)
         da1.setUint8(1, 20)
@@ -923,6 +926,7 @@ Item {
         da1.setUint8(30, 200) // Battery imbalance threshold default: 200 cV = 2.00 V (enabled)
         da1.setUint8(31, 162) // Balance-wire ADC multiplier x10 default: 162 = 16.2x (measured on reference Blacktip)
         da1.setUint8(32, 0) // Five-click deep shutdown default: off
+        da1.setUint8(33, 0) // Fixture launch-kick diagnostic default: baseline (not applicable to production hardware)
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/master/datatypes.h
@@ -1018,7 +1022,7 @@ Item {
 
         fixtureResetPending = false
 
-        var buffer1 = new ArrayBuffer(33)
+        var buffer1 = new ArrayBuffer(34)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 45)
         da1.setUint8(1, 20)
@@ -1053,6 +1057,9 @@ Item {
         da1.setUint8(30, 200)
         da1.setUint8(31, 162)
         da1.setUint8(32, 0)
+        // Bench diagnostic default: baseline (no candidate kick-duty active).
+        // Reset Defaults always reverts this; it is never a shipped default.
+        da1.setUint8(33, 0)
         mCommands.sendCustomAppData(buffer1)
 
         // Apply only the captured fixture differences over the controller's
@@ -1141,8 +1148,65 @@ Item {
         console.log("Defaults Reset for Blacktip test fixture")
     }
 
+    // Test-fixture bench diagnostics (confirmation-03 / confirmation-04). These
+    // apply single motor-config parameters directly on top of whatever is
+    // currently loaded (normally the Blacktip test fixture baseline above).
+    // They are deliberately separate from apply_test_fixture_profile: a human
+    // comparing candidates on the bench needs to layer and revert one change
+    // at a time without repeating the full defaults-reset/reboot cycle.
+    // None of these are shipped defaults; see README for the bench procedure.
+    function apply_test_fixture_sl_erpm_candidate_a() {
+        // Candidate A: transition to full sensorless tracking earlier (at a
+        // lower ERPM) than the fixture baseline (2500 / 3500), to test
+        // whether a shorter open-loop phase improves standstill reliability.
+        mMcConf.updateParamDouble("foc_sl_erpm_start", 1200, null)
+        mMcConf.updateParamDouble("foc_sl_erpm", 2000, null)
+        mCommands.setMcconf(false)
+    }
+
+    function apply_test_fixture_sl_erpm_candidate_b() {
+        // Candidate B: stay in open-loop longer (higher ERPM) than the
+        // fixture baseline (2500 / 3500), to test whether giving the motor
+        // more time under open-loop control before sensorless takeover
+        // improves standstill reliability.
+        mMcConf.updateParamDouble("foc_sl_erpm_start", 4000, null)
+        mMcConf.updateParamDouble("foc_sl_erpm", 5500, null)
+        mCommands.setMcconf(false)
+    }
+
+    function restore_test_fixture_sl_erpm_baseline() {
+        // Restores the Blacktip test fixture profile's own baseline values
+        // (unchanged firmware defaults for this motor family).
+        mMcConf.updateParamDouble("foc_sl_erpm_start", 2500, null)
+        mMcConf.updateParamDouble("foc_sl_erpm", 3500, null)
+        mCommands.setMcconf(false)
+    }
+
+    function apply_test_fixture_field_weakening_candidate() {
+        // Field weakening is off by default (foc_fw_current_max 0) on both
+        // the fixture and production profiles; this was never swept in the
+        // bench tuning log. foc_fw_current_max is kept well below the
+        // fixture's already-conservative 1 A motor current limit, and
+        // foc_fw_duty_start is lowered from the firmware default (0.8) so
+        // field weakening has room to act before duty reaches the ~0.95
+        // ceiling observed when gear 6+ loses lock. foc_fw_ramp_time smooths
+        // the current injection so it does not itself disturb the observer.
+        mMcConf.updateParamDouble("foc_fw_current_max", 0.4, null)
+        mMcConf.updateParamDouble("foc_fw_duty_start", 0.7, null)
+        mMcConf.updateParamDouble("foc_fw_ramp_time", 0.5, null)
+        mCommands.setMcconf(false)
+    }
+
+    function restore_test_fixture_field_weakening_baseline() {
+        // Restores the firmware/fixture baseline: field weakening disabled.
+        mMcConf.updateParamDouble("foc_fw_current_max", 0, null)
+        mMcConf.updateParamDouble("foc_fw_duty_start", 0.8, null)
+        mMcConf.updateParamDouble("foc_fw_ramp_time", 0, null)
+        mCommands.setMcconf(false)
+    }
+
     function apply_defaults_cudax() {
-        var buffer1 = new ArrayBuffer(33)
+        var buffer1 = new ArrayBuffer(34)
         var da1 = new DataView(buffer1)
         da1.setUint8(0, 30)
         da1.setUint8(1, 10)
@@ -1177,6 +1241,7 @@ Item {
         da1.setUint8(30, 200) // Battery imbalance threshold default: 200 cV = 2.00 V (enabled)
         da1.setUint8(31, 162) // Balance-wire ADC multiplier x10 default: 162 = 16.2x (measured on reference Blacktip)
         da1.setUint8(32, 0) // Five-click deep shutdown default: off
+        da1.setUint8(33, 0) // Fixture launch-kick diagnostic default: baseline (not applicable to production hardware)
         mCommands.sendCustomAppData(buffer1)
 
         // All available settings here https://github.com/vedderb/bldc/blob/f6b06bc9f8d02d2ba262166127c3f2ffaedbb17e/datatypes.h#L369
@@ -1339,6 +1404,9 @@ Item {
                 adc_balance_wire_multiplier.realValue = receivedAdcMultiplierX10 / 10.0
             }
             enable_five_click_shutdown.checked = dv.byteLength > 32 && dv.getUint8(32) === 1
+            // Bench diagnostic selector (test fixture only). Older devices without
+            // slot 33 default to 0 (baseline), same pattern as slot 32 above.
+            fixture_launch_kick_variant.currentIndex = dv.byteLength > 33 ? dv.getUint8(33) : 0
 
             ramp_rate.realValue = mMcConf.getParamDouble("s_pid_ramp_erpms_s")
             battery_ah.realValue = mMcConf.getParamDouble("si_battery_ah")
@@ -2098,6 +2166,120 @@ Item {
                     font.pixelSize: Qt.application.font.pixelSize * 0.8
                     color: Utility.getAppHexColor("lightText")
                     text: "*This restarts the scooter and may reset settings to defaults."
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 15
+                    height: 1
+                    color: Utility.getAppHexColor("lightText")
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    topPadding: 15
+                    font.bold: true
+                    color: "#ffffff"
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    text: "Test fixture bench diagnostics (bench-only, not a production change)"
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: Utility.getAppHexColor("lightText")
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    text: "These controls exist only to let a human confirm on the HW60 bench rig whether four specific open bench-tuning questions are viable. None of them are a shipped fix. Apply Reset Defaults above first to establish the known baseline, then try one control at a time, noting the result before trying the next. Switching away from the test fixture model, or using Reset Defaults again, reverts everything below to its package baseline."
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    topPadding: 15
+                    color: "#ffffff"
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    text: "1) Launch-kick duty at standstill. Pick a candidate, then try at least 10 starts from OFF for each option and count how many catch cleanly. PASS = a candidate starts cleanly more often than Baseline; FAIL = no improvement, or new jerks/faults."
+                }
+
+                ComboBox {
+                    id: fixture_launch_kick_variant
+                    Layout.fillWidth: true
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    currentIndex: 0
+                    model: ["Baseline (package default, 0.06 duty)", "Candidate A: 0.30 duty kick", "Candidate B: 0.40 duty kick"]
+                    onActivated: {
+                        if (!loading_values) {
+                            write_settings()
+                        }
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    topPadding: 15
+                    color: "#ffffff"
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    text: "2) Open-loop-to-sensorless handoff threshold (foc_sl_erpm_start / foc_sl_erpm), an unswept value from the bench tuning log. Apply one candidate, retry standstill starts, restore the baseline below, then try the other candidate. PASS = a candidate starts more reliably than Baseline; FAIL = no change, or worse."
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Apply candidate A (earlier handoff)"
+                        onClicked: apply_test_fixture_sl_erpm_candidate_a()
+                    }
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Apply candidate B (later handoff)"
+                        onClicked: apply_test_fixture_sl_erpm_candidate_b()
+                    }
+                }
+
+                Button {
+                    Layout.fillWidth: true
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    text: "Restore sl-erpm baseline (2500 / 3500)"
+                    onClicked: restore_test_fixture_sl_erpm_baseline()
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    topPadding: 15
+                    color: "#ffffff"
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    text: "3) Field weakening, as a targeted attempt at the gear 6+ voltage-headroom ceiling. Apply the candidate, then try gear 6 and above. PASS = sustained lock at a higher gear than Baseline without excess current or new faults; FAIL = no change, or new instability/overcurrent. Restore the baseline afterwards regardless of outcome."
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Apply field-weakening candidate"
+                        onClicked: apply_test_fixture_field_weakening_candidate()
+                    }
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Restore field-weakening baseline (disabled)"
+                        onClicked: restore_test_fixture_field_weakening_baseline()
+                    }
+                }
+
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    topPadding: 15
+                    color: Utility.getAppHexColor("lightText")
+                    visible: isTestFixture(hardware_configuration.currentIndex)
+                    text: "4) Current-offset calibration drift: there is no control for this here. Turn on Debug Logging in General Settings, then watch the VESC Tool Lisp console (or connect a terminal) around each start attempt for lines starting 'Fixture: FOC offsets at ...', logged automatically at boot, at the launch kick, at a successful soft start, and at any soft-start abort. Compare the i0/i1/i2 values between a failed start and a successful start; a difference of a few counts or more is the signal this check is looking for. This cannot be scaffolded as a button because the result is a comparison a human has to read and judge, not a value the package can apply."
                 }
             }
         }

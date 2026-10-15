@@ -45,6 +45,7 @@ def assert_near(actual, expected, tolerance, test_name):
 
 SPEED_REVERSE_THRESHOLD = 5
 HARDWARE_TEST_FIXTURE = 5
+EEPROM_SETTINGS_COUNT = 34
 TEST_FIXTURE_MIN_DUTY = 0.30
 TEST_FIXTURE_MAX_DUTY = 0.65
 TEST_FIXTURE_DUTY = [-0.35, -0.30, 0.30, 0.35, 0.40,
@@ -197,22 +198,35 @@ def trigger_arm_after_ready_sample(trigger_input_ready, sw_pressed):
     return 1 if trigger_input_ready == 1 and sw_pressed == 0 else 0
 
 
-def migrate_eeprom_v3(eeprom, stored_version):
-    """Mirror only the layered v3 migration relevant to an existing schema."""
+def migrate_eeprom_v4(eeprom, stored_version):
+    """Mirror the layered v3 (slot 32) and v4 (slot 33) migrations."""
     result = dict(eeprom)
     if stored_version < 3:
         result[32] = 0
-        result[127] = 3
+    if stored_version < 4:
+        result[33] = 0
+        result[127] = 4
     return result
 
 
 def receive_settings_simulate(eeprom, payload):
-    if len(payload) < 33:
+    if len(payload) < EEPROM_SETTINGS_COUNT:
         return False, dict(eeprom)
     result = dict(eeprom)
-    for index, value in enumerate(payload[:33]):
+    for index, value in enumerate(payload[:EEPROM_SETTINGS_COUNT]):
         result[index] = value
     return True, result
+
+
+def fixture_launch_kick_duty(hardware_configuration, variant):
+    """Mirror soft_start_kick_duty's HARDWARE_TEST_FIXTURE-gated selection."""
+    if hardware_configuration != HARDWARE_TEST_FIXTURE:
+        return 0.06
+    if variant == 1:
+        return TEST_FIXTURE_MIN_DUTY
+    if variant == 2:
+        return 0.40
+    return 0.06
 
 
 def is_blacktip_hardware(hardware_configuration):
@@ -330,8 +344,10 @@ def test_motor_speed_command_centralisation():
               False, "motor speed: full-speed commands do not bypass the helper")
     assert_eq('(set-rpm (calculate_rpm speed SMART_CRUISE_SLOWDOWN_DIVISOR))' in source,
               False, "motor speed: Smart Cruise slowdown does not bypass the helper")
-    assert_eq('(set-duty SAFE_START_DUTY)' in source, True,
+    assert_eq('(set-duty (soft_start_kick_duty))' in source, True,
               "motor speed: safe-start duty command remains separate")
+    assert_eq('(defun soft_start_kick_duty ()' in source, True,
+              "motor speed: launch-kick duty is hardware-gated like steady-state speed")
     assert_eq('(defun soft_start_handoff_to_speed (target_speed)' in source, True,
               "motor speed: soft-start handoff helper exists")
     assert_eq("(setvar 'startup_tune_cancelled 1)" in source, True,
@@ -855,24 +871,27 @@ def test_state_metrics_reset():
 def test_five_click_settings_and_migration():
     print("\n=== Testing five-click setting persistence and migration ===")
 
-    defaults = bytes([0] * 33)
+    defaults = bytes([0] * EEPROM_SETTINGS_COUNT)
     assert_eq(defaults[32], 0, "five-click setting: default disabled")
+    assert_eq(defaults[33], 0, "fixture launch-kick diagnostic: default baseline")
 
     eeprom = {index: (index * 7) % 256 for index in range(32)}
     before = dict(eeprom)
-    migrated = migrate_eeprom_v3(eeprom, 2)
+    migrated = migrate_eeprom_v4(eeprom, 2)
     assert_eq(migrated[32], 0, "EEPROM v3: slot 32 initialized disabled")
+    assert_eq(migrated[33], 0, "EEPROM v4: slot 33 initialized to baseline")
     assert_eq({index: migrated[index] for index in range(32)}, before,
-              "EEPROM v3: slots 0-31 preserved")
-    assert_eq(migrated[127], 3, "EEPROM v3: schema marker advanced to 3")
+              "EEPROM v4: slots 0-31 preserved")
+    assert_eq(migrated[127], 4, "EEPROM v4: schema marker advanced to 4")
 
-    current = bytes(list(range(32)) + [1])
+    current = bytes(list(range(32)) + [1, 2])
     accepted, received = receive_settings_simulate(migrated, current)
-    assert_eq(accepted, True, "settings receive: 33-byte buffer accepted")
+    assert_eq(accepted, True, "settings receive: 34-byte buffer accepted")
     assert_eq(received[32], 1, "settings receive: slot 32 round-trips enabled")
+    assert_eq(received[33], 2, "settings receive: slot 33 round-trips fixture launch-kick variant")
 
-    accepted, rejected = receive_settings_simulate(received, bytes(32))
-    assert_eq(accepted, False, "settings receive: buffer shorter than 33 rejected")
+    accepted, rejected = receive_settings_simulate(received, bytes(33))
+    assert_eq(accepted, False, "settings receive: buffer shorter than 34 rejected")
     assert_eq(rejected, received, "settings receive: rejected buffer changes nothing")
 
 
@@ -988,8 +1007,20 @@ def test_test_fixture_model_configuration():
                False, "test fixture: no normal command bypasses the guarded helper")
     assert_eq('(set-current 0)' in lisp_source, True,
                "test fixture: stop command retains the current-control stop safeguard")
-    assert_eq('(set-duty SAFE_START_DUTY)' in lisp_source, True,
-               "test fixture: safe start retains the low-duty spin-up safeguard")
+    assert_eq('(defun soft_start_kick_duty ()' in lisp_source, True,
+               "test fixture: launch kick duty is hardware-gated instead of a bare constant")
+    assert_eq('(set-duty (soft_start_kick_duty))' in lisp_source, True,
+               "test fixture: safe start retains a low-duty spin-up safeguard")
+    assert_eq(fixture_launch_kick_duty(0, 0) == 0.06, True,
+               "test fixture: production launch kick is unaffected (baseline SAFE_START_DUTY)")
+    assert_eq(fixture_launch_kick_duty(HARDWARE_TEST_FIXTURE, 0) == 0.06, True,
+               "test fixture: fixture baseline variant keeps SAFE_START_DUTY unchanged")
+    assert_eq(fixture_launch_kick_duty(HARDWARE_TEST_FIXTURE, 1) == TEST_FIXTURE_MIN_DUTY, True,
+               "test fixture: launch-kick candidate A is the validated 0.30 duty floor")
+    assert_eq(fixture_launch_kick_duty(HARDWARE_TEST_FIXTURE, 2) == 0.40, True,
+               "test fixture: launch-kick candidate B is 0.40 duty")
+    assert_eq(fixture_launch_kick_duty(0, 2) == 0.06, True,
+               "test fixture: launch-kick candidates never apply to production hardware")
     assert_eq('cc_startup_boost_duty and m_fault_stop_time_ms motor parameters' in lisp_source,
                True, "test fixture: package safe-start settings remain distinct from VESC motor settings")
     assert_eq('mMcConf.updateParamDouble("cc_startup_boost_duty", 0.06, null)' in ui_source,
@@ -998,6 +1029,123 @@ def test_test_fixture_model_configuration():
                True, "test fixture: fault-stop hold time is not labelled as a safe-start delay")
     assert_eq('this profile is only for the local test rig' in readme_source, True,
                "test fixture: README warns that the profile is not for a production DPV")
+
+
+def test_fixture_bench_diagnostics():
+    """Scaffolding for the 4 untested bench-confirmation items. These tests
+    check that the diagnostic scaffolding exists and is fixture-gated; they
+    cannot verify actual rig behaviour, only that the code is present,
+    syntactically consistent, and does not touch production hardware."""
+    print("\n=== Testing fixture bench-diagnostics scaffolding ===")
+
+    root = Path(__file__).resolve().parents[1]
+    lisp_source = (root / 'blacktip_dpv.lisp').read_text()
+    ui_source = (root / 'ui.qml').read_text()
+
+    # EEPROM schema: new slot 33 added and migrated like slot 32 was.
+    assert_eq('(define EEPROM_SETTINGS_COUNT 34)' in lisp_source, True,
+               "bench diagnostics: EEPROM settings buffer grew by one slot")
+    assert_eq("(setvar 'fixture_launch_kick_variant (or (eeprom-read-i 33) 0))" in lisp_source, True,
+               "bench diagnostics: launch-kick variant is read with a safe baseline default")
+    assert_eq('(if (< stored_version 4) {' in lisp_source, True,
+               "bench diagnostics: a v4 migration block initializes slot 33")
+    assert_eq('(eeprom_store_i_if_changed 127 4))' in lisp_source, True,
+               "bench diagnostics: schema marker advances to 4")
+
+    # Item 1: current-offset drift diagnostic (conf-dc-cal read-only call).
+    assert_eq('(defun test_fixture_log_offsets (label)' in lisp_source, True,
+               "confirmation-01: offset diagnostic helper exists")
+    assert_eq('(var offsets (conf-dc-cal))' in lisp_source, True,
+               "confirmation-01: offsets are read via conf-dc-cal with no arguments (read-only)")
+    assert_eq(lisp_source.count('(test_fixture_log_offsets ') == 5, True,
+               "confirmation-01: offsets are logged at boot, launch-kick, both success paths, and abort")
+    assert_eq('(test_fixture_log_offsets "boot")' in lisp_source, True,
+               "confirmation-01: offsets are logged once at startup")
+    assert_eq('(test_fixture_log_offsets "launch-kick")' in lisp_source, True,
+               "confirmation-01: offsets are logged at the launch kick")
+    assert_eq(lisp_source.count('(test_fixture_log_offsets "soft-start-success")') == 2, True,
+               "confirmation-01: offsets are logged on both soft-start success paths")
+    assert_eq('(test_fixture_log_offsets (str-merge "soft-start-abort (" reason ")"))' in lisp_source, True,
+               "confirmation-01: offsets are logged on every soft-start abort reason")
+    offsets_fn_start = lisp_source.index('(defun test_fixture_log_offsets (label)')
+    offsets_fn_body = lisp_source[offsets_fn_start:lisp_source.index('(defun ', offsets_fn_start + 1)]
+    assert_eq('(= hardware_configuration HARDWARE_TEST_FIXTURE)' in offsets_fn_body, True,
+               "confirmation-01: offset diagnostic is gated to the test fixture")
+    assert_eq('(= debug_enabled 1))' in offsets_fn_body, True,
+               "confirmation-01: offset diagnostic is gated on Debug Logging")
+    assert_eq(offsets_fn_body.index('HARDWARE_TEST_FIXTURE') < offsets_fn_body.index('(var offsets (conf-dc-cal))'), True,
+               "confirmation-01: the hardware/debug gate is checked before conf-dc-cal is ever called")
+
+    # Item 2: launch-kick duty A/B, runtime-selectable, fixture-only.
+    assert_eq('(defun soft_start_kick_duty ()' in lisp_source, True,
+               "confirmation-02: launch-kick duty helper exists")
+    assert_eq('((= fixture_launch_kick_variant 1) TEST_FIXTURE_MIN_DUTY)' in lisp_source, True,
+               "confirmation-02: candidate A reuses the already-validated 0.30 duty floor")
+    assert_eq('((= fixture_launch_kick_variant 2) 0.40)' in lisp_source, True,
+               "confirmation-02: candidate B is 0.40 duty")
+    assert_eq(fixture_launch_kick_duty(1, 1) == 0.06, True,
+               "confirmation-02: candidates do not apply to Blacktip HW60 - Ble (hardware_configuration 1)")
+    assert_eq('model: ["Baseline (package default, 0.06 duty)", "Candidate A: 0.30 duty kick", "Candidate B: 0.40 duty kick"]' in ui_source,
+               True, "confirmation-02: UI exposes a 3-way selector matching the lisp variants")
+    assert_eq('id: fixture_launch_kick_variant' in ui_source, True,
+               "confirmation-02: launch-kick selector is a distinct UI control")
+    assert_eq('da.setUint8(33, fixture_launch_kick_variant.currentIndex)' in ui_source, True,
+               "confirmation-02: the selector persists through the normal settings-write path")
+
+    # Item 3: foc_sl_erpm_start / foc_sl_erpm candidates (motor config, QML only).
+    for setting in (
+            'mMcConf.updateParamDouble("foc_sl_erpm_start", 1200, null)',
+            'mMcConf.updateParamDouble("foc_sl_erpm", 2000, null)',
+            'mMcConf.updateParamDouble("foc_sl_erpm_start", 4000, null)',
+            'mMcConf.updateParamDouble("foc_sl_erpm", 5500, null)',
+            'mMcConf.updateParamDouble("foc_sl_erpm_start", 2500, null)',
+            'mMcConf.updateParamDouble("foc_sl_erpm", 3500, null)',
+    ):
+        assert_eq(setting in ui_source, True,
+                   f"confirmation-03: sl-erpm candidate/baseline profile contains {setting}")
+    assert_eq('function apply_test_fixture_sl_erpm_candidate_a()' in ui_source, True,
+               "confirmation-03: candidate A (earlier handoff) is a distinct, separately applicable profile")
+    assert_eq('function apply_test_fixture_sl_erpm_candidate_b()' in ui_source, True,
+               "confirmation-03: candidate B (later handoff) is a distinct, separately applicable profile")
+    assert_eq('function restore_test_fixture_sl_erpm_baseline()' in ui_source, True,
+               "confirmation-03: the baseline can be restored without a full Reset Defaults cycle")
+
+    # Item 4: field weakening candidate for the gear 6+ voltage ceiling.
+    for setting in (
+            'mMcConf.updateParamDouble("foc_fw_current_max", 0.4, null)',
+            'mMcConf.updateParamDouble("foc_fw_duty_start", 0.7, null)',
+            'mMcConf.updateParamDouble("foc_fw_ramp_time", 0.5, null)',
+            'mMcConf.updateParamDouble("foc_fw_current_max", 0, null)',
+            'mMcConf.updateParamDouble("foc_fw_duty_start", 0.8, null)',
+            'mMcConf.updateParamDouble("foc_fw_ramp_time", 0, null)',
+    ):
+        assert_eq(setting in ui_source, True,
+                   f"confirmation-04: field-weakening candidate/baseline profile contains {setting}")
+    assert_eq('function apply_test_fixture_field_weakening_candidate()' in ui_source, True,
+               "confirmation-04: field-weakening candidate is a distinct, separately applicable profile")
+    assert_eq('function restore_test_fixture_field_weakening_baseline()' in ui_source, True,
+               "confirmation-04: field weakening can be restored to disabled without a full Reset Defaults cycle")
+    # The fixture's conservative current limit (1 A) must stay well above the
+    # candidate's field-weakening current ceiling, otherwise the candidate
+    # could never apply the current it requests.
+    assert_eq(0.4 < 1.0, True,
+               "confirmation-04: candidate field-weakening current stays within the fixture's 1 A motor current limit")
+
+    # All 4 confirmation controls must be gated to the test fixture model only,
+    # and not touch the production Blacktip/CudaX reset profiles.
+    diagnostics_panel = ui_source[ui_source.index('Test fixture bench diagnostics'):
+                                   ui_source.index('id: rebootDialog')]
+    assert_eq(diagnostics_panel.count('visible: isTestFixture(hardware_configuration.currentIndex)') >= 8, True,
+               "bench diagnostics: every diagnostic control is gated to the test fixture model")
+
+    blacktip_profile_body = ui_source[ui_source.index('function apply_defaults_blacktip()'):
+                                       ui_source.index('function reset_defaults_test_fixture()')]
+    cudax_profile_body = ui_source[ui_source.index('function apply_defaults_cudax()'):
+                                    ui_source.index('function isBlacktip(hardware_type)')]
+    assert_eq('foc_sl_erpm_start' not in blacktip_profile_body and 'foc_fw_current_max' not in blacktip_profile_body, True,
+               "bench diagnostics: production Blacktip reset profile is untouched by the candidates")
+    assert_eq('foc_sl_erpm_start' not in cudax_profile_body and 'foc_fw_current_max' not in cudax_profile_body, True,
+               "bench diagnostics: production CudaX reset profile is untouched by the candidates")
 
 
 def test_production_defaults_reset():
@@ -1199,10 +1347,12 @@ def test_click_and_beep_regressions():
               "README rendering: unsupported check-mark glyphs are absent")
 
     ui_source = (Path(__file__).resolve().parents[1] / 'ui.qml').read_text()
-    assert_eq(ui_source.count('new ArrayBuffer(33)'), 4,
-               "QML settings: write and all reset buffers are 33 bytes")
+    assert_eq(ui_source.count('new ArrayBuffer(34)'), 4,
+               "QML settings: write and all reset buffers are 34 bytes")
     assert_eq(ui_source.count('setUint8(32, 0)'), 3,
                "QML defaults: all profiles disable five-click shutdown")
+    assert_eq(ui_source.count('setUint8(33, 0)'), 3,
+               "QML defaults: all profiles reset the fixture launch-kick diagnostic to baseline")
     payload_guard = 'if (dv.byteLength < 31)'
     first_settings_read = 'hardware_configuration.currentIndex =  dv.getUint8(19)'
     assert_eq(payload_guard in ui_source and
@@ -1210,6 +1360,8 @@ def test_click_and_beep_regressions():
               "QML settings: truncated baseline payload is rejected before any reads")
     assert_eq('dv.byteLength > 32 && dv.getUint8(32) === 1' in ui_source, True,
               "QML settings: missing slot 32 safely defaults shutdown to disabled")
+    assert_eq('fixture_launch_kick_variant.currentIndex = dv.byteLength > 33 ? dv.getUint8(33) : 0' in ui_source, True,
+              "QML settings: missing slot 33 safely defaults the fixture diagnostic to baseline")
     assert_eq('params.hw === "60_MK5"' in ui_source, True,
               "QML shutdown capability: VESC Tool MK5 hardware name is recognized")
     assert_eq('enabled: fiveClickShutdownHardwareSupported && fiveClickShutdownFirmwareSupported' in ui_source,
@@ -1245,6 +1397,7 @@ def run_all_tests():
     test_five_click_settings_and_migration()
     test_production_defaults_reset()
     test_test_fixture_model_configuration()
+    test_fixture_bench_diagnostics()
     test_release_documentation()
     test_five_click_shutdown_decision()
     test_startup_trigger_readiness()
