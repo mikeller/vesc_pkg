@@ -2177,17 +2177,30 @@
         })
 
         (if (> click_beep 0) {
-            (cond
-                ((= click_beep BEEP_SMART_CRUISE_CHANGE)
-                    (foc-play-tone 1 1500 beeps_vol))
-                ((= enable_trigger_beeps 1) {
-                    (cond
-                        ((= click_beep BEEP_CLICK_SINGLE) (foc-play-tone 1 2500 beeps_vol))
-                        ((= click_beep BEEP_CLICK_DOUBLE) (foc-play-tone 1 3000 beeps_vol))
-                        ((= click_beep BEEP_CLICK_TRIPLE) (foc-play-tone 1 3500 beeps_vol))
-                        ((= click_beep BEEP_CLICK_QUADRUPLE) (foc-play-tone 1 4000 beeps_vol))
-                    )
-                })
+            ; TEST FIXTURE ONLY: foc-play-tone shares the same phase
+            ; current/voltage budget as propulsion (no separate audio
+            ; output exists). At gear 7+ on the rescaled range, voltage
+            ; margin is thin (~0.8V/~0.08V by the same back-EMF+I*R budget
+            ; already documented for this motor/ballast), so a concurrent
+            ; tone can tip the combined demand over the ceiling and desync
+            ; the observer. Skip the tone (cosmetic only, bookkeeping below
+            ; still runs) at high gear, fixture only; not evidence this
+            ; applies to production, whose much lower winding resistance
+            ; gives far more headroom at its own top speed.
+            (if (not (and (= hardware_configuration HARDWARE_TEST_FIXTURE)
+                          (>= speed (+ SPEED_UNTANGLE 7))))
+                (cond
+                    ((= click_beep BEEP_SMART_CRUISE_CHANGE)
+                        (foc-play-tone 1 1500 beeps_vol))
+                    ((= enable_trigger_beeps 1) {
+                        (cond
+                            ((= click_beep BEEP_CLICK_SINGLE) (foc-play-tone 1 2500 beeps_vol))
+                            ((= click_beep BEEP_CLICK_DOUBLE) (foc-play-tone 1 3000 beeps_vol))
+                            ((= click_beep BEEP_CLICK_TRIPLE) (foc-play-tone 1 3500 beeps_vol))
+                            ((= click_beep BEEP_CLICK_QUADRUPLE) (foc-play-tone 1 4000 beeps_vol))
+                        )
+                    })
+                )
             )
 
             (setvar 'click_beep_timer (systime))

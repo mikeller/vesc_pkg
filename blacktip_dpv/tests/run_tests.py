@@ -287,6 +287,13 @@ def fixture_launch_kick_extra_hold_s(hardware_configuration, hold_variant):
     return 0
 
 
+def fixture_click_beep_suppressed(hardware_configuration, speed):
+    """Mirror start_beeper_loop's fixture-only, high-gear tone suppression.
+    True means the confirmation/Smart-Cruise tone is skipped (cosmetic
+    only); production hardware is never suppressed."""
+    return hardware_configuration == HARDWARE_TEST_FIXTURE and speed >= (SPEED_UNTANGLE + 7)
+
+
 def is_blacktip_hardware(hardware_configuration):
     """Mirror the Blacktip family test used for the fixture model."""
     return hardware_configuration <= 2 or hardware_configuration == HARDWARE_TEST_FIXTURE
@@ -1337,6 +1344,44 @@ def test_fixture_bench_diagnostics():
                "bench diagnostics: production CudaX reset profile is untouched by the candidates")
 
 
+def test_fixture_high_gear_tone_suppression():
+    """Bench finding: enable_trigger_beeps desyncs the fixture when changing
+    speed at gear 7+, where the rescaled range leaves little voltage margin
+    and a concurrent foc-play-tone can tip it over. Fixture-only, cosmetic
+    (skips the confirmation tone; the actual speed change is unaffected)."""
+    print("\n=== Testing fixture high-gear tone suppression ===")
+    lisp_source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
+
+    assert_eq(fixture_click_beep_suppressed(HARDWARE_TEST_FIXTURE, 8), True,
+               "tone suppression: gear 7 (index 8) is suppressed on the fixture")
+    assert_eq(fixture_click_beep_suppressed(HARDWARE_TEST_FIXTURE, 9), True,
+               "tone suppression: gear 8 (index 9) is suppressed on the fixture")
+    assert_eq(fixture_click_beep_suppressed(HARDWARE_TEST_FIXTURE, 7), False,
+               "tone suppression: gear 6 (index 7) still beeps on the fixture")
+    assert_eq(fixture_click_beep_suppressed(0, 9), False,
+               "tone suppression: production hardware is never suppressed, any gear")
+    assert_eq('(>= speed (+ SPEED_UNTANGLE 7))' in lisp_source, True,
+               "tone suppression: lisp threshold matches gear 7 and up")
+    assert_eq('(= hardware_configuration HARDWARE_TEST_FIXTURE)' in lisp_source, True,
+               "tone suppression: gated to the test fixture (shared with other fixture-only checks)")
+    # The suppression must wrap the tone-playing cond, not remove the
+    # bookkeeping (click_beep_timer/click_beep reset) that runs regardless.
+    beeper_fn = lisp_source[lisp_source.index('(defun start_beeper_loop ()'):
+                             lisp_source.index('; Dedicated thread for the balance-wire')]
+    assert_eq("(setvar 'click_beep_timer (systime))" in beeper_fn and "(setvar 'click_beep 0)" in beeper_fn, True,
+               "tone suppression: click_beep bookkeeping still runs even when the tone is skipped")
+    assert_eq('(foc-play-tone 1 1500 beeps_vol)' in beeper_fn, True,
+               "tone suppression: Smart Cruise change tone is still present (just gated like the others)")
+    for tone_call in (
+            '(foc-play-tone 1 2500 beeps_vol)',
+            '(foc-play-tone 1 3000 beeps_vol)',
+            '(foc-play-tone 1 3500 beeps_vol)',
+            '(foc-play-tone 1 4000 beeps_vol)',
+    ):
+        assert_eq(tone_call in beeper_fn, True,
+                   f"tone suppression: click confirmation tone {tone_call} is still present")
+
+
 def test_production_defaults_reset():
     """Production profiles must start from complete firmware defaults."""
     print("\n=== Testing production defaults reset ===")
@@ -1595,6 +1640,7 @@ def run_all_tests():
     test_production_defaults_reset()
     test_test_fixture_model_configuration()
     test_fixture_bench_diagnostics()
+    test_fixture_high_gear_tone_suppression()
     test_release_documentation()
     test_five_click_shutdown_decision()
     test_startup_trigger_readiness()
