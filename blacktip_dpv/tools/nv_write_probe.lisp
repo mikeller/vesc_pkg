@@ -16,10 +16,21 @@
 ; template.
 ;
 ; Safety:
-; * Every command that writes first checks (get-rpm) and (get-duty) are ~0 and
-;   aborts otherwise. Bursts re-check before every burst, paced writes re-check
-;   before every single write.
-; * The script never issues a motor command.
+; * AT-REST GUARD. probe-single, probe-burst, probe-bursts, probe-bursts-quiet
+;   and probe-cleanup first check that (get-rpm) and (get-duty) are ~0
+;   (|rpm| < 5.0 and |duty| < 0.005) and abort otherwise. Bursts re-check
+;   before every burst. This guard is always on for those commands.
+; * !!! THE GUARD IS OFF BY DEFAULT FOR THE PACED COMMANDS (probe-paced,
+;   probe-paced-loop, probe-paced-flip). !!! They write regardless of
+;   (get-rpm) and (get-duty). Reason: this is the test rig, a spinning motor is
+;   not an inherent danger there, and during the power-cut test the readings
+;   drift as the supply collapses, so the guard aborted nine of ten attempts
+;   before power was lost. Each paced command prints a notice line saying so
+;   when it starts, and so does loading this script. Turn the guard on for the
+;   paced commands with (setq probe-guard t); back off with
+;   (setq probe-guard nil). Rig only: never run this on a DPV.
+; * Regardless of the guard: the script never issues a motor command, writes
+;   only slots 64-126 and refuses run ids outside 1-99999.
 ; * Writes only touch slots 64-126. Settings slots 0-35 and 127 (package
 ;   schema version) are only read.
 ; * eeprom-store-i can stall the motor briefly in firmware, so keep the motor
@@ -95,15 +106,21 @@
 ;                                pass takes about 15 s). The marker line
 ;                                ("paced run" R "writing slot" S) is printed
 ;                                BEFORE each write. Same stamp as bursts
-;                                (run*1000+slot), at-rest check before every
-;                                write, slots outside 64-126 are refused.
+;                                (run*1000+slot). The at-rest guard is OFF by
+;                                default here (see probe-guard below). Slots
+;                                outside 64-126 are refused.
 ;   (probe-paced-loop first-run delay-ms)
 ;                                repeats paced passes with run id first-run,
-;                                first-run+1, ... until the motor is not at
-;                                rest, a write is refused, or probe-stop is t.
+;                                first-run+1, ... until a write is refused, a
+;                                run id is refused, probe-stop is t, or (only
+;                                with probe-guard t) the motor is not at rest.
 ;   (probe-paced-flip run-a run-b delay-ms)
 ;                                same, but alternates between two fixed run
 ;                                ids. Use 65 and 66, see "torn record" below.
+;   (setq probe-guard t)         turn the at-rest guard ON for the paced
+;                                commands (default nil = OFF). This one flag
+;                                only affects the three paced commands; the
+;                                other write commands always use the guard.
 ;   (setq probe-stop t)          stops a running loop at the next write (needs
 ;                                a second console command; if the console is
 ;                                blocked, cutting power is the stop).
@@ -113,11 +130,14 @@
 ;
 ;   Procedure:
 ;   1. Motor OFF. Save the console log to a file if the VESC Tool offers it.
+;      Leave probe-guard at its default (nil, guard off) for this test.
 ;   2. (probe-paced 10 250) and let it finish, then (probe-dump): all slots
 ;      are run 10.
 ;   3. (probe-paced-flip 65 66 250)   (or (probe-paced 11 250) for one pass)
 ;      Cut power at an arbitrary moment while it is printing marker lines.
-;      Note the wall-clock time since the pass started.
+;      Note the wall-clock time since the pass started. To stop without
+;      cutting power use (setq probe-stop t); if the console is blocked,
+;      cutting power is the stop.
 ;   4. Power up, reconnect, upload this script again (it does not write), then
 ;      run ONLY read commands: (probe-info) (probe-settings) (probe-dump).
 ;      Do not run any write command before recording the dump.
@@ -170,6 +190,7 @@
 (def probe-failures 0)      ; writes for which eeprom-store-i returned nil
 (def probe-stop nil)        ; set to t from the console to stop a paced loop
 (def probe-marker t)        ; nil suppresses the paced marker lines
+(def probe-guard nil)       ; t = at-rest guard ON for the paced commands only
 (def probe-summary-every 10); probe-bursts-quiet summary interval in bursts
 (def probe-top-n 3)         ; slowest writes kept by probe-bursts-quiet
 (def probe-top nil)         ; list of (ms write-index run slot), slowest first
@@ -181,13 +202,33 @@
     (and (< (abs (get-rpm)) 5.0) (< (abs (get-duty)) 0.005))
 )
 
-(defun probe-guard ()
-    (if (probe-at-rest)
-        t
-        {
-            (print (list "ABORT: motor not at rest, rpm" (get-rpm) "duty" (get-duty)))
-            nil
-        }
+; At-rest check. Reads rpm and duty ONCE and reports exactly that reading when
+; it fails, so the printed values are the ones that tripped the guard.
+(defun probe-rest-check ()
+    {
+        (var rpm (get-rpm))
+        (var duty (get-duty))
+        (if (and (< (abs rpm) 5.0) (< (abs duty) 0.005))
+            t
+            {
+                (print (list "ABORT: motor not at rest, rpm" rpm "duty" duty))
+                nil
+            }
+        )
+    }
+)
+
+; Guard for the paced commands only: runs the at-rest check only when the flag
+; probe-guard is t. With the default nil it passes without reading anything.
+(defun probe-paced-ok ()
+    (if probe-guard (probe-rest-check) t)
+)
+
+; One-line notice, printed at load and once per paced command.
+(defun probe-guard-notice ()
+    (if probe-guard
+        (print "paced commands: at-rest guard ON (probe-guard t); (setq probe-guard nil) turns it off")
+        (print "paced commands: at-rest guard OFF (default, rig only); (setq probe-guard t) turns it on")
     )
 )
 
@@ -240,7 +281,8 @@
         (print (list "fw-ver" (sysinfo 'fw-ver)))
         (print (list "git-branch" (sysinfo 'git-branch)))
         (print (list "git-hash" (sysinfo 'git-hash)))
-        (print (list "rpm" (get-rpm) "duty" (get-duty) "at-rest" (probe-at-rest)))
+        (print (list "rpm" (get-rpm) "duty" (get-duty) "at-rest" (probe-at-rest)
+                     "paced-guard" (if probe-guard "ON" "OFF")))
         (print "Rig only: not an MK5, no Bluetooth module. Record in the results file.")
     }
 )
@@ -285,7 +327,7 @@
 
 ; n timed writes of changing values to slot 64. Prints each time in ms.
 (defun probe-single (n)
-    (if (probe-guard)
+    (if (probe-rest-check)
         {
             (var i 0)
             (var sum 0.0)
@@ -309,7 +351,7 @@
 
 ; One burst, run id 1..99999. Prints the total and the slowest single write.
 (defun probe-burst (run)
-    (if (and (probe-run-ok run) (probe-guard))
+    (if (and (probe-run-ok run) (probe-rest-check))
         {
             (var t0 (systime))
             (var slot probe-first)
@@ -393,7 +435,7 @@
             (setq probe-top-floor 0.0)
             (loopwhile (and ok (< b count)) {
                 (var run (+ first-run b))
-                (setq ok (and (probe-run-ok run) (probe-guard)))
+                (setq ok (and (probe-run-ok run) (probe-rest-check)))
                 (if ok {
                     (var slot probe-first)
                     (loopwhile (<= slot probe-last) {
@@ -427,16 +469,19 @@
 
 ; One pass over slots 64-123 with delay-ms milliseconds between writes. Prints
 ; a marker BEFORE every write, so the last marker names the slot that was being
-; written when power died. Re-checks at rest before every write. Returns t when
+; written when power died. The at-rest guard applies only when probe-guard is t
+; (default nil, off); it is then re-checked before every write. Returns t when
 ; all 60 slots were written, nil when it aborted, was stopped or was refused.
-(defun probe-paced (run delay-ms)
-    (if (and (probe-run-ok run) (probe-guard))
+; probe-paced-pass is one pass without the notice line; the loop and flip
+; commands print the notice once and then call it for every pass.
+(defun probe-paced-pass (run delay-ms)
+    (if (and (probe-run-ok run) (probe-paced-ok))
         {
             (var dly (if (> delay-ms 0) (/ delay-ms 1000.0) 0.0))
             (var slot probe-first)
             (var ok t)
             (loopwhile (and ok (not probe-stop) (<= slot probe-last)) {
-                (setq ok (probe-guard))
+                (setq ok (probe-paced-ok))
                 (if ok {
                     (if probe-marker
                         (print (list "paced run" run "writing slot" slot)))
@@ -461,17 +506,25 @@
     )
 )
 
+(defun probe-paced (run delay-ms)
+    {
+        (probe-guard-notice)
+        (probe-paced-pass run delay-ms)
+    }
+)
+
 ; Paced passes with run ids first-run, first-run+1, ... until a pass does not
-; complete (motor not at rest, bad run id, probe-stop is t).
+; complete (bad run id, probe-stop is t, or motor not at rest with probe-guard t).
 (defun probe-paced-loop (first-run delay-ms)
     {
+        (probe-guard-notice)
         (setq probe-stop nil)
         (var run first-run)
         (var last-run 0)
         (var go t)
         (loopwhile (and go (not probe-stop)) {
             (setq last-run run)
-            (setq go (probe-paced run delay-ms))
+            (setq go (probe-paced-pass run delay-ms))
             (setq run (+ run 1))
         })
         (print (list "paced loop ended, last run started" last-run
@@ -484,13 +537,14 @@
 ; between the two records of one value visible in probe-dump).
 (defun probe-paced-flip (run-a run-b delay-ms)
     {
+        (probe-guard-notice)
         (setq probe-stop nil)
         (var run run-a)
         (var last-run 0)
         (var go t)
         (loopwhile (and go (not probe-stop)) {
             (setq last-run run)
-            (setq go (probe-paced run delay-ms))
+            (setq go (probe-paced-pass run delay-ms))
             (setq run (if (= run run-a) run-b run-a))
         })
         (print (list "paced flip ended, last run started" last-run
@@ -540,7 +594,7 @@
 
 ; Writes the sentinel 0 back to every slot this script may touch (64-126).
 (defun probe-cleanup ()
-    (if (probe-guard)
+    (if (probe-rest-check)
         {
             (var slot probe-first)
             (loopwhile (<= slot probe-end) {
@@ -560,4 +614,5 @@
 (print "(probe-bursts-quiet first-run count pause)   long run, prints SLOW only")
 (print "(probe-paced run delay-ms) (probe-paced-loop first-run delay-ms)")
 (print "(probe-paced-flip run-a run-b delay-ms)  power-cut test, stop: (setq probe-stop t)")
+(probe-guard-notice)
 (probe-info)

@@ -55,14 +55,17 @@ Not reported / not yet measured: the number of bursts, whether the 2.1 ms write
 was a page event (not established either way), any long-run erase / page
 transfer measurement, any power-cut result.
 
-Script defect found while reading back: the human reported that `(probe-dump)`
-failed with `type_error ... Current: i bound to: 0 ... At: car ... In: +`.
-Reproducing the original script in a native LispBM 0.36.0 test build (the
-version vendored in bldc release_7_00, with stubbed eeprom/rpm functions, not
-hardware) showed that `probe-dump` itself runs, and that the same error text is
-raised by `(probe-bursts ...)`, whose first parameter was named `first`, a
-LispBM reserved alias of `car`. Fixed by renaming the parameter. `probe-bursts`
-therefore never produced a result with the original script.
+Script defect found while running the bursts: the human reported a
+`type_error ... Current: i bound to: 0 ... At: car ... In: +`. Reported by
+human (4 Nov 2026, after the second session): the command that produced this
+error was `(probe-bursts 2 200 0.5)`. Reproducing the original script in a
+native LispBM 0.36.0 test build (the version vendored in bldc release_7_00,
+with stubbed eeprom/rpm functions, not hardware) showed that `probe-dump`
+itself runs, and that the same error text is raised by `(probe-bursts ...)`,
+whose first parameter was named `first`, a LispBM reserved alias of `car`.
+The reported command confirms that root cause. Fixed by renaming the
+parameter. `probe-bursts` therefore never produced a result with the original
+script.
 
 ### Second session (bench, 4 Nov 2026)
 
@@ -154,10 +157,12 @@ duty: 0.001402, 0.000746, -0.000361, -0.002032, 0.000203, -0.002243,
 The human did not say why the readings drifted.
 
 Script thresholds (checked in `nv_write_probe.lisp`, `probe-at-rest`): the
-guard passes only when `|rpm| < 5.0` and `|duty| < 0.005`. The ABORT line calls
-`(get-rpm)` and `(get-duty)` again after the guard failed, so the printed
-values are a second read and not necessarily the values that tripped the
-guard.
+guard passes only when `|rpm| < 5.0` and `|duty| < 0.005`. In the script
+version that was run, the ABORT line called `(get-rpm)` and `(get-duty)` again
+after the guard failed, so the printed values are a second read and not
+necessarily the values that tripped the guard. The script has since been
+changed (see "Guard decision" below) so that the guarded commands read both
+values once and print that same reading.
 
 Analysis: the duty threshold in the script is 0.005, not a value between 0.003
 and 0.004. The passing readings above (largest magnitude 0.002812) are
@@ -224,14 +229,38 @@ it is not known that they read 0.
 | 1, write duration | Measured: 0.1 to 0.3 ms per single write, 0.5 to 0.6 ms slowest per burst of 60 (one burst 2.1 ms), about 0.54 ms average per write including loop overhead in the 8400-write run, slowest write 2.5 ms |
 | 2, slow writes over a long run | No page transfer or slow write observed in 8400 timed writes (none above 20 ms, slowest 2.5 ms). The estimate of a page transfer within about 4095 writes is not supported. Cause unknown |
 | 3, unused slots and settings | Settings integrity measured: 0-35 checksum 17532 and slot 127 = 6 unchanged throughout. Unused-slot listing only partly visible (truncated at slot 78), see above |
-| 4, power-cut tests | One genuine torn record captured. Nine of about ten attempts were blocked by the at-rest guard, so power-cut coverage is thin |
+| 4, power-cut tests | One genuine torn record captured. Nine of about ten attempts were blocked by the at-rest guard, so power-cut coverage is thin. The guard is now off by default for the paced commands (human decision, 4 Nov 2026); not yet validated on hardware |
+
+#### Guard decision
+
+Decided by the human on 4 Nov 2026: "yes, set the guard off, this is the test
+rig, so a spinning motor is not an inherent danger." The script was changed
+accordingly. This change has been exercised only in a native LispBM 0.36.0
+test build with stubbed `get-rpm`, `get-duty` and EEPROM functions. It is NOT
+yet validated on hardware.
+
+* The at-rest guard is OFF by default for the three paced commands
+  (`probe-paced`, `probe-paced-loop`, `probe-paced-flip`): they write whatever
+  `(get-rpm)` and `(get-duty)` return. Each paced command prints a one-line
+  notice when it starts, and so does loading the script.
+* Re-enable it for the paced commands with `(setq probe-guard t)`; switch it
+  off again with `(setq probe-guard nil)`. The flag affects the paced commands
+  only.
+* `probe-single`, `probe-burst`, `probe-bursts`, `probe-bursts-quiet` and
+  `probe-cleanup` still always check at rest and abort otherwise.
+* Unchanged regardless of the flag: the script never issues a motor command,
+  writes only slots 64-126, and refuses run ids outside 1-99999.
+* The ABORT line of the guarded commands now prints the single rpm and duty
+  reading that failed the check (no second read).
+* The rig is HW 60, not an MK5. Never run this script on a DPV.
 
 #### Open questions / suggested next steps
 
-(a) The guard is blocking the power-cut test. Options: a `probe-guard` flag
-that disables the check, or looser duty and rpm thresholds, for the power-cut
-commands only and on the rig only (never the DPV). This needs a script change
-that has not been made.
+(a) The guard was blocking the power-cut test. Decided by the human on
+4 Nov 2026: switch it off for the paced commands (see "Guard decision"), on the
+rig only. The alternative of looser rpm and duty thresholds was not chosen. The
+change is not yet validated on hardware: the first power-cut session with the
+guard off is still to be run and recorded.
 
 (b) Optional longer erase test, for example `(probe-bursts-quiet 300 900 0.0)`
 (about 54000 writes, about 30 s at the measured rate) to look for a page event.
@@ -241,7 +270,9 @@ typical flash endurance.
 (c) Confirm on the MK5 DPV that the timings are similar before any in-water
 use. This is a separate human step; do not run the probe on the DPV.
 
-(d) The human should confirm which command produced the earlier `type_error`.
+(d) Resolved: the human reported that the earlier `type_error` came from
+`(probe-bursts 2 200 0.5)`, which matches the documented root cause (the
+reserved alias `first`).
 
 ## Identification (from `(probe-info)`)
 
@@ -331,21 +362,29 @@ reload was truncated at slot 78 and is only partly visible.
 
 Status: one genuine torn record captured; nine of about ten attempts were
 blocked by the at-rest guard, so power-cut coverage is thin. The table below
-records only the genuine cut. See "Second session" for the guard aborts.
+records only the genuine cut. See "Second session" for the guard aborts. The
+guard is now off by default for the paced commands (see "Guard decision"); that
+change is not yet validated on hardware.
 
 Bursts take about 28 ms, which is too fast to cut power by hand, so use the
-paced commands. Procedure (see the header of `nv_write_probe.lisp` for detail):
+paced commands. They run with the at-rest guard OFF by default, so the writes
+proceed whatever `(get-rpm)` and `(get-duty)` read; each paced command prints a
+notice saying so. To turn the guard on for them, run `(setq probe-guard t)`
+before the command; `(setq probe-guard nil)` turns it off again. Procedure (see
+the header of `nv_write_probe.lisp` for detail):
 
-1. Motor OFF. Save the console log to a file if the VESC Tool offers it. The
-   Lisp console connection drops when power is cut, so the last marker lines
-   may never reach the log; the `(probe-dump)` after reboot is the authoritative
-   record.
+1. Motor OFF. Leave `probe-guard` at its default (nil, guard off). Save the
+   console log to a file if the VESC Tool offers it. The Lisp console
+   connection drops when power is cut, so the last marker lines may never reach
+   the log; the `(probe-dump)` after reboot is the authoritative record.
 2. `(probe-paced 10 250)`, let it finish, `(probe-dump)`: all slots run 10.
 3. `(probe-paced-flip 65 66 250)` (or `(probe-paced 11 250)` for a single pass,
    or `(probe-paced-loop 11 250)` for increasing run ids). Each pass takes about
    15 s and prints `("paced run" R "writing slot" S)` before every write. Cut
    power at an arbitrary moment and note the time since the pass started.
-   `(setq probe-stop t)` stops a loop cleanly.
+   The stop flag is `(setq probe-stop t)`; it stops a loop at the next write
+   but needs a second console command. If the console is blocked, cutting
+   power is the stop.
 4. After power-up: upload the script again (it does not write), then run only
    `(probe-info)`, `(probe-settings)`, `(probe-dump)`. Record the output before
    running any write command.
@@ -370,6 +409,9 @@ work. With `delay-ms` 250 only about 1 cut in 1000 is expected to land inside a
 | 5 | | | | | | | |
 
 Number of cuts: 1 genuine cut (about ten sessions observed, nine ended by the at-rest guard ABORT, so they are not counted as cuts)  Number with any abnormality: 1
+
+No cut has been recorded yet with the guard off (the default since the guard
+decision of 4 Nov 2026).
 
 ## Cleanup
 
