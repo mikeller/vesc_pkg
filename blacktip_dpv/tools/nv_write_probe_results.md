@@ -14,15 +14,16 @@ the DPV.
 
 Transcribed from the human's reports. Statements under "Reported by human" are
 reported facts. Text labelled "Analysis" or "Inference" is interpretation, not
-measurement. There were two bench sessions on the same day; the first is
-below, the second follows it ("Second session"). The status summary of items
-1 to 4 after both sessions is at the end of the second session.
+measurement. There were three bench sessions on the same day; the first is
+below, the second and third follow it ("Second session", "Third session"). The
+status summary of items 1 to 4 after all three sessions is at the end of the
+third session.
 
 ### First session
 
 As reported after the first session, items 2 (slow writes over a long run) and
-4 (power-cut tests) were NOT complete; both were addressed in the second
-session.
+4 (power-cut tests) were NOT complete at that point; both were addressed in the
+later sessions (see "Second session" and "Third session").
 
 Rig identification:
 
@@ -222,22 +223,14 @@ power cuts.
 `writes_since_load` 63). The human did not read the slots back afterwards, so
 it is not known that they read 0.
 
-#### Status of items 1 to 4 after both sessions
-
-| Item | Status |
-|---|---|
-| 1, write duration | Measured: 0.1 to 0.3 ms per single write, 0.5 to 0.6 ms slowest per burst of 60 (one burst 2.1 ms), about 0.54 ms average per write including loop overhead in the 8400-write run, slowest write 2.5 ms |
-| 2, slow writes over a long run | No page transfer or slow write observed in 8400 timed writes (none above 20 ms, slowest 2.5 ms). The estimate of a page transfer within about 4095 writes is not supported. Cause unknown |
-| 3, unused slots and settings | Settings integrity measured: 0-35 checksum 17532 and slot 127 = 6 unchanged throughout. Unused-slot listing only partly visible (truncated at slot 78), see above |
-| 4, power-cut tests | One genuine torn record captured. Nine of about ten attempts were blocked by the at-rest guard, so power-cut coverage is thin. The guard is now off by default for the paced commands (human decision, 4 Nov 2026); not yet validated on hardware |
-
 #### Guard decision
 
 Decided by the human on 4 Nov 2026: "yes, set the guard off, this is the test
 rig, so a spinning motor is not an inherent danger." The script was changed
-accordingly. This change has been exercised only in a native LispBM 0.36.0
-test build with stubbed `get-rpm`, `get-duty` and EEPROM functions. It is NOT
-yet validated on hardware.
+accordingly. This change had been exercised only in a native LispBM 0.36.0
+test build with stubbed `get-rpm`, `get-duty` and EEPROM functions when it was
+made. It was then exercised on the rig in the third session (guard off by
+default, no ABORT in 16 sessions; see "Third session").
 
 * The at-rest guard is OFF by default for the three paced commands
   (`probe-paced`, `probe-paced-loop`, `probe-paced-flip`): they write whatever
@@ -254,18 +247,136 @@ yet validated on hardware.
   reading that failed the check (no second read).
 * The rig is HW 60, not an MK5. Never run this script on a DPV.
 
+### Third session (bench, 4 Nov 2026)
+
+Reported by human, except where marked "Analysis", "Inference" or
+"Recommendation". The aim was the power-cut test (item 4) with the at-rest guard
+off, which is the default since the guard decision above.
+
+Setup (reported by human):
+
+| Field | Value |
+|---|---|
+| Hardware | HW 60, not an MK5, no Bluetooth module |
+| Firmware | 7.0.0, branch `release_7_00` |
+| Firmware git hash | `1fee61fb7ebc79745a359a0ee0c056cfce39a043` |
+| Probe script version | re-uploaded from the branch that has the guard-off change; 28389 characters parsed; the load output showed `paced commands: at-rest guard OFF` |
+| `(probe-info)` before the cuts | rpm -0.018360, duty -0.001343, at-rest t, paced-guard OFF |
+
+Check made when writing this record (not a bench report): `tools/nv_write_probe.lisp`
+in the repository is 28389 characters, the same number the console reported.
+
+Procedure per cut (reported by human): run `(probe-paced-flip 65 66 5)` with
+`probe-marker` off, cut power at an arbitrary moment, reboot, then run
+`(probe-settings)` and `(probe-dump)`. Each pass is 60 writes to slots 64-123
+with stamp `run * 1000 + slot`; the runs alternate 65 and 66. "Complete passes"
+below are the `paced run N complete` lines printed before the cut. "New" means
+slots written by the interrupted pass, "old" means slots still holding the
+previous pass. `writes_since_load` reset to 60, 120 and so on after each power
+cycle.
+
+Outcome (reported by human):
+
+* 16 cuts, and every one reached `(probe-dump)`. No guard aborts occurred.
+* 14 cuts were clean: a single new/old boundary and every slot held a complete,
+  valid stamp (new or old).
+* 2 cuts tore a record (cuts 1 and 13 below), at the in-flight slot only.
+* `(probe-settings)` printed settings 0-35 identical to the baseline, checksum
+  17532, and slot 127 = 6, in 16 of 16 cuts.
+* No other slot was ever bad.
+
+Results per cut (reported by human; the full table is in Item 4):
+
+| Cut | Complete passes | Interrupted run | New slots | Torn slot | Old slots |
+|---|---|---|---|---|---|
+| 1 | 3 (65, 66, 65) | 66 | 64-93 | 94: raw 130630, hi 1, lo 65094 (lo-run 65) | 95-123 |
+| 2 | 4 | 65 | 64-90 | none | 91-123 |
+| 3 | 3 | 66 | 64-88 | none | 89-123 |
+| 4 | 4 | 65 | 64-94 | none | 95-123 |
+| 5 | 7 | 66 | 64-77 | none | 78-123 |
+| 6 | 3 | 66 | 64-110 | none | 111-123 |
+| 7 | 4 | 65 | 64-78 | none | 79-123 |
+| 8 | 4 | 65 | 64-100 | none | 101-123 |
+| 9 | 3 | 66 | 64-94 | none | 95-123 |
+| 10 | 3 | 66 | all of 64-123 hold run 66 | none | none |
+| 11 | 3 | 66 | 64-82 | none | 83-123 |
+| 12 | 3 | 66 | 64-97 | none | 98-123 |
+| 13 | 3 | 66 | 64-115 | 116: raw 130652, hi 1, lo 65116 (lo-run 65) | 117-123 |
+| 14 | 3 | 66 | 64-96 | none | 97-123 |
+| 15 | 1 (65) | 66 | 64-91 | none | 92-123 |
+| 16 | 4 | 65 | 64-83 | none | 84-123 |
+
+In cut 10 the cut came at or after the last write of the pass but before its
+`complete` line was printed (reported by human). From the dump alone this cut is
+indistinguishable from a cut after the final write of the pass; it is counted as
+clean.
+
+Analysis (inference from the reported values, small sample; arithmetic checked
+when writing this record):
+
+* 2 of 16 cuts (12.5%) tore a record. No interval is quoted and the rate is not
+  generalised.
+* In both torn cases the stored value is the NEW high half combined with the OLD
+  low half. Slot 94: new stamp 66094 = hi 1, lo 558; old stamp 65094 = hi 0,
+  lo 65094; observed hi 1, lo 65094 (raw 130630 = 1 * 65536 + 65094). Slot 116:
+  new 66116, old 65116; observed hi 1, lo 65116 (raw 130652). The observation is
+  consistent with the high 16-bit half being written first and power being lost
+  before the low half.
+* Counting the torn slot in the second session (slot 113: new run 65, old run 66,
+  observed hi 0, lo 577, new high half and old low half), there are three torn
+  events, all with the same pattern. They are stated separately because the run
+  order differs: the second-session event was run 65 written over run 66, the two
+  in this session were run 66 written over run 65. High halves differ between
+  runs 65 and 66 at every slot, so a tear of either pattern (old high half and
+  new low half, as well as the one seen) would have been visible. Only the
+  new-high, old-low pattern was seen.
+* All torn slots sat exactly at the new/old boundary, so only the record in
+  flight was damaged. In 16 of 16 cuts no earlier-written slot reverted or was
+  corrupted and no later slot was disturbed.
+* The two-halves point comes from the source reading in the Item 4 section below.
+  If a stored value's high half never changes between writes, only one 16-bit
+  record is written per store, and the two-record tear cannot occur. This has NOT
+  been tested. What flash does when power is lost during a single half-word
+  program is also untested.
+* The cuts were made at 5 ms pacing. Write-to-write timing therefore differs from
+  a real stop, where one set of writes would be made when the DPV stops, and the
+  tear rate under real conditions is unknown.
+
+Recommendation (not a measurement; for the later log-format work): a tear can
+leave a value that is neither the old nor the new one, so each stored set needs
+an integrity check (CRC) and a commit marker written last, or a per-slot
+self-check. A tear in a data slot is detected only by that check.
+
+Human decisions, 4 Nov 2026 (reported by human):
+
+* For the later design: "one total counter for full-duty time rather than per
+  gear".
+* Wear: the human is concerned about wear from further erase runs, so the
+  optional long erase run (open question (b)) is declined.
+
+#### Status of items 1 to 4 after three sessions
+
+| Item | Status |
+|---|---|
+| 1, write duration | Measured: 0.1 to 0.3 ms per single write, 0.5 to 0.6 ms slowest per burst of 60 (one burst 2.1 ms), about 0.54 ms average per write including loop overhead in the 8400-write run, slowest write 2.5 ms |
+| 2, slow writes over a long run | No page event seen: no page transfer or slow write in 8400 timed writes (none above 20 ms, slowest 2.5 ms). The estimate of a page transfer within about 4095 writes is not supported. Cause unknown. MK5 timing still unmeasured |
+| 3, unused slots and settings | Settings integrity measured: 0-35 checksum 17532 and slot 127 = 6 unchanged throughout (the third session's 16 cuts are recorded under item 4). Unused-slot listing only partly visible (truncated at slot 78), see above |
+| 4, power-cut tests | Power-cut behaviour measured: 16 cuts, 2 torn records at the in-flight slot only, settings intact; small sample, 5 ms pacing, rig only. Plus one torn record in the second session (see above) |
+
 #### Open questions / suggested next steps
 
-(a) The guard was blocking the power-cut test. Decided by the human on
-4 Nov 2026: switch it off for the paced commands (see "Guard decision"), on the
-rig only. The alternative of looser rpm and duty thresholds was not chosen. The
-change is not yet validated on hardware: the first power-cut session with the
-guard off is still to be run and recorded.
+(a) Resolved. The guard blocked the power-cut test in the second session. The
+human decided on 4 Nov 2026 to switch it off for the paced commands (see "Guard
+decision"), on the rig only. The guard-off default worked in the third session:
+no aborts in 16 sessions. The alternative of looser rpm and duty thresholds was
+not chosen.
 
-(b) Optional longer erase test, for example `(probe-bursts-quiet 300 900 0.0)`
-(about 54000 writes, about 30 s at the measured rate) to look for a page event.
-Estimate, not measurement: a handful of sector erases is negligible against
-typical flash endurance.
+(b) Declined by the human (4 Nov 2026): the optional longer erase test, for
+example `(probe-bursts-quiet 300 900 0.0)` (about 54000 writes, about 30 s at
+the measured rate), because of the human's wear concern about further erase
+runs. The earlier estimate, not a measurement, that a handful of sector erases
+is negligible against typical flash endurance was not tested and did not change
+this decision.
 
 (c) Confirm on the MK5 DPV that the timings are similar before any in-water
 use. This is a separate human step; do not run the probe on the DPV.
@@ -360,11 +471,12 @@ reload was truncated at slot 78 and is only partly visible.
 
 ## Item 4: power-cut tests (motor OFF)
 
-Status: one genuine torn record captured; nine of about ten attempts were
-blocked by the at-rest guard, so power-cut coverage is thin. The table below
-records only the genuine cut. See "Second session" for the guard aborts. The
-guard is now off by default for the paced commands (see "Guard decision"); that
-change is not yet validated on hardware.
+Status: power-cut behaviour measured: 16 cuts in the third session, 2 torn
+records at the in-flight slot only, settings intact; small sample, 5 ms pacing,
+rig only. Row 1 is the one genuine cut of the second session (nine of about ten
+attempts in that session were blocked by the at-rest guard, see "Second
+session"); rows S3-1 to S3-16 are the third session, run with the guard off (the
+default; see "Guard decision" and "Third session").
 
 Bursts take about 28 ms, which is too fast to cut power by hand, so use the
 paced commands. They run with the at-rest guard OFF by default, so the writes
@@ -403,15 +515,38 @@ work. With `delay-ms` 250 only about 1 cut in 1000 is expected to land inside a
 | Cut # | Command and delay-ms | Approx. time since pass start (s) | Last marker line in log (run, slot), if any | EEPROM readable after reboot (y/n) | Settings 0-35 and 127 intact (y/n, checksum) | `(probe-dump)` output (old run vs new run per slot range, bad slots with hi/lo) | Torn record seen (y/n) and pattern |
 |---|---|---|---|---|---|---|---|
 | 1 | `(probe-paced-flip 65 66 5)`, marker lines off | not reported | none (marker lines off) | y | y, 17532 | run 65 slots 64-112, bad slot 113 (raw 577, hi 0, lo 577, lo-run nil), run 66 slots 114-123 | y: new high half, old low half |
-| 2 | | | | | | | |
-| 3 | | | | | | | |
-| 4 | | | | | | | |
-| 5 | | | | | | | |
+| S3-1 | `(probe-paced-flip 65 66 5)`, marker lines off; 3 (65, 66, 65) complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-93, bad slot 94 (raw 130630, hi 1, lo 65094, lo-run 65), run 65 slots 95-123 | y: new high half, old low half (slot 94) |
+| S3-2 | `(probe-paced-flip 65 66 5)`, marker lines off; 4 complete passes, interrupted run 65 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 65 slots 64-90, run 66 slots 91-123 | n |
+| S3-3 | `(probe-paced-flip 65 66 5)`, marker lines off; 3 complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-88, run 65 slots 89-123 | n |
+| S3-4 | `(probe-paced-flip 65 66 5)`, marker lines off; 4 complete passes, interrupted run 65 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 65 slots 64-94, run 66 slots 95-123 | n |
+| S3-5 | `(probe-paced-flip 65 66 5)`, marker lines off; 7 complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-77, run 65 slots 78-123 | n |
+| S3-6 | `(probe-paced-flip 65 66 5)`, marker lines off; 3 complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-110, run 65 slots 111-123 | n |
+| S3-7 | `(probe-paced-flip 65 66 5)`, marker lines off; 4 complete passes, interrupted run 65 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 65 slots 64-78, run 66 slots 79-123 | n |
+| S3-8 | `(probe-paced-flip 65 66 5)`, marker lines off; 4 complete passes, interrupted run 65 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 65 slots 64-100, run 66 slots 101-123 | n |
+| S3-9 | `(probe-paced-flip 65 66 5)`, marker lines off; 3 complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-94, run 65 slots 95-123 | n |
+| S3-10 | `(probe-paced-flip 65 66 5)`, marker lines off; 3 complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-123 (all slots new; cut at or after the last write of the pass) | n |
+| S3-11 | `(probe-paced-flip 65 66 5)`, marker lines off; 3 complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-82, run 65 slots 83-123 | n |
+| S3-12 | `(probe-paced-flip 65 66 5)`, marker lines off; 3 complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-97, run 65 slots 98-123 | n |
+| S3-13 | `(probe-paced-flip 65 66 5)`, marker lines off; 3 complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-115, bad slot 116 (raw 130652, hi 1, lo 65116, lo-run 65), run 65 slots 117-123 | y: new high half, old low half (slot 116) |
+| S3-14 | `(probe-paced-flip 65 66 5)`, marker lines off; 3 complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-96, run 65 slots 97-123 | n |
+| S3-15 | `(probe-paced-flip 65 66 5)`, marker lines off; 1 (65) complete passes, interrupted run 66 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 66 slots 64-91, run 65 slots 92-123 | n |
+| S3-16 | `(probe-paced-flip 65 66 5)`, marker lines off; 4 complete passes, interrupted run 65 | not reported | none (marker lines off) | y | y, 17532, slot 127 = 6 | run 65 slots 64-83, run 66 slots 84-123 | n |
 
-Number of cuts: 1 genuine cut (about ten sessions observed, nine ended by the at-rest guard ABORT, so they are not counted as cuts)  Number with any abnormality: 1
+In the `(probe-dump)` output column, rows S3-1 to S3-16 give the human's
+summary of the ranges (with the torn slot values as reported), not the verbatim
+console output. Row 1 is the console result as reported. "Cut" numbers 1 to 16
+in the "Third session" table are rows S3-1 to S3-16 here.
 
-No cut has been recorded yet with the guard off (the default since the guard
-decision of 4 Nov 2026).
+Number of cuts: 17 genuine cuts: 1 in the second session (about ten sessions
+observed there, nine ended by the at-rest guard ABORT, so they are not counted
+as cuts) and 16 in the third session (no guard aborts, guard off). Number with
+any abnormality: 3 (1 in the second session, 2 in the third session), all torn
+records at the in-flight slot. Settings 0-35 and slot 127 intact after every
+cut.
+
+The cuts in the third session were made with the guard off (the default since
+the guard decision of 4 Nov 2026), at 5 ms pacing. The run order of the torn
+records and the analysis are in "Third session".
 
 ## Cleanup
 
