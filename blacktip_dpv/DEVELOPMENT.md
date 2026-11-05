@@ -181,11 +181,21 @@ The feature decision is isolated in `five_click_shutdown_rejection_reason`. It r
 
 Firmware exposes its beta/test build number as the third member of `(sysinfo 'fw-ver)` and as `isTestFw` in `FwRxParams`. Zero denotes a stable release, so stable 7.00 is `(7 0 0)` and is supported; `(7 0 2)` denotes 7.00 beta 2. Beta 1 is rejected, while beta 2+, stable 7.00, and later releases are accepted. There is no separate safe LispBM extension-introspection API on the older builds, so version gating is used for feature detection. The backend check is independent of QML, so a manually written or corrupted enabled setting cannot bypass it.
 
-Before calling the VESC hardware shutdown path, the request selects the existing `DISPLAY_OFF` power-symbol frame, allows the 4 Hz display loop to render it, and plays four descending tones (700, 575, 450 and 325 Hz) at the configured beep volume. This gives a clear acknowledgement of an accidental as well as an intentional five-click command; when volume is zero, the display remains the confirmation. Success does not return. A returned `nil` is logged as failure/unsupported/held input and is not retried. This feature does not use `shutdown-hold`, alter `OFF_AFTER`, or add another idle timer.
+Before calling the VESC hardware shutdown path, the request selects the existing `DISPLAY_OFF` power-symbol frame, allows the 4 Hz display loop to render it, and plays four descending tones (700, 575, 450 and 325 Hz) at the configured beep volume. This gives a clear acknowledgement of an accidental as well as an intentional five-click command; when volume is zero, the display remains the confirmation. Success does not return. A returned `nil` is logged as failure/unsupported/held input and is not retried. This feature does not use `shutdown-hold`, alter `OFF_AFTER`, or add another idle timer. The [performance log](#performance-log-on-device) specification adds one bounded flush attempt before the `(shutdown true)` call (not implemented yet; see [Power-off paths](#power-off-paths-and-idle-auto-off)); that attempt never blocks the shutdown.
 
 ## Performance Log (on-device)
 
 Status: specification. Nothing in this section is implemented yet; it is the contract that the sampler, the storage writer, the extraction opcodes and the host tooling are built against. A change that departs from it must update this section in the same commit.
+
+The section was amended on 5 Nov 2026 after the owner's decisions of 4 and 5 Nov 2026 and the rig measurements described in [Flash write behaviour](#flash-write-behaviour). It is now the binding contract for block A and [block B](#block-b-extended-log-layout-v1) together: timing ([Flush gate](#flush-gate)), the firmware gate ([Firmware gate and slot capacity](#firmware-gate-and-slot-capacity)), power-off paths and the idle auto-off non-interference rule ([Power-off paths](#power-off-paths-and-idle-auto-off)), the extraction protocol ([Extraction](#extraction)), the export schema ([Export format](#export-format)) and the block B flag and reference rules. Where an amendment corrects an earlier statement, the correction is stated in place.
+
+**Evidence labels.** Every duration or latency figure that describes the hardware is labelled with one of three tags:
+
+* **[rig-measured]**: a measurement on the plain HW 60 test rig (not an MK5), firmware 7.0.0 `release_7_00`, timed with a human stopwatch (jitter about 0.5 s). The MK5 is unmeasured. The evidence is cited as "bench measurements of 5 Nov 2026"; the parts recorded in `tools/nv_write_probe_results.md` are cited by that path, and the rest is bench-reported and not yet in that file.
+* **[arithmetic]**: computed from a [rig-measured] figure.
+* **[estimate]**: a reasoned figure with no measurement behind it.
+
+Design constants (for example `LOG_SETTLE_S`) are chosen values, not measurements, and carry no label. A duration measured with `systime` carries the extra warning in [Flash write behaviour](#flash-write-behaviour): it is a lower bound.
 
 The log is an opt-in, off-by-default record of aggregate performance statistics (how hard the drive is worked at each speed setting, supply sag, saturation, faults) kept on the controller, so that owners can see how the scooter behaves with their own battery packs. Blacktip is the validation target. Nothing in the layout is Blacktip-specific (the speed indices and getters are common to both scooter types), so CudaX support is not precluded, but it is not designed for or validated here.
 
@@ -196,17 +206,27 @@ The logging-only phase changes no motor-control behaviour and no configuration:
 * It never calls `set-duty`, `set-rpm`, `set-current`, `conf-set` or any other actuator, and it does not alter any existing global used by the motor, state-machine or display paths.
 * It reads telemetry through getters only. The single touch point in existing code is one RAM-only counter increment inside `safe_start_abort_with_reason`; it adds no EEPROM write and no control-flow change.
 * Block A writes only EEPROM slots 64 to 126, and the optional [block B](#block-b-extended-log-layout-v1) writes only slots 128 to 191. Settings slots 0 to 32, the free slots 33 to 63, the schema marker in slot 127 and `EEPROM_SETTINGS_COUNT` are untouched, and the settings migration is unchanged.
-* While the log is disabled (the default) it performs no EEPROM writes at all.
+* While both blocks are disabled (the default) the log performs no EEPROM writes at all and the sampler thread does not run.
+* The log never prevents, delays or defeats the firmware's idle auto-off (see the [non-interference rule](#non-interference-rule-binding)): it issues no motor command, uses no `shutdown-hold` and registers no `event-shutdown` handler.
 * The only motor-visible effect of an enabled log is the controller-side behaviour of an EEPROM write (see [Flash write behaviour](#flash-write-behaviour)). Writes happen only under the [flush gate](#flush-gate), which requires the motor to be at rest.
 
 ### Storage
 
 * Storage is the LispBM emulated EEPROM only. The ESC has no file system or SD card, and the Blacktip Bluetooth add-on is a Flipsky NRF module, not a VESC Express, so there is no other persistent store the package can use.
 * Reserved range: slots 64 to 126 (63 slots of 32 bits, 252 bytes). Slots 33 to 63 stay free for future settings (the test-fixture branch already uses 33 to 35). Slot 127 is the settings schema marker and is not touched.
-* The vendored bldc 7.00 source defines `EEPROM_VARS_CUSTOM` as 256, so slots above 127 exist, but the package supports firmware 7.00 only and block A deliberately stays below 127. The optional [block B](#block-b-extended-log-layout-v1) uses slots 128 to 191.
+* The firmware provides 256 LispBM EEPROM slots (0 to 255) on firmware 7.00; see [Firmware gate and slot capacity](#firmware-gate-and-slot-capacity), which corrects the "up to 128" figure of the LispBM documentation. Block A deliberately stays below 127. The optional [block B](#block-b-extended-log-layout-v1) uses slots 128 to 191.
 * The log has its own header (magic and layout version) and is independent of the settings schema version. The settings paths (UI write, both reset-default paths, migrations) loop over slots `0..EEPROM_SETTINGS_COUNT-1` only and must never be extended to touch 64 to 126. In particular, Reset Defaults does not clear the log.
 * The vendored LispBM documentation states that the emulated EEPROM survives power cycles and configuration changes, but not firmware updates. Uploading a new package does not clear it. The log is lost on a firmware update, so export it first.
 * Ownership of the range: the log owns 64 to 126 by contract. If the four header slots 64 to 67 are all `nil` (never written), the range is "empty". If any header slot is present but the magic (slot 66) differs from the expected value, the range holds foreign data (for example leftovers from a bench probe); it is reported as such, never overwritten implicitly, and is claimed only by an explicit `clear-log` or by `set-enabled` followed by an initial clear. A known magic with an unknown layout version is reported and left untouched. The same rules govern block B for slots 128 to 131; see [Block states](#block-states).
+
+### Firmware gate and slot capacity
+
+**Correction (5 Nov 2026).** The firmware has 256 LispBM EEPROM slots (0 to 255) on HW 60, 60_MK5 and 410 in firmware 7.00, not 128. `EEPROM_VARS_CUSTOM` is 256 in the common `datatypes.h` (line 1417 at the bench firmware hash `1fee61fb7ebc79745a359a0ee0c056cfce39a043` and at the `release_7_00` tip `9483d8cf6ec97b92ddd203c372745ba518a3b12f`), so it does not depend on the hardware. `check_eeprom_addr` in `lispBM/lispif_vesc_extensions.c` (line 1512 at the tip) rejects an address below 0 or at or above 256, and `eeprom-store-i`, `eeprom-read-i` and the float variants then return the `eval_error` symbol, which is an error, not `nil`; `conf_general.c` (`:231` and `:269`) repeats the check. The LispBM README ("up to 128", "Addr range: 0 to 127") is out of date. The upstream tags `release_6_05` (128) and `release_6_06` (256) show that the 256 slots apply from 6.06 (the two `datatypes.h` files were read on 5 Nov 2026).
+
+* Slots 128 to 255 collide with nothing: they are not reserved by the firmware, they are independent of the 32 hardware-specific variables (`EEPROM_VARS_HW`), they survive page transfers like any written variable, and they read `nil` by source until written.
+* Hardware confirmation, bench measurements of 5 Nov 2026 (plain HW 60 rig, firmware 7.0.0, rig only; the production DPV was not read): slot 255 reads `nil`, slot 256 raises an eval error (both recorded in `tools/nv_write_probe_results.md` on the probe branch, not in the copy of the file next to this document), and slots 128 to 255 are all `nil` on the rig (bench-reported; the sweep is not yet in the results file).
+
+**Firmware gate, no probe, no fallback.** The package installs only on exactly firmware 7.00 (`pkgdesc.qml` `isCompatible`: major 7, minor 0, hardware 410, 60 or 60_MK5), which has 256 slots, so that gate is sufficient. The log therefore adds no runtime capacity probe, no fallback layout and no test path for firmware with only 128 slots. All log-thread work is wrapped in `trap`, so an out-of-range store would end or disable the log thread without affecting motor control. If `isCompatible` is ever widened, the slot count must be re-checked then. A foreign (non-matching, non-nil) header in slots 64 to 67 or 128 to 131 is never overwritten silently (see [Block states](#block-states)).
 
 ### Encodings and number handling
 
@@ -283,7 +303,7 @@ Header and integrity first, then data. Slots 66 to 126 (61 slots, 244 bytes) are
 | 123 | `last_ah`, `last_wh` | P15(A, B) | A: mAh (saturates at 32.767 Ah). B: Wh × 10 (saturates at 3276.7 Wh). |
 | 124 | `last_max_fet_temp`, `last_min_vin` | P15(A, B) | Offset-binary 0.1 °C; 0.01 V (32767 means none). |
 | 125 | `last_max_input_current`, `last_max_erpm` | P15(A, B) | 0.1 A; eRPM. |
-| 126 | `longest_write_ms`, `aborted_flushes` | P15(A, B) | Flush diagnostics: longest single `eeprom-store-i` in ms, and flushes aborted by the re-checks. |
+| 126 | `longest_store_ms`, `aborted_flushes` | P15(A, B) | Flush diagnostics (see [Flush diagnostics and clocks](#flush-diagnostics-and-clocks)). A: advisory duration, the longest single `eeprom-store-i` in ms, measured with `systime`, therefore a lower bound (0 when unavailable); never used in a gate or decision. B: flushes aborted by the re-checks, a count. The field position is unchanged from the first draft, where A was named `longest_write_ms`. |
 
 The fault codes are the vendored 7.00 `mc_fault_code` numbers: 1 over-voltage, 2 under-voltage, 3 DRV, 4 absolute over-current, 5 FET over-temperature, 6 motor over-temperature, 7 gate-driver over-voltage, 8 gate-driver under-voltage, 9 MCU under-voltage, 10 booting from watchdog reset. Codes 11 and above (encoders, resolver, flash, and so on) are summed in `fault_other`.
 
@@ -302,7 +322,7 @@ The time at the input current limit is in `at_limit` as whole seconds (saturatin
 The duty-saturation time (`|duty| >= 0.95`, the voltage-headroom failure signature) is one total counter across all speed indices, in slot 113, instead of one counter per index. That freed slots that would otherwise have held nine more per-index duty counters. They are used as follows:
 
 * Slots 114 and 115 are two coarse total duty bands (0.90 to 0.95, 0.80 to 0.90) that show how close to the headroom limit a pack and setup operate before it saturates. They are totals, not per index.
-* Slot 126 holds flush diagnostics (longest write time, aborted flushes). They turn the unmeasured MK5 write timing and the unobserved erase-stall question into data collected in the field.
+* Slot 126 holds flush diagnostics (an advisory longest store time and the count of aborted flushes). The count is the primary content; the duration is a `systime` lower bound (see [Flush diagnostics and clocks](#flush-diagnostics-and-clocks)), so it informs the MK5 write-timing question but cannot settle it.
 * Slot 121 field B counts integrity events, so a damaged image is recorded rather than silently repaired.
 * Slots 116 to 120 give individual counters for fault codes 1 to 10 (including watchdog resets), with the rest combined.
 
@@ -310,11 +330,11 @@ Nothing was dropped from the required list. Packing: all counters that are small
 
 ### Sampling
 
-* One dedicated thread samples and also performs flushes, so there is exactly one writer of slots 64 to 126 and no race between accumulation and a flush. The thread is started only when logging is enabled. LispBM has no thread priorities: "low priority" means it sleeps 0.2 s between iterations (about 5 Hz, `LOG_SAMPLE_PERIOD`), does a fixed small amount of work per iteration, and yields. A flush pauses sampling, which is acceptable because flushes happen only at rest.
-* The thread calls read-only getters only, each inside `trap` (the idiom used by the balance thread), so early-boot `nil` results cannot kill it.
+* One dedicated thread samples and also performs flushes, so there is exactly one writer of slots 64 to 126 and no race between accumulation and a flush. The thread is started only when at least one block is enabled. LispBM has no thread priorities: "low priority" means it sleeps 0.2 s between iterations (about 5 Hz, `LOG_SAMPLE_PERIOD`), does a fixed small amount of work per iteration, and yields. A flush pauses sampling, which is acceptable because flushes happen only at rest.
+* The thread calls read-only getters only, each inside `trap` (the idiom used by the balance thread), so early-boot `nil` results cannot kill it. It never issues a motor command or any call that resets the firmware's inactivity timer (see the [non-interference rule](#non-interference-rule-binding)).
 * State lives in preallocated byte arrays created before the loop starts: a mirror of the 63 slots (252 bytes, accessed with `bufget-u32` and `bufset-u32`) and a float buffer for the per-flush pending deltas (`bufget-f32` and `bufset-f32`). The loop creates no arrays or lists. LispBM boxes large integers and floats, so transient values from arithmetic are unavoidable; they are reclaimed by the garbage collector and an implementation must show no heap growth in a long soak.
 * The elapsed time of a sample is measured (`secs-since` the previous sample) and clamped to 0.5 s (`LOG_DT_MAX`), so a starved thread or a flush never credits a long time to one reading.
-* The event-data handler never writes the log. It posts a request into one RAM mailbox that the sampler thread executes, and a second request while one is pending is answered "busy".
+* The event-data handler never writes the log. It posts a request into one RAM mailbox that the sampler thread executes, and a second request while one is pending is dropped without a response (the panel times out and retries; see [Extraction](#extraction)).
 
 Predicates evaluated per sample:
 
@@ -348,7 +368,7 @@ Notes and limits of the method:
 
 ### Commit protocol and integrity
 
-The writer does the following, only after the [flush gate](#flush-gate) has passed:
+The writer does the following for one block (slots 66 to 126 for block A, 130 to 191 and header slots 128 to 129 for block B), only after the [flush gate](#flush-gate) has passed. With both blocks enabled it runs the sequence for block A and then for block B, each completed before the next starts (see [Flush ordering](#flush-ordering)):
 
 1. Fold the pending deltas into the mirror (saturating, carrying fractions), compute `crc` over the mirror image of slots 66 to 126, and write `commit_seq = seq + 1` (odd, "in progress") to slot 64.
 2. Write each changed data slot (66 to 126) with `eeprom-store-i`, only if it differs from the stored value. Read each slot back and compare; on a mismatch, abort. Between slot writes, re-check the gate (see [Flush gate](#flush-gate)) and yield for at least 1 ms so other threads run.
@@ -379,61 +399,176 @@ If the flush aborts at any point, `commit_seq` stays odd until a later flush com
 
 `in_progress` and `crc_mismatch` are reported as "torn or unverified". The reader never silently discards or resets the data. At start the package loads the values it finds into the mirror, increments `integrity_events` in its next flush (so the event is recorded in the log itself), and carries on. The raw slots are always exported so an analyst can inspect a damaged image.
 
-**Cost and risk assessment (why there is no double buffering).** A torn log needs a power loss in the few milliseconds of a flush. The package writes only at rest, and a flush runs at most every 60 seconds and takes tens of milliseconds (about 0.05 % of at-rest time at most, taking 32 ms per 60 s), so the exposure is very small. A power loss inside that window would need the supply to disappear within seconds of the trigger being released: a broken supply connection, or removal of the battery. The battery cover is normally in place and removing it takes about a minute, and even with it off a user needs a few seconds from releasing the trigger to power off. This is considered extremely unlikely, and the consequence is bounded (see the measurements below: only the slot in flight was damaged, the damage is detected by the CRC, and the settings were never affected). The design therefore keeps the cheap integrity check (an odd/even sequence and a CRC, plus a read-back) and adds no costly mitigation: no double-buffered banks and no extra copies.
+**Cost and risk assessment (why there is no double buffering).** A torn log needs a power loss during a flush. The package writes only at rest, and a flush runs at most every 60 seconds (`LOG_MIN_FLUSH_INTERVAL_S`) and takes about 135 ms (typical, both blocks) to about 290 ms (a full image of both blocks) including the yields between stores [arithmetic on the rig-measured per-store cost, see [Timing figures](#timing-figures)], that is about 0.2 % of at-rest time for a typical flush and at most about 0.5 % for a full image, so the exposure is small. A power loss inside that window would need the supply to disappear within about a minute of the trigger being released (the flush starts at the earliest `LOG_SETTLE_S` after release): a broken supply connection, a power system failure, or removal of the battery. In the main use (under water) batteries are removed only after the user has left the water and removed dive gear, minutes later, so this is considered unlikely, and the consequence is bounded (see the measurements below: only the slot in flight was damaged, the damage is detected by the CRC, and the settings were never affected). The design therefore keeps the cheap integrity check (an odd/even sequence and a CRC, plus a read-back) and adds no costly mitigation: no double-buffered banks and no extra copies.
 
 Bench findings that support this (HW 60 non-MK5 test controller, no Bluetooth, firmware 7.0.0 `release_7_00`, git `1fee61fb7ebc79745a359a0ee0c056cfce39a043`; bench measurements, 4 Nov 2026; see the table in [Measured behaviour](#measured-behaviour)): power was cut 17 times while 60 slots were rewritten back to back at 5 ms pacing; 3 of the 17 cuts tore the slot being written (new high 16 bits, old low 16 bits); no slot other than the one in flight was ever damaged, the EEPROM stayed readable after every cut, and settings 0 to 35 and slot 127 were unchanged in every case. A real flush is far shorter and rarer than that test.
 
 ### Flash write behaviour
 
-Facts from the vendored 7.00 source at the bench firmware's git hash (source reading, not hardware tests):
+Facts from the vendored 7.00 source at the bench firmware's git hash and, where stated, the `release_7_00` tip (source reading, not hardware tests):
 
 * `eeprom-store-i` writes the value as two 16-bit halves, high half first, each as a 4-byte record (16-bit data plus 16-bit address) appended to the active 16 KiB page. `EE_WriteVariable` first reads the old half and returns without programming if it already equals the new value, so a store whose high half is unchanged programs only one record.
 * Before programming, the controller calls `mc_interface_ignore_input_both(5000)` and `mc_interface_release_motor_override_both()`, then waits up to 3.0 s for the motor to reach the off state. Release sets the FOC control mode to current control at zero current. After programming it calls `mc_interface_ignore_input_both(100)`. While the ignore counter is non-zero, motor commands such as `set-duty` and `set-rpm` are dropped, not queued.
-* If the motor does not reach the off state within 3.0 s, `store_eeprom_var` executes `return 100` in a function returning `bool`, which is true: `eeprom-store-i` then returns `t` although nothing was written. This is why the writer reads every slot back.
-* A page holds fewer than 4096 records. When it is full, the next write triggers a page transfer: the live variables are copied to the other page and the old 16 KiB sector is erased. The emulated EEPROM also stores the VESC motor and app configuration (`NB_OF_VAR` includes them), so a page transfer is shared with those variables, and the log's flushes make page fills more frequent than they were before.
-* The flash datasheet (STM32F405/407, Doc ID 022152 Rev 2) lists a 16 KB sector erase at 250 ms typical and 500 ms maximum at x32 programming parallelism (300 and 600 ms at x16), and a minimum endurance of 10 000 erase cycles per sector. The parallelism used by the firmware has not been checked, so the planning bound is 600 ms.
-* The existing helper `eeprom_store_i_if_changed` returns `nil` when the value is unchanged, so its result cannot distinguish "unchanged" from "failed". The log writer needs its own helper that reports unchanged and stored as success and a failed store or read-back as failure.
-* Assumed, not verified: while a store runs, no LispBM thread executes, and during a sector erase the controller can stall for the full erase time. These assumptions are why writes must never happen while running.
+* If the motor does not reach the off state within 3.0 s, `store_eeprom_var` executes `return 100` in a function returning `bool`, which is true: `eeprom-store-i` then returns `t` although nothing was written. This is why the writer reads every slot back. (`eeprom_store_i_if_changed` returns `nil` for an unchanged value, see below.)
+* A page holds fewer than 4096 records. When it is full, the next write triggers a page transfer: the live variables are copied to the other page and the old 16 KiB sector is erased. The emulated EEPROM also stores the VESC motor and app configuration (`NB_OF_VAR` includes them), so a page transfer moves those variables too, and the log's flushes bring page transfers forward (see [Page transfers and wear](#page-transfers-and-wear)).
+* The flash datasheet (STM32F405/407, Doc ID 022152 Rev 2, Table 36) lists a 16 KB sector erase at 250 ms typical and 500 ms maximum at x32 programming parallelism (300 and 600 ms at x16, 400 and 800 ms at x8), and a minimum endurance of 10 000 erase cycles per sector. The parallelism used by the firmware has not been checked, so the planning bound is 600 ms (800 ms if the firmware programs at x8). These are datasheet figures for the sector erase alone.
+* The existing helper `eeprom_store_i_if_changed` returns `nil` when the value is unchanged, so its result does not separate "unchanged" from "failed". The log writer needs its own helper that reports unchanged and stored as success and a failed store or read-back as failure.
+* `store_eeprom_var` holds `utils_sys_lock_cnt()` (a counted `chSysLock`) around the programming, so by source reading no other thread runs during a store. Assumed, not verified: during a sector erase the controller can stall for the full erase time. This is why writes must never happen while running.
 
-An estimate of wear (inputs unverified: the live-variable count that consumes part of each page, and the real flush rate): a flush programs at most 128 records. At the minimum interval of 60 s with every slot changing at every flush, a page fills every few tens of flushes; with two 16 KiB sectors alternating at 10 000 cycles each this is about 5000 hours of non-stop worst-case activity. Realistic use is orders of magnitude lower, because a flush happens only after running activity and an at-rest settle.
+#### Timing figures
+
+**Standing fact: `systime` is a lower bound across a store.** Every store runs under a kernel lock (`utils_sys_lock_cnt`, above), and `systime` is driven by the SysTick, which that lock can mask, so ticks are lost while a store runs and `systime` under-reports real time across `eeprom-store-i`. Every duration that was measured with `systime` is therefore a LOWER BOUND, not a real duration: the 0.1 to 0.3 ms per store, the 28 ms per 60-store burst, the "no write slower than 20 ms in 8400 writes", the 2.1 ms outlier and any CRC time. The earlier statement "no page transfer seen in 8400 writes" is NOT supported, because a transfer would not necessarily show in `systime`. Do not quote a `systime` duration as a real duration anywhere, and do not use one in a gate or decision.
+
+**Rig measurements, wall clock [rig-measured].** Bench measurements of 5 Nov 2026 on the plain HW 60 rig (not an MK5; firmware 7.0.0 `release_7_00`; human stopwatch, jitter about 0.5 s; rig only, MK5 unmeasured). The probe is `probe-wallclock` in `tools/nv_write_probe.lisp` on the probe branch (it is not in the copy of the tool next to this document): one-record stores to one slot (the high half stays constant, so each store programs one record), timed with `systime` (printed) and with a stopwatch. The printed 1.5418 s of the first run is in `tools/nv_write_probe_results.md` on the probe branch (not in the copy of the file next to this document); the stopwatch values and the five 2000-store runs are bench-reported and not yet in that file. Six runs of 2000 stores were executed (12 000 stores); the sixth was not timed, and five were timed and analysed.
+
+| Run | Stores | Printed (`systime`) | Stopwatch | Excess = stopwatch - bias - printed |
+|---|---|---|---|---|
+| 1 | 5000 | 1.5418 s | 6.58 s | bias 0.3 s (control): real about 6.28 s, so 4.74 s unaccounted |
+| 2 to 6 (five timed) | 2000 each | 0.6186, 0.6048, 0.6065, 0.6200, 0.6208 s | 3.14, 3.69, 2.84, 2.99, 2.46 s | 2.13, 2.70, 1.84, 1.98, 1.45 s |
+
+Every run reported `failed 0`. For the 2000-store runs the stopwatch bias is d0 = 0.39 s (two controls of 3.0001 s printed, each 3.39 s on the stopwatch). Excess over the five runs [arithmetic]: mean about 2.02 s, median 1.98 s, standard deviation about 0.45 s, which is the order of the stopwatch jitter. The 5000-store run predicts about 1.9 s for 2000 stores under a uniform per-store loss, and the observed mean is 2.02 s. Pooled over the five runs: 13.17 s real for 10 000 stores, about 1.32 ms per store, against about 0.31 ms per store printed (real time about 4.3 times the printed time).
+
+Conclusion [inference]: the missing time is a roughly uniform per-store loss of about 1 ms (ticks lost while a store runs), not a few long stalls. The largest excess is only 0.72 s above the median, which is inside the jitter, and no run lacked the steady excess.
+
+**Figures to use** (these replace the earlier 0.54 ms per store and the 90 ms and 200 ms flush estimates):
+
+| Figure | Value | Label |
+|---|---|---|
+| Cost of one store of one record, including loop overhead | about 1.3 ms real | [rig-measured]: 1.26 ms from the 5000-store run, 1.32 ms pooled over five 2000-store runs; rig only, HW 60 non-MK5, stopwatch jitter about 0.5 s, MK5 unmeasured |
+| Yield between stores in the flush loop | 1 ms nominal; its real cost is not measured | design constant (`LOG_STORE_YIELD_MS`) |
+| A store that changes both 16-bit halves (two records) | up to about twice the single-record cost | [inference, not measured]: the probe loop keeps the high half constant |
+| A 64-store flush | about 85 ms of store time, about 150 ms with the yields | [arithmetic] on 1.3 ms |
+| A typical flush with both blocks (about 57 to 60 changed slots) | about 75 ms, about 135 ms with the yields | [arithmetic] on 1.3 ms |
+| A full first-enable or clear image: 127 slots (63 in block A and 64 in block B; the second `commit_seq` store of each block adds two stores, inside the rounding) | about 165 ms, about 290 ms with the yields; up to about twice that if every slot changes both halves | [arithmetic] on 1.3 ms |
+| CRC over about 256 B per block | 0.1 to 0.3 ms | [estimate], itself tick-timed so a lower bound |
+| Motor commands dropped after any store | about 100 ms (`mc_interface_ignore_input_both(100)`) | source reading |
+
+**Page-transfer stall [rig-measured, bounded].** No multi-second stall was seen in the five timed runs (about 10 000 stores, about 3 expected page-transfer opportunities [estimate, from the page model below]); it is not known whether any transfer occurred. The sixth run of 2000 stores was not timed, so a transfer in it would not have been observed. A stall below about 1 s cannot be excluded with this stopwatch method (jitter about 0.5 s; the datasheet sector erase is 250 to 500 ms typical to maximum at x32, cited above). State exactly: **no multi-second stall seen on the rig; a stall up to about 1 s is not excluded; MK5 unmeasured.** The rig test wrote 12 000 further records, which is 2 to 4 sector erases [estimate]; wear is not a design constraint.
+
+**Start-delay acceptance and the forward rule.** The owner accepts about 1 s of added start delay if the trigger is pressed during a write (4 Nov 2026). On the rig figures that delay is not shown to be at risk, and the 5 s settle and 60 s minimum interval stay unchanged. No design change is made, and the earlier condition (revisit the design if multi-second stalls appear) is resolved for the rig. Forward rule: if a later measurement (the MK5 confirmation or the start-latency validation) shows an added start delay of about 1 s or more, the planner revisits the design. The options to consider are avoiding a flush when a trigger press is likely, more aggressive coalescing, and fewer slots written per flush. The MK5 confirmation of the rig figures is a validation step, not part of this specification.
+
+#### Page transfers and wear
+
+The following is a model, not a measurement [estimate]. The emulated EEPROM is two 16 KiB flash pages of 4-byte records, 4095 records per page. Each 32-bit slot is two 16-bit records, and an unchanged half is skipped (see the first bullet above).
+
+* Live records copied at a transfer: about 872 (the motor and app configuration backup) + 68 (the package settings, slots 0 to 32 and 127) + 2 per log slot.
+* Free records after a transfer: about 3029 with block A only (63 slots, 126 records), about 2901 with both blocks (127 slots, 254 records).
+* Records written per flush are about the number of CHANGED slots: about 37 for block A, about 57 for A plus B. Flushes per page transfer therefore fall from about 82 to about 51, so transfers become about 1.6 times more frequent.
+* An allocated slot that never changes costs only its 2 records of free space. Reserving slots 192 to 255 would cost 128 records (about 4 % of the free space), which is why they stay unassigned for now (headroom; the timing figures are rig-measured and the MK5 is unmeasured).
+* A transfer also moves the VESC motor and app configuration, so log flushes bring those transfers forward. As an order of magnitude [estimate], about 1 transfer per day on a heavy dive day; nothing more is claimed.
+* Wear is not a design constraint: with two sectors alternating at 10 000 erase cycles each, one transfer per 51 flushes allows about a million flushes [arithmetic], and no realistic use comes near it. The earlier estimate of "about 5000 hours of non-stop worst-case activity" is superseded by this model.
+
+#### Flush diagnostics and clocks
+
+`systime` is tick-driven and the ticks are lost while a store runs, so any duration measured with `systime` across `eeprom-store-i` is only a lower bound. The flush diagnostics are therefore defined with COUNTS as the primary content: stores per flush, flushes completed, aborted flushes, and the largest stores-in-one-flush. A `systime` duration is an advisory lower bound only and is never used in a gate or decision. Slot 126 keeps its layout: field A holds the advisory longest store time in ms (a lower bound, 0 when unavailable) and field B counts aborted flushes. Block A is frozen and has no free slot, so layout version 1 stores only the aborted-flush count and the advisory duration; the other counts are RAM values of the sampler thread (for example for a bench build to print), and promoting any of them to a stored slot needs a layout decision. If the flush implementation finds a time source that the kernel lock does not mask, this section may name it; none is assumed to exist.
 
 ### Flush gate
 
-A flush starts only when all of the following hold, and `LOG_*` names are the constants the implementation should define (values are initial and will be tuned after MK5 measurement):
+A flush starts only when all of the following hold. The `LOG_*` names are the constants the implementation defines; the values below are decided (owner decision, 4 Nov 2026) and both timing constants stay named and easy to change.
 
-1. Logging is enabled.
-2. `speed == SPEED_OFF` continuously for `LOG_SETTLE_S` (10 s). The timer restarts whenever any condition below fails at a sample.
+| Constant | Value | Meaning |
+|---|---|---|
+| `LOG_SETTLE_S` | 5 s | Continuous rest required before a flush (was 10 s). It only has to cover trigger pauses and the stopping of the propeller. |
+| `LOG_MIN_FLUSH_INTERVAL_S` | 60 s | Minimum time between the end of one flush and the start of the next (stays 60 s; the planner's earlier proposal of 30 s is withdrawn). |
+| `LOG_STORE_YIELD_MS` | 1 ms | Yield between two stores in the flush loop. |
+| `LOG_REST_ERPM_MAX` | 25.0 eRPM | At-rest threshold. |
+| `LOG_REST_DUTY_MAX` | 0.02 | At-rest threshold (`DUTY_AT_REST_THRESHOLD`). |
+
+The rationale for 60 s is the main use of the DPV, which is under water: apart from a five-click shutdown (covered by the pre-shutdown flush) or a power system failure, batteries are removed only after the user has left the water and removed dive gear, minutes later, so a worst-case commit delay of about a minute is acceptable.
+
+1. At least one block is enabled.
+2. `speed == SPEED_OFF` continuously for `LOG_SETTLE_S` (5 s). The timer restarts whenever any condition below fails at a sample.
 3. At every sample of that period: `|get-rpm| < LOG_REST_ERPM_MAX` (25.0 eRPM) and `|get-duty| < LOG_REST_DUTY_MAX` (0.02, the existing `DUTY_AT_REST_THRESHOLD`). A `nil` or NaN reading counts as not at rest, consistent with the battery-imbalance gating.
 4. The trigger is not pressed: read `(gpio-read 'pin-ppm)` directly (1 is pressed) rather than the 25 Hz `sw_pressed` copy.
 5. `startup_tune_active` is 0. The other beeper paths (battery indication, click tones, the abort tone and the five-click confirmation) also use `foc-beep` or `foc-play-tone` on the FOC path; if the implementation can detect them cheaply it defers while one is active. Otherwise the settle period and "speed off" are the protection (a write racing a tone is expected to cut it short; this is an inference, not tested).
-6. The log is dirty.
+6. At least one enabled block is dirty.
 7. At least `LOG_MIN_FLUSH_INTERVAL_S` (60 s) have passed since the previous flush completed.
 
-**Re-checks during the flush.** Before each slot write, read the trigger pin directly and `speed` again. If the trigger is pressed or `speed != SPEED_OFF`, stop immediately, leave `commit_seq` odd, increment `aborted_flushes` in the mirror (it is written by the next flush), and do not retry until the whole gate passes again. Yield for at least 1 ms between writes so the GPIO and state-machine threads can run; a burst with no yield cannot see a press (the bench burst of 60 writes took about 28 ms). At the start of a flush the at-rest thresholds are checked once more; they are not checked between writes, because the controller-side release and zero current cover that window.
+A flush on the five-click path waives conditions 2 and 7 (settle and interval) and never any other condition (see [Power-off paths](#power-off-paths-and-idle-auto-off)).
 
-**At-rest thresholds (to be confirmed on the MK5 DPV).** The bench probe used `|rpm| < 5.0` and `|duty| < 0.005`, and that guard aborted the run in nine of about ten sessions; the cause is unresolved (noise, supply droop while power was failing, or the printed readings being a second read). The readings it printed were as large as |rpm| 3.36 and |duty| 0.0075, while readings that passed were at most |rpm| 1.53 and |duty| 0.0028. The probe thresholds were therefore within about 1.5 times of the noise, so they are not reused. The flush gate uses a duty limit of 0.02, the value the package already uses for at-rest detection in the battery-imbalance feature, which is more than 2.5 times the largest recorded reading, and an eRPM limit of 25, which is more than 7 times the largest recorded reading and far below `SAFE_START_MIN_RPM` (350). The settle period is continuous, so a threshold set too tight only delays the flush; it can never write while moving. Whether a prop or motor was attached during the bench readings was not recorded, so these thresholds are a reasoned choice, not a measurement, and must be confirmed on the MK5 DPV.
+#### Flush ordering
 
-**Shutdown paths.** The package has no idle power-off timer of its own (the controller's own idle shutdown is outside it and gives no warning), so the idle case is covered by the settle and interval rules above. For the deliberate five-click shutdown, `request_five_click_shutdown` makes one flush attempt after the confirmation tones and just before the `(shutdown true)` call, only if the motor is already at rest (`speed == SPEED_OFF` and conditions 1, 3, 4, 5 and 6). The settle period and minimum interval are waived (the user has just asked to power off, and `five_click_shutdown_rejection_reason` already requires `speed == SPEED_OFF`). A refused, failed or aborted flush never blocks the shutdown. The last ride's data is lost if the supply is removed before the next successful flush (up to the settle period plus the minimum interval); users who want it recorded should wait about 15 seconds at rest, or use the five-click shutdown.
+Both blocks are flushed under this one gate by the one sampler thread: block A first, then block B, and only the blocks that are dirty. Each block is fully committed (odd `commit_seq`, the changed slots, the CRC, even `commit_seq`; see [Commit protocol](#commit-protocol-and-integrity)) before the next block starts. An abort (below) leaves the later block dirty for the next flush; the aborted block keeps its odd `commit_seq` until a later flush commits it, and stays dirty. A flush of one block never rewrites a slot of the other.
 
-**Worst-case latency.** The sampler flushes only at rest, so a rider normally never sees a flush. For a press during a flush:
+#### Re-checks and aborts
 
-* Number of stores: a full image is 61 data slots plus `commit_seq` twice and `crc`, at most 64 stores (the first flush after an initial clear); a typical flush after a ride changes about 25 to 35 slots.
-* Per-store time on the bench (see below): 0.1 to 0.3 ms (0.175 ms average over 20 writes) when single, about 0.47 ms in a 60-write burst, about 0.54 ms per write including loop overhead, and 2.5 ms for the slowest of 8400 writes. At 0.2 to 0.5 ms per store a full 64-store flush takes about 13 to 32 ms; at 2.5 ms for every store it would take 160 ms, which is a pessimistic bound for what was observed. With the 1 ms yield between writes add about 64 ms.
-* The abort check runs before each write, so a press stops the flush after the store in flight. The controller then ignores motor commands for about 100 ms. The earliest motor command after a press comes from the state machine after `TIMER_CLICK_WINDOW` (0.3 s), so for stores in the observed range the added start delay is hidden by the click window and is expected to be zero.
-* If a page transfer were to stall a store for the datasheet bound (600 ms, never observed), the start could be late by up to about 0.4 s, and a motor command issued inside the 100 ms ignore window would be dropped and fall back on the package's existing safe-start timeout and retry handling. The accepted tolerance is about a second.
-* No end-to-end start latency has been measured; the figures above are derived from the per-write measurements and the source. Measure it on the MK5 DPV before release.
+Before each store, read the trigger pin directly and `speed` again, as for a single block. If the trigger is pressed or `speed != SPEED_OFF`, stop immediately, leave `commit_seq` odd, increment `aborted_flushes` in the mirror (it is written by the next flush), and do not retry until the whole gate passes again. Yield for `LOG_STORE_YIELD_MS` between stores so the GPIO and state-machine threads can run; a burst with no yield cannot see a press (60 stores take about 80 ms real [arithmetic on the rig-measured 1.3 ms per store], while the bench burst printed 28 ms, which is a `systime` lower bound). At the start of a flush the at-rest thresholds are checked once more; they are not checked between stores, because the controller-side release and zero current cover that window.
+
+#### User-facing worst case
+
+Data is safely stored after `max(LOG_SETTLE_S, LOG_MIN_FLUSH_INTERVAL_S - time since the last flush)` of rest, where the time since the last flush is taken at the moment the trigger is released. That is between about 5 s and at most about 60 s: normally near 5 s when the previous flush is more than a minute old, and the 60 s worst case applies when a flush happened shortly before the last run. This replaces the earlier "wait about 15 s at rest" statement, which no longer holds. The flush itself then takes about 135 to 290 ms including the yields [arithmetic, see [Timing figures](#timing-figures)].
+
+**At-rest thresholds (to be confirmed on the MK5 DPV).** The bench probe used `|rpm| < 5.0` and `|duty| < 0.005`, and that guard aborted the run in nine of about ten sessions; the cause is unresolved (noise, supply droop while power was failing, or the printed readings being a second read). The readings it printed were as large as |rpm| 3.36 and |duty| 0.0075, while readings that passed were at most |rpm| 1.53 and |duty| 0.0028. The probe thresholds were therefore within about 1.5 times of the noise, so they are not reused. The flush gate uses a duty limit of 0.02, the value the package already uses for at-rest detection in the battery-imbalance feature, which is more than 2.5 times the largest recorded reading, and an eRPM limit of 25, which is more than 7 times the largest recorded reading and far below `SAFE_START_MIN_RPM` (350). The settle period is continuous, so a threshold set too tight only delays the flush; it can never write while moving. Whether a prop or motor was attached during the bench readings was not recorded, so these thresholds (`|eRPM| < 25` and `|duty| < 0.02`) are a reasoned choice, not a measurement, and must be confirmed on the MK5 DPV.
+
+### Power-off paths and idle auto-off
+
+**Correction (5 Nov 2026).** The first draft said "the package gets no warning before shutdown". That is wrong for hardware with a power switch (HW 60 MK3 and newer, including the MK5; only the MK5 hardware file `hwconf/flipsky_official/flipsky_v6/hw_flipsky_60_core.h`, which defines `HW_SHUTDOWN_HOLD_ON`, was checked against source): the firmware sends `event-shutdown` before a shutdown (`shutdown_save_and_hold` calls `lispif_process_shutdown`, which posts the event only if a handler enabled it), and a handler can call `(shutdown-hold t)`, flush, then release. The package currently handles no `event-shutdown`; it handles `event-data-rx` only. The five-click path gets its own bounded flush hook (below), so **no `event-shutdown` handler is part of the design, and none is needed**: a handler would sit on the idle auto-off path as well, which the package must not touch (see the non-interference rule).
+
+**Five-click shutdown (modified MK5 only, opt-in).** `request_five_click_shutdown` makes ONE flush attempt after the rejection checks and the confirmation tones and before the `(shutdown true)` call, only when `speed == SPEED_OFF` and the at-rest thresholds hold (gate conditions 1, 3, 4, 5 and 6), waiving the settle period and the minimum interval. The attempt is bounded: it runs the normal [flush](#flush-ordering) once, with its re-checks and abort rules, and never retries or waits. A refused, failed or aborted flush never blocks the shutdown. The five-click shutdown is kept (the owner also uses it when staging the DPV).
+
+* Requirements of the five-click shutdown (see [Five-click Deep Shutdown](#five-click-deep-shutdown) and `DEEP_SLEEP.md`): hardware `60_MK5`, the opt-in `enable_five_click_shutdown` (default off, EEPROM slot 32), firmware 7.00, and the phantom-button jumper.
+* Shutdown availability by firmware: the vendored source at the bench rig's git hash `1fee61fb7ebc79745a359a0ee0c056cfce39a043` has no `(shutdown true)`, only `shutdown-hold`; `shutdown` and `shutdown-btn-read` appear on the `release_7_00` tip (`9483d8cf`). The package's `firmware_supports_shutdown` checks only `fw-ver`, so it cannot detect a 7.00-labelled build without the extension; no package code is changed here.
+* **The test rig (a plain HW 60 without the power switch) has no five-click shutdown and no idle auto-off, so the rig cannot exercise this path.** It needs a human validation step on an MK5 (with the jumper and the opt-in set): confirm that the flush completes before the controller powers off and that the log survives the shutdown.
+
+**Firmware idle auto-off** (`hwconf/shutdown.c`, `release_7_00` tip; corrected 4 Nov 2026, the earlier text over-generalised). Mechanism [source]: for `shutdown_mode >= OFF_AFTER_10S` the shutdown thread powers the unit off when the inactivity time is at least the timeout AND the shutdown input reads pressed (the input is sampled over 0.7 s windows); `do_shutdown(false)` does not re-sample. The inactivity timer is reset only by `mc_interface` set-duty, set-current, brake, handbrake, open-loop and set-speed style commands whose magnitude is above 0.001 (`SHUTDOWN_RESET` in `motor/mc_interface.c` from line 560, in `mc_interface_set_duty` and the other `set_*` functions; `mc_interface_set_pid_pos` and `mc_interface_brake_now`, line 916, reset it unconditionally), and not by getters or by the EEPROM store path. The shutdown sequence is: `event-shutdown` (only if a handler is enabled; the package has none), `conf_general_store_backup_data`, 100 ms, then it waits while `shutdown-hold` is set (no firmware timeout), then it disables the gates. Mode numbers: 3 = 10 s, 4 = 1 min, 5 = 5 min, 6 = 10 min, 7 = 30 min, 8 = 1 h, 9 = 5 h.
+
+Hardware cases (the spec states them explicitly; idle auto-off is never described as impossible without the qualifier "stock, unmodified"):
+
+1. **STOCK, unmodified MK5.** The button connector is open (human-confirmed 4 Nov 2026; not yet measured with `(shutdown-btn-read)`), so the input never reads pressed and idle auto-off never fires. The factory `shutdown_mode` 9 (`OFF_AFTER_5H`) has no effect there.
+2. **The owner's MODIFIED MK5** (phantom-button jumper between BLACK and YELLOW, `enable_five_click_shutdown` on). Idle auto-off DOES work (human-confirmed 4 Nov 2026) and must keep working: it is the deep-discharge fallback that prevents battery damage when the unit is left on (`DEEP_SLEEP.md`: `OFF_AFTER_5H` remains the fallback when manual shutdown is forgotten). The package's factory `shutdown_mode` is 9 (`OFF_AFTER_5H`, `ui.qml` `apply_defaults_blacktip`), so it is NOT inert on modified hardware.
+3. **The test fixture** (`shutdown_mode` 7, `OFF_AFTER_30M`, in the test-fixture defaults on the fixture branch) is inert only because the rig is a plain HW 60 without the power switch: the firmware's no-power-switch branch only stores backup data and never shuts down.
+
+The package runs no code on the idle auto-off path (no `event-shutdown` handler, no `shutdown-hold`) and must not add any. The only ways the unit loses power are therefore: five-click shutdown (modified MK5, opt-in), idle auto-off (modified MK5 only), battery removal, flat battery or BMS cut-off.
+
+#### Non-interference rule (binding)
+
+The log must never prevent, delay or defeat the firmware idle auto-off.
+
+1. The sampling thread uses read-only getters only and never issues a motor command or any call that resets the inactivity timer.
+2. A flush runs only when data is dirty and at most once per `LOG_MIN_FLUSH_INTERVAL_S`. At rest nothing changes, so an idle unit performs no further flushes and a flush cannot keep it awake.
+3. The EEPROM store path (`conf_general.c` `store_eeprom_var`, lines 290 to 326 at the `release_7_00` tip) calls `mc_interface_ignore_input_both(5000)`, `mc_interface_release_motor_override_both()`, `mc_interface_wait_for_motor_release_both(3.0)` and later `mc_interface_ignore_input_both(100)`. Result of the planner's reading, repeated on 5 Nov 2026 for this specification: none of those functions contains `SHUTDOWN_RESET` (it occurs only in the `mc_interface_set_*` functions and `mc_interface_brake_now`, and in three places in `comm/commands.c`), so the store path does not reset the timer. The flush implementation re-verifies this against the source it is built on and states the result.
+4. The package uses no `shutdown-hold` and no `event-shutdown` handler for logging, so a flush can delay a firmware auto-off only by the duration of one store (the firmware's own lock and wait semantics). An auto-off that interrupts a flush leaves a torn block, which the commit protocol detects.
+
+#### Data loss by power-off style
+
+Evidence labels as above. The 5 s settle and 60 s interval rest on the main use under water: apart from a five-click shutdown (covered by the pre-shutdown flush) or a power system failure, batteries are removed only after the user has left the water, minutes later; the factory 5 h auto-off is far beyond them; short auto-off timeouts (10 s, 1 min) are test settings only; the settle stays at 5 s because it only has to cover trigger pauses and the stopping of the propeller.
+
+| Power-off style | What is lost |
+|---|---|
+| Five-click shutdown (modified MK5 with jumper, opt-in) | Nothing, if the gate passes: the flush runs before the shutdown. If it is refused or aborted (for example a still-turning propeller or a held trigger), the data since the last flush is lost. |
+| Idle auto-off, modified MK5 (jumper), factory 5 h timeout | Nothing: the periodic flush (5 s settle, 60 s minimum interval) ran long before, and at rest nothing changes, so nothing is pending. |
+| Idle auto-off, modified MK5, a short `shutdown_mode` (`DEEP_SLEEP.md` suggests `OFF_AFTER_1M` for testing; 10 s, 1 min and 5 min are the short settings) | The timer counts from the last non-zero motor command and the flush needs `max(settle, interval - time since last flush)` of rest (at most about 60 s). See the arithmetic below. |
+| Idle auto-off, STOCK unmodified MK5 | Never fires (button input open, human-confirmed 4 Nov 2026), so no row applies. |
+| Trigger released, then the battery pulled within the settle/interval window (up to about 60 s) | Everything since the last flush. In the main use under water this is rare, because batteries are removed minutes after leaving the water. |
+| Unit left on | Nothing, after the flush. |
+| BMS cut-off or flat battery mid-ride | The segment since the last flush. This is the most informative case and the least protected; there is no cheap fix, and it is documented rather than mitigated. |
+
+Arithmetic for the short auto-off timeouts [inference, to be checked on a unit]: after a motor run the flush is eligible at `max(release + 5 s, last flush + 60 s)`, while a 1 min timeout powers the unit off at about `release + 60 s`. The last flush precedes the run it follows, so the flush is eligible before the power-off by `min(55 s, time from the last flush to the release)`, and the time from the last flush to the release is at least the run's duration. A 1 min timeout therefore normally still gets its flush, with a thin margin after a very short run soon after a previous flush (and the flush itself takes about 135 to 290 ms with the yields). A 10 s timeout can race the settle and the interval and lose the unflushed segment or leave a torn block (detected, not silent). Without motor use there is no such margin: if the timer started before the last flush and a datum becomes dirty within 60 s of that flush (for example a pack-tag change), it can be lost at a short timeout. This is expected and not a failure.
+
+### Worst-case latency
+
+The sampler flushes only at rest, so a rider normally never sees a flush. For a press during a flush:
+
+* Number of stores: a full image of one block is at most 64 stores for block A (61 covered slots plus `commit_seq` twice and `crc`) and 65 for block B (62 covered slots plus the same three); a full first-enable or clear image of both blocks is 127 slots; a typical flush after a ride changes about 57 to 60 slots across both blocks. Figures in [Timing figures](#timing-figures).
+* Per-store cost: about 1.3 ms real per one-record store [rig-measured, rig only, HW 60 non-MK5, stopwatch jitter about 0.5 s, MK5 unmeasured], plus the 1 ms yield. A typical flush with both blocks takes about 75 ms of store time, about 135 ms with the yields; a full image of both blocks about 165 ms, about 290 ms with the yields [arithmetic].
+* The abort check runs before each store, so a press stops the flush after the store in flight. The controller then ignores motor commands for about 100 ms after any store. The earliest motor command after a press comes from the state machine after `TIMER_CLICK_WINDOW` (0.3 s), so for these store times the added start delay is expected to be small or zero [inference from the figures above; not measured end to end].
+* Page-transfer stall: no multi-second stall seen on the rig; a stall up to about 1 s is not excluded; MK5 unmeasured. A motor command issued inside the 100 ms ignore window would be dropped and fall back on the package's existing safe-start timeout and retry handling. The accepted tolerance is about 1 s of added start delay (owner decision, 4 Nov 2026); the forward rule is in [Timing figures](#timing-figures).
+* No end-to-end start latency has been measured. Measure it on the MK5 DPV before release.
 
 ### Measured behaviour
 
-Rig: HW 60 non-MK5 test controller, no Bluetooth, firmware 7.0.0 (`release_7_00`, git `1fee61fb7ebc79745a359a0ee0c056cfce39a043`). Bench measurements, 4 Nov 2026. Not yet measured on the HW 60 MK5 DPV. The measurement script and the full record are in `tools/nv_write_probe.lisp` and `tools/nv_write_probe_results.md`.
+Rig: HW 60 non-MK5 test controller, no Bluetooth, firmware 7.0.0 (`release_7_00`, git `1fee61fb7ebc79745a359a0ee0c056cfce39a043`). Bench measurements, 4 Nov 2026, and the wall-clock runs of 5 Nov 2026 (see [Timing figures](#timing-figures)). Not yet measured on the HW 60 MK5 DPV. The measurement script and the full record are in `tools/nv_write_probe.lisp` and `tools/nv_write_probe_results.md`.
 
-| Item | Result |
+**Every duration in the first rows below was measured with `systime`, which under-reports real time across a store (the SysTick is masked while the kernel lock is held). Each is a LOWER BOUND, not a real duration**; the real cost is about 1.3 ms per one-record store [rig-measured, wall clock].
+
+| Item | Result (`systime`, lower bound) |
 |---|---|
-| Single write, 20 writes to one slot | 0.1 to 0.3 ms each, average 0.175 ms |
-| Burst of 60 writes | 27.7 to 28.4 ms total (about 0.47 ms per write) |
-| Slowest write per burst | 0.5 to 0.6 ms, except one burst at 2.1 ms |
-| Long run of 8400 timed writes | Slowest 2.5 ms (then 2.4 and 2.4 ms); none over 20 ms; 0 store failures; average about 0.54 ms per write including loop overhead; elapsed 4.544 s |
-| Page transfer | None observed. The earlier estimate of one within about 4095 writes was not supported, cause unknown. Treat a stall of up to the datasheet maximum as possible but unobserved. |
+| Single write, 20 writes to one slot | 0.1 to 0.3 ms each, average 0.175 ms (lower bound) |
+| Burst of 60 writes | 27.7 to 28.4 ms total (about 0.47 ms per write; lower bound) |
+| Slowest write per burst | 0.5 to 0.6 ms, except one burst at 2.1 ms (lower bounds) |
+| Long run of 8400 timed writes | Slowest 2.5 ms (then 2.4 and 2.4 ms); none over 20 ms; 0 store failures; average about 0.54 ms per write including loop overhead; elapsed 4.544 s (all lower bounds; a slow store would not necessarily show) |
+| Page transfer | Not shown either way by these runs. The earlier statement "no page transfer seen in 8400 writes" is not supported, because `systime` does not see time lost under the kernel lock, and the earlier estimate of one within about 4095 writes was not supported, cause unknown. The wall-clock runs of 5 Nov 2026 saw no multi-second stall (about 10 000 stores, five timed runs): no multi-second stall seen on the rig; a stall up to about 1 s is not excluded; MK5 unmeasured. |
+| Wall clock, stopwatch (5 Nov 2026) | About 1.3 ms real per one-record store (1.26 ms from one 5000-store run, 1.32 ms pooled over five 2000-store runs), about 4.3 times the printed `systime` figure [rig-measured; stopwatch jitter about 0.5 s; rig only, HW 60 non-MK5, MK5 unmeasured] |
 | Unused slots | Slots 36 to 126 read `nil` before probing; settings 0 to 35 (checksum 17532) and slot 127 (value 6) unchanged through all writes and power cuts |
 | Power cuts | 17 genuine cuts (1 in one session, 16 in another, 5 ms pacing). 3 tore a 32-bit slot: new high 16 bits with old low 16 bits (raw 577 at slot 113, raw 130630 at slot 94, raw 130652 at slot 116). Only the slot in flight was damaged. The EEPROM stayed readable after every cut. Small sample; the rate is not generalised. |
 | MK5 | Not measured |
@@ -442,107 +577,262 @@ Unverified design option, not relied on: because the high half is written first 
 
 ### Extraction
 
+This section replaces the first block-A-only draft of the protocol (which used a request id and a `kind` byte); nothing had shipped, so there is no migration.
+
+**Transport.** The production DPV (HW 60 MK5 with the Bluetooth module) has no accessible USB without disassembly. On that unit the log is read, exported, cleared and enabled through VESC Tool over the Bluetooth link; USB applies only to units that expose it (for example the plain HW 60 test rig, which has no Bluetooth). There is no Bluetooth under water, so extraction is always after the dive and no live in-water read is specified (`read-log` is nonetheless safe at any time, see below).
+
 The log is read and managed over the existing `event-data-rx` channel (`send-data` in the other direction). The current protocol uses `HANDSHAKE_CODE` (255) as a single byte and treats every other message as a settings write of at least `EEPROM_SETTINGS_COUNT` bytes (33 today, 36 on the test-fixture branch; 30 in the first release), logging and dropping anything shorter. The new messages use that gap.
 
-* Opcodes are the first byte of a request: `0xA1` read-log, `0xA2` clear-log, `0xA3` set-enabled. They are distinct from `HANDSHAKE_CODE` and from every valid settings byte 0 (reverse speed is 20 to 50).
-* A request is recognised as an opcode only when its length is at most 8 bytes (they are 2 or 3 bytes), always far below the smallest settings write ever shipped, so an older package ignores them (it logs "buffer too small") and can never mistake them for a settings write.
-* Requests:
+* Block ids: 0 = block A, 1 = block B.
+* Opcodes are the first byte of a request: `0xA1` read-log, `0xA2` clear-log, `0xA3` set-enabled, `0xA4` set-pack-tag. They are distinct from `HANDSHAKE_CODE` (255) and from every valid settings byte 0 (reverse speed is 20 to 50).
+* A request is recognised as an opcode only when its length is at most 8 bytes (they are 3 or 4 bytes, and always shorter than `EEPROM_SETTINGS_COUNT`), far below the smallest settings write ever shipped, so an older package ignores them (it logs "buffer too small") and can never mistake them for a settings write.
+* Responses are at most 30 bytes (a 6-byte header plus at most 24 data bytes). The ceiling for a message is 128 bytes per `send-data`, but the existing settings UI (`onCustomAppDataReceived` in `ui.qml`) treats any incoming payload of 31 bytes or more as a settings write and applies it to the controls (it ignores shorter ones with a console warning). A response of 30 bytes or fewer cannot be mistaken for settings by the unmodified UI. `ui.qml` must additionally ignore payloads whose first byte is `0xB1` or `0xB2` (response tags), so log traffic never reaches the settings code or the console warning.
 
-  | Opcode | Bytes | Meaning |
-  |---|---|---|
-  | `0xA1` | `[A1, req_id]` | Read the stored image (and status flags). |
-  | `0xA2` | `[A2, C5, req_id]` | Clear: reinitialise slots 64 to 126 (header, zeroed data, minima at their sentinel), keep the enabled flag. `C5` is a confirmation byte. |
-  | `0xA3` | `[A3, value, req_id]` | Set enabled: `value` 0 or 1. Enabling an `empty` or `foreign` range first performs a clear. |
+**Requests**
 
-* `req_id` is a host-chosen byte echoed in every response; the host ignores responses with another id. A new read-log abandons any earlier stream.
-* Response chunk, tag `0xB1`, at most 30 bytes in total: `[B1, req_id, kind, flags, chunk_index, chunk_count, payload...]`.
-  * `kind` 0x01 is a data chunk. The payload is up to six stored slot values as big-endian 32-bit integers, starting at slot `64 + 6 × chunk_index`. A full read is 11 chunks (the last holds three slots, slots 124 to 126). A slot that reads `nil` is sent as `0xFFFFFFFF`, which is never a valid value. The slots are what is stored, not what is pending in RAM.
-  * `kind` 0x02 is a command result with one payload byte: 0 ok, 1 not at rest, 2 store or read-back failed, 3 bad argument, 4 busy. `chunk_index` is 0 and `chunk_count` is 1.
-  * `flags`: bit 0 logging is enabled, bit 1 unflushed (dirty) data is pending in RAM, bit 2 a flush is in progress, bit 3 the image loaded at start was unverified.
-* Chunks of 30 bytes or fewer are deliberate. The ceiling for a chunk is 128 bytes per `send-data`, but the existing settings UI (`onCustomAppDataReceived` in `ui.qml`) treats any incoming payload of 31 bytes or more as a settings message and applies it to the controls, and ignores shorter ones with a console warning. A chunk kept at 30 bytes or fewer cannot be mistaken for settings by the unmodified UI. The extraction work should also make that handler ignore payloads whose first byte is `0xB1`.
-* Chunks are paced (initially 10 ms apart, to be confirmed on a Bluetooth link) so the comm buffers are not overrun.
-* `read-log` is read-only and allowed at any time, including while running. It reads flash and does not release the motor. A read that overlaps a flush returns a coherent but `in_progress` image.
-* `clear-log` and `set-enabled` write EEPROM, so they run only at rest: `speed == SPEED_OFF` and conditions 3, 4 and 5 of the flush gate, with no settle period, no dirty requirement and no minimum interval. Otherwise the result is 1 (not at rest), nothing is written, and the host may retry. They are executed by the sampler thread through the mailbox, so the single-writer rule holds.
-* The package never sends the log unprompted.
+| Opcode | Bytes | Meaning |
+|---|---|---|
+| `0xA1` read-log | `[A1, block, part]` or `[A1, block, part, pace_ms]` | `part` 0 is the stored image and the header state; `part` 1 is the live RAM image (unflushed). Optional `pace_ms` overrides the chunk pacing (below). Read-only; allowed at any time. |
+| `0xA2` clear-log | `[A2, block, 5A]` | At rest only. Keeps the enabled flag and writes a cleared image with a proper commit. For block B it re-reads the references and sets flag bit 1 from that read (see [Bin edges](#bin-edges-binding)). `5A` is a confirmation byte. |
+| `0xA3` set-enabled | `[A3, block, value]` | `value` 0 or 1. At rest only. Initialises an `empty` block (a full image write) and sets the enabled flag last; refuses a `foreign` block and an `unknown_layout` block. Blocks are enabled independently (block B may be on without block A). Default: both disabled. The sampler and flush thread runs if at least one block is enabled. |
+| `0xA4` set-pack-tag | `[A4, hi, lo]` | The pack tag is `hi × 256 + lo`, 0 to 32767 (0 means unset). At rest only. Refused unless block B is valid and enabled. Marks block B dirty. |
+
+Write opcodes (`0xA2`, `0xA3`, `0xA4`) write EEPROM, so they run only at rest: `speed == SPEED_OFF` and conditions 3, 4 and 5 of the [flush gate](#flush-gate), with no settle period, no dirty requirement and no minimum interval. They are executed by the sampler thread through the one RAM mailbox, so the single-writer rule holds; the event-data handler never writes the log. `clear-log` also claims a `foreign` block explicitly (that is the only way to claim one; `set-enabled` refuses it); it refuses an `unknown_layout` block. Checks run in this order: bad argument, not at rest, block state.
+
+**Read response, tag `0xB1`**, at most 30 bytes: `[B1, block, part, chunk_index, chunk_count, state_byte] + up to 24 data bytes`. The state byte is the block state in the first chunk (`chunk_index` 0) and 0 in every other chunk. The data bytes are slot values as big-endian 32-bit integers, six slots per chunk, in slot order from the first slot of the block (64 for block A, 128 for block B). A slot that reads `nil` is sent as `0xFFFFFFFF`, which is never a valid value, and the panel maps it to `null`. Part 1 of a block whose collector is not running (no RAM image) is sent with every slot `0xFFFFFFFF`; in part 1 the header slots (`commit_seq`, CRC) are the mirror's copies of the last stored values.
+
+| Block | Image | Chunks per part | Chunk `i` carries | Last chunk |
+|---|---|---|---|---|
+| A (252 B, 63 slots) | slots 64 to 126 | 11 | slots `64 + 6i` to `69 + 6i` for `i` 0 to 9 (24 B, message 30 B) | `i` = 10: slots 124 to 126 (12 B, message 18 B) |
+| B (256 B, 64 slots) | slots 128 to 191 | 11 | slots `128 + 6i` to `133 + 6i` for `i` 0 to 9 (24 B, message 30 B) | `i` = 10: slots 188 to 191 (16 B, message 22 B) |
+
+**State byte**: bits 0 to 2 are the state code, bit 3 is the enabled flag as stored in the header (0 when the header is not readable); bits 4 to 7 are 0.
+
+| Code | State | Reader state name |
+|---|---|---|
+| 0 | uninitialised | `empty` |
+| 1 | valid (enabled) | `ok` |
+| 2 | valid-disabled | `ok` |
+| 3 | torn | `in_progress`, `crc_mismatch` |
+| 4 | unknown version | `unknown_layout` |
+| 5 | foreign | `foreign` |
+
+For example a valid, enabled block has state byte `0x09` (code 1, enabled bit 8), a valid-disabled block `0x02`, a torn block that was enabled `0x0B`, a foreign block `0x05`, an uninitialised block `0x00`.
+
+**Acknowledgement, tag `0xB2`**: `[B2, opcode, status, block]` (4 bytes), sent for every write opcode, and for a read request that is invalid. `block` echoes the request (always 1 for `0xA4`). Status: 0 ok, 1 refused: not at rest, 2 refused: block state, 3 bad argument (unknown block id, `part` other than 0 or 1, `value` other than 0 or 1, a `0xA2` confirmation byte other than `5A`, a pack tag above 32767). A valid read request has no acknowledgement; the `0xB1` stream is the answer.
+
+**Pacing and serving (BLE; provisional until measured on the DPV).** The production DPV is reachable over Bluetooth only. The sender waits `LOG_CHUNK_PACE_MS` between chunk messages (a named constant; the provisional default is 10 ms, to be tuned by the on-DPV Bluetooth read test). The optional fourth request byte overrides it in ms: 0 or absent means the default, and values above 250 clamp to 250; the request stays at most 8 bytes and the 3-byte form stays valid. Reads are served one at a time: a read request that arrives while another is still being sent is dropped (no response) and the panel retries after its timeout. The same holds for a write request that arrives while another is pending. A full read of both blocks and both parts is 44 messages of at most 30 bytes (4 parts of 11 chunks; 1280 bytes in all [arithmetic], 318 B per part for block A and 322 B for block B); at the default pace the pacing alone takes about 0.44 s [arithmetic] plus the link's own latency, which is not measured.
+
+**Receiver rule (binding on the panel).** The panel detects missing or duplicate chunk indices (using `chunk_count` from the header), retries the part up to 3 times with a doubled pace (twice the pace of the first attempt, clamped at 250 ms), and then reports the read as incomplete. An incomplete read is never exported as if it were complete. The panel's per-part timeout is set from the on-DPV Bluetooth test.
+
+`read-log` is read-only and allowed at any time, including while running. It reads flash (part 0) or the RAM image (part 1) and does not release the motor. A read that overlaps a flush returns a coherent but `in_progress` stored image; part 1 is read slot by slot while the sampler may still be accumulating, so it is advisory, and the stored image is authoritative. The package never sends the log unprompted.
+
+#### Worked examples and protocol test vectors
+
+Hand-computed, and asserted by the script at the end of [Block B test vectors](#block-b-test-vectors), which builds the frames and compares the literals below. Block A is the populated image of the [Export format](#export-format) example (slots 64 to 126); block B is the populated block B image (slots 128 to 191, commit sequence 6, flags 279).
+
+| Case | Bytes |
+|---|---|
+| Read block A, stored image, default pace: request | `A1 00 00` |
+| Response chunk 0 (30 B; state `0x09`; slots 64 to 69 = 6, 748037813, `0x42544C47`, 257, 12, 47) | `B1 00 00 00 0B 09 · 00 00 00 06 · 2C 96 26 B5 · 42 54 4C 47 · 00 00 01 01 · 00 00 00 0C · 00 00 00 2F` |
+| Response chunk 10 (18 B; slots 124 to 126 = 46271721, 6491664, 98306) | `B1 00 00 0A 0B 00 · 02 C2 0C E9 · 00 63 0E 10 · 00 01 80 02` |
+| Read block B, live RAM image, pace 25 ms: request | `A1 01 01 19` |
+| Response chunk 0 (30 B; state `0x09`; slots 128 to 133 = 6, 2019938442, `0x42544C48`, 279, 5, 229376) | `B1 01 01 00 0B 09 · 00 00 00 06 · 78 65 D0 8A · 42 54 4C 48 · 00 00 01 17 · 00 00 00 05 · 00 03 80 00` |
+| Response chunk 10 (22 B; slots 188 to 191 = 363, 7471954, 52428800, 0) | `B1 01 01 0A 0B 00 · 00 00 01 6B · 00 72 03 52 · 03 20 00 00 · 00 00 00 00` |
+| Invalid block id 2: request, acknowledgement | `A1 02 00`, `B2 A1 03 02` |
+| Clear block B: request, ok | `A2 01 5A`, `B2 A2 00 01` |
+| Clear block B while not at rest | `B2 A2 01 01` |
+| Clear with confirmation byte 0: request, bad argument | `A2 01 00`, `B2 A2 03 01` |
+| Clear an `unknown_layout` block A | `A2 00 5A`, `B2 A2 02 00` |
+| Set block A enabled: request, ok | `A3 00 01`, `B2 A3 00 00` |
+| Enable a `foreign` block B | `A3 01 01`, `B2 A3 02 01` |
+| Enable with value 2 | `A3 00 02`, `B2 A3 03 00` |
+| Pack tag 7: request, ok | `A4 00 07`, `B2 A4 00 01` |
+| Pack tag 32767 (`0x7FFF`): request | `A4 7F FF` (accepted) |
+| Pack tag 32768 (`0x8000`): request, bad argument | `A4 80 00`, `B2 A4 03 01` |
+| Pack tag 7 while block B is disabled, or not at rest | `B2 A4 02 01`, `B2 A4 01 01` |
+
+Pace byte: `A1 00 00` and `A1 00 00 00` use the default (10 ms); `A1 00 00 0A` is 10 ms; `A1 00 00 19` is 25 ms; `A1 00 00 FA` is 250 ms and `A1 00 00 FF` clamps to 250 ms. The first retry uses twice the first attempt's pace: 10 ms gives 20 ms, 25 ms gives 50 ms, 100 ms gives 200 ms, and 200 ms or more gives 250 ms.
 
 ### Export format
 
-The host tool turns the chunks into a versioned JSON file for the analysis tool. The raw slot values are always included, with the decoded fields beside them; fields that are not readable are `null`.
+The VESC Tool panel turns the chunks into one versioned JSON document for the analysis tool (schema version 1). Nothing had shipped, so there is no migration from the earlier single-block draft. Raw slot values are authoritative: the Python tool re-decodes them and ignores the advisory `decoded` objects, `limits` and `notes`, so a decoder bug can be fixed without losing data.
+
+| Key | Content |
+|---|---|
+| `schema`, `schema_version` | `"blacktip-perf-log-export"` and 1. |
+| `host_timestamp` | The host's time of the export. |
+| `package_version`, `fw_ver`, `hw_name`, `scooter_type` | From the host: the panel knows the package version and the connection reports firmware and hardware; `scooter_type` comes from the existing settings read. |
+| `limits` | Optional and advisory. Read at export time by the QML panel from the live configuration objects (`mMcConf`, `mAppConf`) and the package constants, where readable (see below). |
+| `notes` | Optional advisory array of strings (below). The decoder ignores it. |
+| `blocks` | An array with one object per block read. |
+
+Each `blocks` object has: `id` (`"A"` or `"B"`), `state` (a reader state name: `empty`, `foreign`, `unknown_layout`, `in_progress`, `crc_mismatch`, `ok`), `layout_version`, `enabled`, `commit_seq`, `crc_stored`, `crc_computed` (computed by the panel from the stored slots), `slots_stored` (a raw map from slot number to value, the stored image of part 0), `slots_live` (a raw map of the unflushed RAM image of part 1) and, optionally, `decoded` (advisory). A slot that read `nil` (`0xFFFFFFFF` on the wire) is `null`. A disabled, uninitialised or foreign block is still exported with its state and whatever slots were readable. A block whose read was incomplete is never exported as complete (see the receiver rule in [Extraction](#extraction)).
+
+**`limits` keys** (all optional; omitted when unreadable):
+
+* `l_in_current_max_live_a`: the LIVE value of `l-in-current-max`. The package `conf-set`s it at run time (1.7 A during soft start, 22.8 A afterwards), so it is neither the stored factory value nor the effective cap.
+* `package_current_cap_a`: the effective package cap, `MAX_CURRENT_BLACKTIP` or `MAX_CURRENT_CUDAX`.
+* `l_temp_fet_start_c`: read by the QML panel from the VESC Tool configuration object (where readable), not through Lisp `conf-get` (which does not support it on 7.00). Advisory only and never used for decoding (the decoder uses slots 189 and 190). The panel and the report may compare it with the fixed 85 deg C and warn when it differs. Nothing in this specification assumes that the package can read a FET limit.
+* `l_temp_motor_start_c`, `l_max_duty`, `l_battery_cut_start_v`, `l_battery_cut_end_v`, `max_erpm` (`MAX_ERPM_BLACKTIP` or `MAX_ERPM_CUDAX`), `imbalance_threshold_v` (`battery_imbalance_threshold_centi / 100`) and `si_battery_ah` (read from the configuration as `ui.qml` already does for `si_battery_ah`).
+* `controller_id`: exported as read, without interpretation (its meaning is unexplained here). It is cheap to read: `conf-get 'controller-id` is supported on 7.00 (`lispBM/lispif_vesc_extensions.c` at both the bench hash and the `release_7_00` tip, listed in the LispBM README), and the panel can read `controller_id` from `mAppConf`.
+
+The authoritative edge references of block B are the raw slots 189 and 190, which are exported with the slots.
+
+**`notes`** (advisory strings the panel adds): block B keeps the bin edges it was started with, so export and clear block B before changing the package current cap or the motor temperature limit (the FET limit is not detectable; see [Bin edges](#bin-edges-binding)); logs recorded on the bench or in air are unlikely to be representative of real dive use, so clear both blocks before the first real dive.
+
+The example below is the one used by the [protocol vectors](#worked-examples-and-protocol-test-vectors) and the [test vectors](#test-vectors); its values are illustrative (`limits` in particular). The `decoded` objects are abbreviated: a real export of block A lists all ten `per_speed_index` entries (indices 0 to 9, labels `reverse 2`, `untangle (reverse 1)`, `speed 1` to `speed 8`). A decoded field is `null` for a sentinel (for example `min_vin_running_v` when slot 77 field B is 32767), and a decoded value that equals a saturation maximum is flagged by the tool as saturated.
 
 ```json
 {
   "schema": "blacktip-perf-log-export",
   "schema_version": 1,
-  "exported_at": "2026-11-04T16:52:00+13:00",
-  "package": { "name": "Blacktip DPV", "version": "1.6.1", "log_layout_version": 1 },
-  "device": {
-    "fw_ver": [7, 0, 0],
-    "hw_name": "60_MK5",
-    "scooter_type": "blacktip",
-    "hardware_configuration": 0
-  },
+  "host_timestamp": "2026-11-04T16:52:00+13:00",
+  "package_version": "1.6.1",
+  "fw_ver": [7, 0, 0],
+  "hw_name": "60_MK5",
+  "scooter_type": "blacktip",
   "limits": {
-    "l_in_current_max_a": 22.8,
-    "l_current_max_a": null,
-    "max_speed_index": 9,
-    "speed_percent": [45, 20, 30, 38, 46, 54, 62, 70, 78, 100]
+    "l_in_current_max_live_a": 22.8,
+    "package_current_cap_a": 22.8,
+    "l_temp_fet_start_c": 85.0,
+    "l_temp_motor_start_c": 160.0,
+    "l_max_duty": 0.95,
+    "l_battery_cut_start_v": 32.0,
+    "l_battery_cut_end_v": 30.0,
+    "max_erpm": 4100,
+    "imbalance_threshold_v": 0.3,
+    "si_battery_ah": 20.0,
+    "controller_id": 0
   },
-  "integrity": {
-    "state": "ok",
-    "enabled": true,
-    "commit_seq": 6,
-    "crc_stored": 748037813,
-    "crc_computed": 748037813,
-    "unflushed_pending": false,
-    "flush_in_progress": false,
-    "unverified_at_load": false
-  },
-  "first_slot": 64,
-  "raw_slots": [6, 748037813, 1112820807, 257, 12, 47, 32771, 1, 123000, 12345, 2764, 48268582, 8323293, 131468403, 0, 0, 0, 0, 0, 0, 3000, 90000, 0, 6000, 240000, 300, 36000, 1512000, 7200, 54000, 3240000, 67500, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9000, 1890000, 72000, 0, 0, 12, 0, 95, 420, 1350, 5100, 1, 0, 65536, 0, 0, 1, 21000, 102236506, 46271721, 6491664, 98306],
-  "decoded": {
-    "lifetime": {
-      "sessions_with_motor_use": 12, "motor_starts": 47,
-      "safe_start_aborts": { "invalid_telemetry": 1, "timeout": 3, "high_current_stall": 0 },
-      "safe_start_retries_exhausted": 1,
-      "motor_on_s": 12300.0, "ah_used": 12.345, "wh_used": 276.4
+  "notes": [
+    "Block B keeps the bin edges it was started with: export and clear block B before changing the package current cap or the motor temperature limit.",
+    "Logs recorded on the bench or in air are unlikely to be representative of real dive use: clear both blocks before the first real dive.",
+    "A changed FET temperature limit is not detected by the package: block B stays referenced to 85 deg C until it is cleared."
+  ],
+  "blocks": [
+    {
+      "id": "A",
+      "state": "ok",
+      "layout_version": 1,
+      "enabled": true,
+      "commit_seq": 6,
+      "crc_stored": 748037813,
+      "crc_computed": 748037813,
+      "slots_stored": {
+          "64": 6, "65": 748037813, "66": 1112820807, "67": 257, "68": 12, "69": 47, "70": 32771, "71": 1,
+          "72": 123000, "73": 12345, "74": 2764, "75": 48268582, "76": 8323293, "77": 131468403, "78": 0,
+          "79": 0, "80": 0, "81": 0, "82": 0, "83": 0, "84": 3000, "85": 90000, "86": 0, "87": 6000,
+          "88": 240000, "89": 300, "90": 36000, "91": 1512000, "92": 7200, "93": 54000, "94": 3240000,
+          "95": 67500, "96": 0, "97": 0, "98": 0, "99": 0, "100": 0, "101": 0, "102": 0, "103": 0, "104": 0,
+          "105": 9000, "106": 1890000, "107": 72000, "108": 0, "109": 0, "110": 12, "111": 0, "112": 95,
+          "113": 420, "114": 1350, "115": 5100, "116": 1, "117": 0, "118": 65536, "119": 0, "120": 0, "121": 1,
+          "122": 21000, "123": 102236506, "124": 46271721, "125": 6491664, "126": 98306
+        },
+      "slots_live": {
+          "64": 6, "65": 748037813, "66": 1112820807, "67": 257, "68": 12, "69": 47, "70": 32771, "71": 1,
+          "72": 123450, "73": 12400, "74": 2764, "75": 48268582, "76": 8323293, "77": 131468403, "78": 0,
+          "79": 0, "80": 0, "81": 0, "82": 0, "83": 0, "84": 3000, "85": 90000, "86": 0, "87": 6000,
+          "88": 240000, "89": 300, "90": 36000, "91": 1512000, "92": 7200, "93": 54000, "94": 3240000,
+          "95": 67500, "96": 0, "97": 0, "98": 0, "99": 0, "100": 0, "101": 0, "102": 0, "103": 0, "104": 0,
+          "105": 9000, "106": 1890000, "107": 72000, "108": 0, "109": 0, "110": 12, "111": 0, "112": 95,
+          "113": 420, "114": 1350, "115": 5100, "116": 1, "117": 0, "118": 65536, "119": 0, "120": 0, "121": 1,
+          "122": 21000, "123": 102236506, "124": 46271721, "125": 6491664, "126": 98306
+        },
+      "decoded": {
+          "lifetime": {
+            "sessions_with_motor_use": 12, "motor_starts": 47,
+            "safe_start_aborts": { "invalid_telemetry": 1, "timeout": 3, "high_current_stall": 0 },
+            "safe_start_retries_exhausted": 1,
+            "motor_on_s": 12300.0, "ah_used": 12.345, "wh_used": 276.4
+          },
+          "extremes": {
+            "max_fet_temp_c": 47.3, "max_motor_temp_c": 31.8,
+            "max_motor_current_a": 25.4, "max_input_current_a": 22.1,
+            "max_abs_erpm": 4012, "min_vin_running_v": 31.87
+          },
+          "per_speed_index": [
+            { "index": 2, "label": "speed 1", "on_s": 300.0, "mean_input_current_a": 3.0, "at_input_limit_s": 0, "mean_rpm_deficit_erpm": 0.0 },
+            { "index": 9, "label": "speed 8", "on_s": 900.0, "mean_input_current_a": 21.0, "at_input_limit_s": 95, "mean_rpm_deficit_erpm": 80.0 }
+          ],
+          "duty": { "abs_ge_0_95_s": 42.0, "abs_0_90_to_0_95_s": 135.0, "abs_0_80_to_0_90_s": 510.0 },
+          "faults": {
+            "over_voltage": 0, "under_voltage": 1, "drv": 0, "abs_over_current": 0,
+            "over_temp_fet": 2, "over_temp_motor": 0, "gate_driver_over_voltage": 0,
+            "gate_driver_under_voltage": 0, "mcu_under_voltage": 0, "watchdog_reset": 0, "other": 0
+          },
+          "integrity_events": 1,
+          "last_session": {
+            "motor_on_s": 2100.0, "ah_used": 3.12, "wh_used": 34.6,
+            "max_fet_temp_c": 41.2, "min_vin_running_v": 33.05,
+            "max_input_current_a": 19.8, "max_abs_erpm": 3600
+          },
+          "diagnostics": { "longest_store_ms_lower_bound": 3, "aborted_flushes": 2 }
+        }
     },
-    "extremes": {
-      "max_fet_temp_c": 47.3, "max_motor_temp_c": 31.8,
-      "max_motor_current_a": 25.4, "max_input_current_a": 22.1,
-      "max_abs_erpm": 4012, "min_vin_running_v": 31.87
-    },
-    "per_speed_index": [
-      { "index": 2, "label": "speed 1", "on_s": 300.0, "mean_input_current_a": 3.0, "at_input_limit_s": 0, "mean_rpm_deficit_erpm": 0.0 },
-      { "index": 9, "label": "speed 8", "on_s": 900.0, "mean_input_current_a": 21.0, "at_input_limit_s": 95, "mean_rpm_deficit_erpm": 80.0 }
-    ],
-    "duty": { "abs_ge_0_95_s": 42.0, "abs_0_90_to_0_95_s": 135.0, "abs_0_80_to_0_90_s": 510.0 },
-    "faults": {
-      "over_voltage": 0, "under_voltage": 1, "drv": 0, "abs_over_current": 0,
-      "over_temp_fet": 2, "over_temp_motor": 0, "gate_driver_over_voltage": 0,
-      "gate_driver_under_voltage": 0, "mcu_under_voltage": 0, "watchdog_reset": 0, "other": 0
-    },
-    "integrity_events": 1,
-    "last_session": {
-      "motor_on_s": 2100.0, "ah_used": 3.12, "wh_used": 34.6,
-      "max_fet_temp_c": 41.2, "min_vin_running_v": 33.05,
-      "max_input_current_a": 19.8, "max_abs_erpm": 3600
-    },
-    "diagnostics": { "longest_write_ms": 3, "aborted_flushes": 2 }
-  }
+    {
+      "id": "B",
+      "state": "ok",
+      "layout_version": 1,
+      "enabled": true,
+      "commit_seq": 6,
+      "crc_stored": 2019938442,
+      "crc_computed": 2019938442,
+      "slots_stored": {
+          "128": 6, "129": 2019938442, "130": 1112820808, "131": 279, "132": 5, "133": 229376, "134": 40,
+          "135": 1073741704, "136": 1200, "137": 1073749024, "138": 3000, "139": 1073768824, "140": 2500,
+          "141": 1073776824, "142": 1800, "143": 1073777824, "144": 900, "145": 1073764324, "146": 600,
+          "147": 1073759824, "148": 350, "149": 1073754074, "150": 0, "151": 0, "152": 3, "153": 12,
+          "154": 1146970, "155": 400, "156": 5200, "157": 9100, "158": 7000, "159": 30000, "160": 9000,
+          "161": 2500, "162": 300, "163": 12, "164": 12, "165": 0, "166": 2, "167": 7045158, "168": 40,
+          "169": 2100, "170": 102236506, "171": 46268746, "172": 6491664, "173": 229740, "174": 1800,
+          "175": 86835491, "176": 45482319, "177": 6721250, "178": 229738, "179": 2400, "180": 131400122,
+          "181": 47677761, "182": 7475116, "183": 229742, "184": 900, "185": 42598540, "186": 44630357,
+          "187": 5770468, "188": 363, "189": 7471954, "190": 52428800, "191": 0
+        },
+      "slots_live": {
+          "128": 6, "129": 2019938442, "130": 1112820808, "131": 279, "132": 5, "133": 229376, "134": 40,
+          "135": 1073741704, "136": 1200, "137": 1073749024, "138": 3000, "139": 1073768824, "140": 2500,
+          "141": 1073776824, "142": 1800, "143": 1073777824, "144": 900, "145": 1073764324, "146": 600,
+          "147": 1073759824, "148": 350, "149": 1073754074, "150": 0, "151": 0, "152": 3, "153": 12,
+          "154": 1146970, "155": 417, "156": 5200, "157": 9100, "158": 7000, "159": 30000, "160": 9000,
+          "161": 2500, "162": 300, "163": 12, "164": 12, "165": 0, "166": 2, "167": 7045158, "168": 40,
+          "169": 2100, "170": 102236506, "171": 46268746, "172": 6491664, "173": 229740, "174": 1800,
+          "175": 86835491, "176": 45482319, "177": 6721250, "178": 229738, "179": 2400, "180": 131400122,
+          "181": 47677761, "182": 7475116, "183": 229742, "184": 900, "185": 42598540, "186": 44630357,
+          "187": 5770468, "188": 363, "189": 7471954, "190": 52428800, "191": 0
+        },
+      "decoded": {
+          "references": { "i_ref_a": 22.8, "t_fet_ref_c": 85.0, "t_mot_ref_c": 160.0 },
+          "flags": { "enabled": true, "motor_reference_read": true, "imbalance_configured": true, "fresh_differs": false, "fallback_reference_present": true, "unknown_bits": 0 },
+          "counter_164": { "value": 12, "label": "assumed 85 deg C limit" },
+          "counter_165": { "value": 0, "label": "limit read from configuration (value in slot 190)", "limit_c": 160.0 },
+          "pack_tag": 7, "session_seq": 5
+        }
+    }
+  ]
 }
 ```
 
-The example is abbreviated: a real export lists all ten `per_speed_index` entries (indices 0 to 9, labels `reverse 2`, `untangle (reverse 1)`, `speed 1` to `speed 8`). `integrity.state` is one of the reader states above. A decoded field is `null` for a sentinel (for example `min_vin_running_v` when slot 77 field B is 32767) and a decoded value that equals a saturation maximum is flagged by the tool as saturated. `exported_at` is the host's timestamp. `package.version`, `device.fw_ver` and `device.hw_name` come from the host (the UI knows the package version, and the connection reports firmware and hardware). `scooter_type` and the speed settings come from the existing settings read. `limits` holds the configured controller limits where the host can read them, and `null` otherwise.
-
 ### Defaults and data handling
 
-* Logging is disabled by default, and a fresh install or an upgrade does not enable it. Enabling is explicit and persistent (bit 0 of slot 67), and is done through `set-enabled`.
+* Logging is disabled by default for both blocks, and a fresh install or an upgrade does not enable either. Enabling is explicit and persistent (bit 0 of slot 67 for block A, bit 0 of slot 131 for block B), and is done through `set-enabled` per block.
 * The data stays on the controller and in exports the user starts. The package never transmits the log, and the log is out of scope for any separate opt-in telemetry design.
-* The log holds aggregates only (counts, sums, maxima), no time series, no position and no identifier. It can be cleared at any time with `clear-log`, and it is lost on a firmware update.
+* The log holds aggregates only (counts, sums, maxima), no time series, no position and no device identifier (the optional pack tag is a number the owner chooses). It can be cleared at any time with `clear-log`, and it is lost on a firmware update.
+
+### User-facing statements
+
+These are the statements the panel, the README and the report must carry (the README text is written later and must not contradict them).
+
+* **When data is safe.** After `max(settle, interval - time since the last flush)` of rest, that is between about 5 s and at most about 60 s (normally near 5 s when the previous flush is more than a minute old; the 60 s worst case applies when a flush happened shortly before the last run). A five-click shutdown flushes first. See [Data loss by power-off style](#data-loss-by-power-off-style) for the other cases (the idle auto-off of a modified MK5, battery removal and a BMS cut-off).
+* **Transport.** On the production DPV the log is read, exported, cleared and enabled through VESC Tool over Bluetooth; USB applies only to units that expose it. Extraction is after the dive. Bluetooth throughput facts and the pacing and retry rules are in [Extraction](#extraction) and are provisional until measured on the DPV.
+* **Bench and in-air data.** Logs recorded while the unit is run on the bench or in air are unlikely to be representative of real dive use, so both blocks should be cleared (`clear-log`) before the first real dive. (This is a data-quality remark only.)
+* **Stored references.** Block B keeps the bin edges it was started with. Export and clear block B before any trial that changes the package current cap (`I_REF`) or the motor temperature limit (`T_MOT_REF`), which the package can see (flag bit 3 shows a difference at boot). This does NOT apply to the FET temperature limit, which the package can neither read nor detect: changing `l-temp-fet-start` leaves block B's FET bins and counter 164 referenced to 85 deg C, and remembering that is the user's discipline. The panel and the report may warn when the configured FET limit differs from 85 deg C.
+* **Defaults.** Both blocks are off by default.
 
 ### Test vectors
 
-These are for the unit tests of the later implementation (pure functions: packing, saturating add, framing and CRC). All were computed with Python (`zlib.crc32`, `struct.pack(">I", ...)`) and checked against a direct port of `crc32_with_init`.
+These are for the unit tests of the later implementation (pure functions: packing, saturating add, framing and CRC). All were computed with Python (`zlib.crc32`, `struct.pack(">I", ...)`) and checked against a direct port of `crc32_with_init`; the block A images are also asserted by the script at the end of [Block B test vectors](#block-b-test-vectors).
 
 **CRC builtin.**
 
@@ -577,7 +867,7 @@ These are for the unit tests of the later implementation (pure functions: packin
 | `soft_start_active` 1, index 5 | only `motor_on` and the running-sample maxima change; no per-speed slot, no duty band |
 | `speed` 99 | no accumulation except the Ah and Wh deltas |
 
-**Decoded example image.** The 63 raw slot values for slots 64 to 126 are the `raw_slots` list in the export example above. It decodes as shown there; in particular index 4 (speed 3) has `on` = 36000 ds, `cur` = 1512000 (mean 1512000 / (10 × 36000) = 4.2 A) and `def` = 7200 (mean 10 × 7200 / 36000 = 2.0 eRPM), index 5 (speed 4) has `on` = 54000, `cur` = 3240000 (mean 6.0 A), `def` = 67500 (mean 12.5 eRPM), and slot 118 (value 65536) is `fault_5` = 2 and `fault_6` = 0.
+**Decoded example image.** The 63 raw slot values for slots 64 to 126 are the block A `slots_stored` map in the export example above. It decodes as shown there (block A is unchanged by the amendments of 5 Nov 2026, and its vectors below are unchanged); in particular index 4 (speed 3) has `on` = 36000 ds, `cur` = 1512000 (mean 1512000 / (10 × 36000) = 4.2 A) and `def` = 7200 (mean 10 × 7200 / 36000 = 2.0 eRPM), index 5 (speed 4) has `on` = 54000, `cur` = 3240000 (mean 6.0 A), `def` = 67500 (mean 12.5 eRPM), and slot 118 (value 65536) is `fault_5` = 2 and `fault_6` = 0.
 
 | Check | Value |
 |---|---|
@@ -598,16 +888,16 @@ Status: specification, like the rest of this section. Block B is a second, optio
 
 * Block A (slots 64 to 126, layout v1) is frozen. Its slot map is unchanged. The only edits to block A text made when block B was added are the block-state rules ([Reader states](#commit-protocol-and-integrity)) and cross-references.
 * Block B is independently valid. It has its own header (`commit_seq`, CRC, magic, layout version and flags) and its own commit. A valid block A never depends on block B, and block B never depends on block A. Block B may be enabled without block A, and a flush of one block never rewrites a slot of the other.
-* Both blocks are written only by the one sampler thread under the one [flush gate](#flush-gate), so slots 64 to 126 and 128 to 191 each still have exactly one writer. The order in which the two commits run within one flush is not significant.
+* Both blocks are written only by the one sampler thread under the one [flush gate](#flush-gate), so slots 64 to 126 and 128 to 191 each still have exactly one writer. Within one flush block A is committed first and then block B, each completely before the next starts (see [Flush ordering](#flush-ordering)).
 * The [safety statement](#safety-statement) applies to block B unchanged, with one addition to its list of reads: block B reads the existing balance-wire globals by polling (see [Imbalance counters](#imbalance-counters)). It adds no hook into the balance code and no further hook anywhere else. While block B is disabled (the default) it performs no EEPROM writes.
 * Reset Defaults, the settings migrations and the settings UI write path never touch slots 128 to 191, exactly as for block A.
-* Extraction (read, clear and enable opcodes) and the export schema for block B are not specified here. The opcodes in [Extraction](#extraction) address block A only until that is specified.
+* Extraction (read, clear, enable and pack-tag opcodes) and the export schema cover both blocks and are specified in [Extraction](#extraction) and [Export format](#export-format).
 
 #### Storage and ownership
 
 * Block B owns slots 128 to 191 (64 slots, 256 bytes) by contract. Slots 192 to 255 are unassigned and reserved: not read and not written. Slots 0 to 63 and 127 are untouched.
-* Firmware 7.00 provides 256 custom slots (0 to 255): `EEPROM_VARS_CUSTOM` is 256 (`datatypes.h:1417` at the bench firmware hash `1fee61fb7ebc79745a359a0ee0c056cfce39a043`) and `conf_general.c:231` and `:269` reject addresses at or above it. Bench measurement, 5 Nov 2026, plain HW 60 rig, firmware 7.0.0, read-only: slot 255 reads `nil` without error and slot 256 raises an eval error (recorded in `tools/nv_write_probe_results.md`), and a sweep found slots 128 to 255 all `nil`. The sweep result was reported from the bench and is not yet in the results file. The production HW 60 MK5 DPV has not been read, so its slots 128 to 255 are unverified; the block state rules below (foreign data is never overwritten silently) cover that case.
-* Blocks A and B together are 127 log slots, which is 254 EEPROM records of live data (each 32-bit slot is stored as two 16-bit records). The consequence for page-transfer frequency is covered by the timing material in [Flash write behaviour](#flash-write-behaviour) and [Flush gate](#flush-gate), not restated here. That material was written for block A alone and is to be amended for A plus B, so its figures must not be applied to block B unchanged.
+* Firmware 7.00 provides 256 custom slots (0 to 255); the source citations, the hardware confirmation on the rig (slot 255 reads `nil`, slot 256 raises an eval error, slots 128 to 255 all `nil`; the sweep is bench-reported, 5 Nov 2026, rig only) and the firmware gate are in [Firmware gate and slot capacity](#firmware-gate-and-slot-capacity). The production HW 60 MK5 DPV has not been read, so its slots 128 to 255 are unverified; the block state rules below (foreign data is never overwritten silently) cover that case.
+* Blocks A and B together are 127 log slots, which is 254 EEPROM records of live data (each 32-bit slot is stored as two 16-bit records). The consequence for page-transfer frequency (about 51 flushes per transfer instead of about 82) and for flush time is in [Page transfers and wear](#page-transfers-and-wear) and [Timing figures](#timing-figures).
 
 #### Block B slot map
 
@@ -618,36 +908,48 @@ Header and integrity first, then data. Slots 130 to 191 (62 slots, 248 bytes) ar
 | 128 | `b_commit_seq` | U31 | Odd while a flush is in progress, even when committed. Not CRC-covered. Advances modulo 2^31 as for block A. |
 | 129 | `b_crc` | CHECK | `crc32(slots 130..191) & 0x7FFFFFFF`. Not CRC-covered. |
 | 130 | `b_magic` | U31 | `0x42544C48` ("BTLH"), decimal 1112820808. Block A's magic is `0x42544C47` ("BTLG"). |
-| 131 | `b_layout_flags` | U31 | Bits 8 to 15: layout version (1). Bits 0 to 4: flags (below). Other bits 0. |
+| 131 | `b_layout_flags` | U31 | Bits 8 to 15: layout version (1). Bits 0 to 4: flags (below). Bits 5 to 7 are reserved and written 0. Other bits 0. |
 | 132 | `session_seq` | U31 | Count of controller sessions with motor use, as seen by block B. |
 | 133 | `pack_tag`, reserved | P15(A, B) | A: pack tag, 0 is unset. B: reserved, written 0. |
 | 134 to 149 | current and sag table | U31 × 2 per bin | 8 bins. Bin `b` uses slot `134 + 2b` (`n`) and `135 + 2b` (`sag_sum`). `n` is the number of samples. `sag_sum` is offset-binary (bias 2^30) in 0.1 V × samples, where sag is `v_ref - v_in`, signed. Both saturate; `sag_sum` saturates at both ends. |
 | 150 to 154 | `duty_ge_095_by_index` | P15(A, B) | Seconds with `\|duty\| >= 0.95` per speed index. Slot `150 + floor(i / 2)`; A holds even index `i`, B holds odd index `i` (the block A `at_limit` convention). Saturates at 32767 s per index (about 9.1 hours). |
 | 155 to 158 | `duty_hist` | U31 × 4 | Samples with `\|duty\| < 0.8`, bins `[0, 0.2)`, `[0.2, 0.4)`, `[0.4, 0.6)`, `[0.6, 0.8)`. Duty at or above 0.8 is covered by block A's slots 113 to 115. |
 | 159 to 163 | `fet_hist` | U31 × 5 | Samples per FET temperature bin 0 to 4 (edges derived from slot 189, see [Bin edges](#bin-edges-binding)). |
-| 164 | `derate_fet` | U31 | Samples with FET temperature at or above the FET derating start reference. Always equals slot 163. |
-| 165 | `derate_motor` | U31 | Samples with motor temperature at or above the motor derating start reference. |
+| 164 | `derate_fet` | U31 | Samples with FET temperature at or above the FET reference `T_FET_REF`, which is the fixed constant 85 °C on 7.00 (the package never reads a FET limit). An ASSUMED-LIMIT counter: it is the time at or above 85 °C, not the time in derating if the configured FET start differs. Always equals slot 163. Decoder label (binding, never depends on a flag): "assumed 85 deg C limit". |
+| 165 | `derate_motor` | U31 | Samples with motor temperature at or above `T_MOT_REF` (slot 190). Decoder label (binding on the decoder, the panel and the report), from flag bit 1 of slot 131: bit 1 = 1: "limit read from configuration (value in slot 190)"; bit 1 = 0: "assumed 160 deg C factory fallback, configured limit unknown". |
 | 166 | `imb_latch_events` | U31 | Imbalance latch-set events (below). |
 | 167 | `imb_max`, `imb_last` | P15(A, B) | A: largest settled `\|imbalance\|`, 0.01 V. B: the most recent settled `\|imbalance\|`, 0.01 V. |
 | 168 | `imb_over_warn` | U31 | Settled readings with `\|imbalance\|` over the warning threshold. |
 | 169 to 188 | session ring | 4 records × 5 slots | Record `r` starts at slot `169 + 5r`, `r = (session_seq - 1) mod 4`. See [Session ring](#session-ring). |
-| 189 | `ref_1` | P15(A, B) | A: `I_REF`, 0.1 A. B: `T_FET_REF`, 0.1 °C. Zero is unset. |
-| 190 | `ref_2` | P15(A, B) | A: `T_MOT_REF`, 0.1 °C. B: reserved, written 0. |
+| 189 | `ref_1` | P15(A, B) | A: `I_REF`, 0.1 A. B: `T_FET_REF`, 0.1 °C, the fixed constant 850 on 7.00. Zero is unset. |
+| 190 | `ref_2` | P15(A, B) | A: `T_MOT_REF`, 0.1 °C (read from the configuration, or the fallback 1600; flag bit 1 says which). B: reserved, written 0. |
 | 191 | reserved | U31 | Written 0. Slots 189 to 191 are all CRC-covered. |
 
 The block has 64 slots: 4 header slots (128 to 131) and 60 data slots (132 to 191).
 
 ##### Flags (slot 131, bits 0 to 4)
 
+Redefined on 5 Nov 2026 (owner decision; layout version stays 1, nothing had shipped, so no migration). This replaces the first block B wording, in which bit 1 covered both derating limits and bit 4 could be taken as a motor-reference status.
+
 | Bit | Meaning |
 |---|---|
 | 0 | Block B enabled. |
-| 1 | Both derating limits (FET start and motor start) were read successfully with `conf-get` when the stored references were set. |
+| 1 | The motor derating start reference `T_MOT_REF` (slot 190) was obtained by a successful `conf-get 'l-temp-motor-start` inside `trap` (a number in 30.0 to 250.0 °C), not the 1600 fallback. It says nothing about the FET reference, which is never read on 7.00 because `conf-get` of a FET limit does not exist there. |
 | 2 | Imbalance detection was configured (`battery_imbalance_threshold_centi > 0`) when the block was last written. |
-| 3 | A fresh derivation or read of the references in this run differs from the stored references (see [Bin edges](#bin-edges-binding)). |
-| 4 | At least one stored reference is a fallback constant because its `conf-get` read failed or was implausible. |
+| 3 | A fresh read or derivation of `I_REF` or `T_MOT_REF` in this run differs from the stored references (see [Bin edges](#bin-edges-binding)). It compares only `I_REF` and `T_MOT_REF` on 7.00. |
+| 4 | At least one edge reference is a fallback constant. On 7.00 it is ALWAYS 1, because `T_FET_REF` is the fixed constant 850, so it carries no information about the motor reference: decoders, the panel and the report use bit 1 for that and never bit 4. |
 
-Enabled layout-1 value with no other flag is 257. Bits 1 and 4 describe the stored references and are carried over from the stored header whenever the stored references win. Bit 3 describes the current run. On firmware 7.00 the FET reference cannot be read at all (see [Derating limits and conf-get names](#derating-limits-and-conf-get-names)), so expect bit 1 to be 0 and bit 4 to be 1 on every unit. The decoder therefore labels counter 164 "assumed limit" rather than "measured limit".
+Bits 5 to 7 are reserved and written 0. A decoder that finds one of them set decodes the block normally (the layout version still says 1), reports the state as usual and adds a note that unknown flag bits are set; it does not interpret them.
+
+Enabled layout-1 value with no other flag is 257. The realistic 7.00 pattern, with the motor reference read successfully, is bit 0, bit 1 and bit 4 (275, or 279 with imbalance detection configured); with the motor read failed it is 273 (277 with imbalance). Bit 1 is set or cleared as follows:
+
+* At every fresh motor-reference read (sampler thread start with no stored references, `set-enabled`, `clear-log`) bit 1 is set to 1 when the read succeeded and was accepted, and to 0 when it failed (a trap error, `nil`, a non-number, a value below 30.0 or above 250.0 °C, so the fallback 1600 was used).
+* At boot, when block B is valid and its stored references are non-zero, the stored-reference-wins rule applies to the flag too: bit 1 (like bit 4) is CARRIED from the stored header, so it keeps describing how the stored reference was obtained. It is not recomputed from the fresh read. Bit 3 covers any difference between the fresh read and the stored `I_REF` or `T_MOT_REF`, as before.
+* With zero stored references, the fresh read and its status are used.
+* Consequence: a stored 1600 that came from the fallback (bit 1 = 0) stays labelled "assumed" even if a later fresh read succeeds with exactly 160.0 (the values are equal, so bit 3 is clear), until the user exports and clears block B (`clear-log` re-reads and sets bit 1 from that read).
+* Because bit 1 now records the motor read separately, layout v1 does distinguish a successful read of exactly 160.0 °C (slot 190 = 1600, bit 1 = 1) from the fallback (slot 190 = 1600, bit 1 = 0).
+
+On firmware 7.00 the FET reference cannot be read at all (see [Derating limits and conf-get names](#derating-limits-and-conf-get-names)); counter 164 is therefore always labelled "assumed 85 deg C limit". Counter 165 is labelled from bit 1 as in the slot table, with the motor limit value from slot 190.
 
 ##### Sag table
 
@@ -660,9 +962,9 @@ Enabled layout-1 value with no other flag is 257. Bits 1 and 4 describe the stor
 
 ##### Derating exposure
 
-Counters 164 and 165 count samples with the running motor (`speed != SPEED_OFF`) where the FET temperature is at or above `T_FET_REF / 10` and the motor temperature at or above `T_MOT_REF / 10`. Both use the stored references of slots 189 and 190, not a fresh read. In the vendored firmware, derating is gradual: below `start + 0.1` the limits are kept, between start and end the permitted current is mapped linearly from the full limit down to zero, and above `end - 0.1` the controller stops with an over-temperature fault (`motor/mc_interface.c:2337` to `2349` for the FET and `:2363` to `2375` for the motor, at the bench firmware hash). Counting at or above the start value therefore means "derating possible or active". It is a conservative superset of the controller's own condition (start + 0.1). Whether the firmware compares the same filtered value that `(get-temp-fet)` returns (`mc_interface_temp_fet_filtered`, `lispBM/lispif_vesc_extensions.c:2260`) was not traced and is unverified.
+Counters 164 and 165 count samples with the running motor (`speed != SPEED_OFF`) where the FET temperature is at or above `T_FET_REF / 10` (the fixed 85 °C on 7.00, so counter 164 counts time at or above an ASSUMED limit) and the motor temperature at or above `T_MOT_REF / 10`. Both use the stored references of slots 189 and 190, not a fresh read. In the vendored firmware, derating is gradual: below `start + 0.1` the limits are kept, between start and end the permitted current is mapped linearly from the full limit down to zero, and above `end - 0.1` the controller stops with an over-temperature fault (`motor/mc_interface.c:2337` to `2349` for the FET and `:2363` to `2375` for the motor, at the bench firmware hash). Counting at or above the start value therefore means "derating possible or active". It is a conservative superset of the controller's own condition (start + 0.1). Whether the firmware compares the same filtered value that `(get-temp-fet)` returns (`mc_interface_temp_fet_filtered`, `lispBM/lispif_vesc_extensions.c:2260`) was not traced and is unverified.
 
-A missing motor sensor can make `(get-temp-mot)` implausible. `ui.qml` configures `m_motor_temp_sens_type` 0 (`TEMP_SENSOR_NTC_10K_25C`) in the Blacktip defaults, but whether a motor NTC is actually fitted to a Blacktip is UNKNOWN. Counter 165 is therefore unverified until `(get-temp-mot)` has been read once at rest on the production unit (no motor run is needed or wanted). Until then, the 160 °C start value makes derating essentially unreachable even with a plausible reading.
+A motor temperature sensor is fitted on the DPV (human-confirmed, 5 Nov 2026); the plausibility of its reading on the production unit is still to be confirmed with one at-rest read of `(get-temp-mot)` (no motor run is needed or wanted). `ui.qml` configures `m_motor_temp_sens_type` 0 (`TEMP_SENSOR_NTC_10K_25C`) in the Blacktip defaults. This is not claimed for other hardware or scooter types. With the factory 160 °C start value, derating is essentially unreachable (inference), so counter 165 is expected to stay at or near zero in normal use; how it is labelled is fixed by flag bit 1 (see [Flags](#flags-slot-131-bits-0-to-4)).
 
 ##### Imbalance counters
 
@@ -706,7 +1008,7 @@ Four records of five slots, record `r` at `169 + 5r` with `r = (session_seq - 1)
 
 The edges are decided. They are derived from three references stored in slots 189 and 190, so every block is self-describing and the decoder never hard-codes an edge. Do not re-choose them in an implementation.
 
-**Evidence** (public sources only): the Blacktip defaults in `ui.qml` (`apply_defaults_blacktip`) set `l_in_current_max` 23 A, `l_temp_motor_start` 160 °C and `l_temp_motor_end` 180 °C, and `l_battery_cut_start` 32 V with `l_battery_cut_end` 30 V; the package constants are `MAX_CURRENT_BLACKTIP` 22.8 A, `MAX_CURRENT_CUDAX` 46 A, `MIN_CURRENT_BLACKTIP` 1.7 A and `MIN_CURRENT_CUDAX` 0.35 A; the firmware 7.00 defaults, which `ui.qml` does not override, are `l_temp_fet_start` 85 °C, `l_temp_fet_end` 100 °C and `l_max_duty` 0.95 (`motor/mcconf_default.h:93` and `:102` to `:105` at the bench firmware hash).
+**Evidence** (public sources only): the Blacktip defaults in `ui.qml` (`apply_defaults_blacktip`) set `l_in_current_max` 23 A, `l_temp_motor_start` 160 °C and `l_temp_motor_end` 180 °C, and `l_battery_cut_start` 32 V with `l_battery_cut_end` 30 V; the package constants are `MAX_CURRENT_BLACKTIP` 22.8 A, `MAX_CURRENT_CUDAX` 46 A, `MIN_CURRENT_BLACKTIP` 1.7 A and `MIN_CURRENT_CUDAX` 0.35 A; the firmware 7.00 defaults, which `ui.qml` does not override, are `l_temp_fet_start` 85 °C, `l_temp_fet_end` 100 °C and `l_max_duty` 0.95 (`motor/mcconf_default.h:93` and `:102` to `:105` at the bench firmware hash; no override was found in the headers of the 60-class boards). The factory FET derating start of 85 °C is therefore the firmware default: `apply_defaults_blacktip` sets no `l_temp_fet_*` value (`ui.qml` only reads `l_temp_fet_start` and `l_temp_fet_end` for the temperature gauges).
 
 **The effective current cap is the package constant, not the stored value.** The package itself calls `conf-set` on `l-in-current-max` at run time: `MIN_CURRENT_*` at the start of soft start and `MAX_CURRENT_*` when soft start completes. Nothing restores the stored value. A `conf-get` of `l-in-current-max` therefore returns 23, 1.7 or 22.8 depending on timing and must NOT be used as the current reference. The stored 23 A is not the effective running cap either; analysis must use `I_REF`.
 
@@ -715,19 +1017,19 @@ The edges are decided. They are derived from three references stored in slots 18
 | Reference | Value | Fallback |
 |---|---|---|
 | `I_REF` | `round(10 × MAX_CURRENT_BLACKTIP)` = 228, or 460 for Cuda X (`MAX_CURRENT_CUDAX`), chosen by `scooter_type`. No `conf-get`. | None needed. |
-| `T_FET_REF` | `round(10 × conf-get 'l-temp-fet-start)` | 850 |
+| `T_FET_REF` | The FIXED constant 850 (0.1 °C, 85 °C, the factory and VESC default). The package never reads a FET limit: `conf-get` of `'l-temp-fet-start` is not supported on firmware 7.00 (see [Derating limits and conf-get names](#derating-limits-and-conf-get-names)). | Not applicable. |
 | `T_MOT_REF` | `round(10 × conf-get 'l-temp-motor-start)` | 1600 |
 
-`round` is `floor(x + 0.5)`. A `conf-get` result is accepted only if it is a number in 30.0 to 150.0 °C; otherwise the fallback is used, flag bit 4 is set and flag bit 1 is 0. A failed read is caught with `trap`; an unrecognised parameter makes `conf-get` raise an error ("Parameter not recognized", `lispBM/lispif_vesc_extensions.c:4615`), which `trap` returns as an error result. The `conf-get` names are verified in [Derating limits and conf-get names](#derating-limits-and-conf-get-names), where `'l-temp-fet-start` turns out not to exist on 7.00.
+`round` is `floor(x + 0.5)`. `T_MOT_REF` is accepted only if `conf-get 'l-temp-motor-start` returns a number in 30.0 to 250.0 °C (so `round(10 × value)` is at most 2500, which fits a P15 field); otherwise the fallback 1600 is used and flag bit 1 is 0. The factory motor derating start of 160 °C (and the Blacktip's 160/180 °C configuration) is inside that range, and an earlier draft's 30.0 to 150.0 range would have rejected it. A failed read is caught with `trap`; an unrecognised parameter makes `conf-get` raise an error ("Parameter not recognized", `lispBM/lispif_vesc_extensions.c:4615`), which `trap` returns as an error result. No FET range exists because no FET value is ever read. Flag bit 4 is always 1 on 7.00 because of the FET constant.
 
-**When references are read.** At sampler thread start, at set-enabled and at clear-log, so a cleared block records the then-current limits. At boot, when block B is valid and a stored reference field is non-zero, the stored reference wins: the bins stay consistent with the accumulated counts. If a fresh derivation or read differs from the stored value, flag bit 3 is set to 1 and the derating counters keep using the stored references. A zero stored field is unset and the fresh value is adopted at the next flush (bit 3 stays 0 for that field). Consequence: changing `l-temp-fet-start`, `l-temp-motor-start` or the package current cap requires a clear-log of block B (export first) to re-reference. Tuning trials must follow this rule.
+**When references are read.** At sampler thread start with no stored references, at set-enabled and at clear-log, so a cleared block records the then-current limits and the status of the motor read (flag bit 1, see [Flags](#flags-slot-131-bits-0-to-4)). At boot, when block B is valid and a stored reference field is non-zero, the stored reference wins: the bins stay consistent with the accumulated counts, and flag bit 1 is carried from the stored header with it. If a fresh derivation or read of `I_REF` or `T_MOT_REF` differs from the stored value, flag bit 3 is set to 1 and the derating counters keep using the stored references. A zero stored field is unset and the fresh value (and its read status) is adopted at the next flush (bit 3 stays 0 for that field). Consequence for the PACKAGE-visible limits: changing the package current cap (`I_REF`) or the motor temperature limit (`T_MOT_REF`) requires a clear-log of block B (export first) to re-reference, and flag bit 3 shows a difference at boot. The rule does NOT apply to the FET limit, which the package can neither read nor detect: changing `l-temp-fet-start` leaves block B's FET bins and counter 164 referenced to 85 °C, and remembering that is the user's discipline. Tuning trials must follow this rule.
 
 **Edges** (integer arithmetic in 0.1 units, no float maths added to the sampling path):
 
 * Current: `step = 5 × ((I_REF + 39) div 40)`, which is `5 × ceil(I_REF / 40)` in 0.1 A, and `bin = min(7, floor(|I10| / step))`. Blacktip: `I_REF` 228 gives `step` 30 (3.0 A) with edges 3, 6, 9, 12, 15, 18 and 21 A; bin 7 is at or above 21.0 A and contains the 22.8 A cap and the stored 23 A. Cuda X: `I_REF` 460 gives `step` 60 (6.0 A). Rationale: `8 × step` is at least `I_REF`, so the 8 bins span 0 to the cap with a round step; 22.8 and 23 give the same step, so the result does not depend on which of the two configuration variants is in the unit; samples in soft start (limited to 1.7 A) are already excluded, so no bin is wasted on them; the top bin is the "at the limit" bin, which is what a tuning analysis needs.
-* FET temperature: edges are `T_FET_REF - 450`, `- 300`, `- 150` and `- 0` (0.1 °C), and `bin` is the number of edges that are less than or equal to the reading (0 to 4), signed compare, no clamp. At 85 °C that is below 40, 40 to 55, 55 to 70, 70 to 85 and 85 or above. Rationale: the top bin starts where derating can begin (counter 164 equals it by construction and is a cross-check), 15 °C steps give a coarse headroom picture below it; an underwater water-cooled unit is expected to sit mostly in the lowest bins (inference, not measured); the session ring's maximum FET temperature gives the fine value, so no further bins are added. If real logs show bin 0 holding nearly everything, a later layout version may refine it; do not change it now.
-* Motor temperature: no histogram, only counter 165 against `T_MOT_REF` (160 °C factory, so derating is essentially unreachable). See the sensor caveat above.
-* Duty: the bins stay fixed dimensionless constants 0.2, 0.4, 0.6 and 0.8. The factory `l_max_duty` is 0.95 (firmware default, not overridden by `ui.qml`), so block A's frozen 0.95 threshold is the controller's own ceiling. If `l-max-duty` were ever tuned below 0.95 the saturation counters would stop triggering, so the export records `l-max-duty` (see the export schema, specified separately) rather than binning on it.
+* FET temperature: edges are `T_FET_REF - 450`, `- 300`, `- 150` and `- 0` (0.1 °C), and `bin` is the number of edges that are less than or equal to the reading (0 to 4), signed compare, no clamp. With the fixed `T_FET_REF` 850 the edges are fixed at 40, 55, 70 and 85 °C: below 40, 40 to 55, 55 to 70, 70 to 85 and 85 or above (the formula stays general so a later layout version could supply another reference). Rationale: the top bin starts where derating can begin (counter 164 equals it by construction and is a cross-check, labelled "assumed 85 deg C limit"), 15 °C steps give a coarse headroom picture below it; an underwater water-cooled unit is expected to sit mostly in the lowest bins (inference, not measured); the session ring's maximum FET temperature gives the fine value, so no further bins are added. If real logs show bin 0 holding nearly everything, a later layout version may refine it; do not change it now.
+* Motor temperature: no histogram, only counter 165 against `T_MOT_REF` (160 °C factory, so derating is essentially unreachable), labelled from flag bit 1 as described in the slot table. See the sensor remark above.
+* Duty: the bins stay fixed dimensionless constants 0.2, 0.4, 0.6 and 0.8. The factory `l_max_duty` is 0.95 (firmware default, not overridden by `ui.qml`), so block A's frozen 0.95 threshold is the controller's own ceiling. If `l-max-duty` were ever tuned below 0.95 the saturation counters would stop triggering, so the export records `l-max-duty` (in `limits`, see [Export format](#export-format)) rather than binning on it.
 * The edges are identical for both configuration variants of the Blacktip.
 
 #### Derating limits and conf-get names
@@ -742,12 +1044,14 @@ Verified against the vendored bldc source at the bench firmware hash (`1fee61fb7
 | FET derating end | `'l-temp-fet-end` | NOT supported, as above. |
 | Input current limit | `'l-in-current-max` | Supported (`:482`, `:4345`); not usable as the current reference (see above). |
 
-Consequences of the missing FET symbol, which differ from what the original design assumed:
+Consequences of the missing FET symbol (amended 5 Nov 2026; the human accepted option (a): the FET reference is a fixed constant):
 
-* `T_FET_REF` falls back to 850 on every firmware 7.00 unit, flag bit 1 is 0 and flag bit 4 is 1 on every unit, and counter 164 is always an assumed-limit counter. The 85 °C is the firmware 7.00 default (`mcconf_default.h:102`) and the Blacktip defaults in `ui.qml` do not change it, so it is correct for an unmodified unit. A user who changed the FET limit in VESC Tool is not detected.
-* The implementation should still attempt the `'l-temp-fet-start` read inside `trap` (it costs nothing and picks the value up if a later firmware adds the symbol), then take the fallback; it must not treat the failure as an error to report beyond the flags.
-* Bit 4 therefore cannot tell the decoder whether the motor reference was read or fell back; only the FET reference is known to be a fallback. The decoder can compare `T_MOT_REF` with 1600 but a read of exactly 160.0 is indistinguishable from the fallback. Layout version 1 defines no per-reference status bit (bits 5 to 7 are reserved zero), so a later layout version could add one.
+* `T_FET_REF` is the FIXED constant 850 (0.1 °C, 85 °C, the factory and VESC default). The package never reads a FET limit, and nothing in this specification assumes that a `conf-get` of a FET limit works. The 85 °C is the firmware 7.00 default (`mcconf_default.h:102`) and the Blacktip defaults in `ui.qml` do not change it, so it is correct for an unmodified unit. A user who changed the FET limit in VESC Tool is not detected.
+* Flag bit 4 ("at least one edge reference is a fallback constant") is therefore always 1 on firmware 7.00, because of the FET constant, and it carries no information about the motor reference. Flag bit 1 is redefined (see [Flags](#flags-slot-131-bits-0-to-4)) and no longer concerns the FET reference.
+* Counter 164 is an ASSUMED-LIMIT counter: time at or above 85 °C, not time in derating if the configured FET start differs. The FET histogram edges are fixed at 40, 55, 70 and 85 °C. Bits 5 to 7 stay reserved, written 0.
+* Layout v1 does distinguish a successful read of exactly 160.0 °C from the 1600 fallback, because bit 1 now records the motor read. A later layout version could add a FET status bit and/or a host-supplied limit if a firmware exposes the FET limit or the need arises; no such mechanism is planned (a design in which the QML panel pushes limits to the package was considered and declined).
 * The 85 °C and 160 °C starting values are the Blacktip factory defaults. Note that the firmware default for the motor start is 85 °C (`mcconf_default.h:108`), not 160, so the fallback 1600 is a Blacktip-specific constant.
+* The export's `l_temp_fet_start_c` is read by the QML panel from the VESC Tool configuration object, not through `conf-get`, and is advisory (see [Export format](#export-format)).
 
 #### Block states
 
@@ -773,10 +1077,25 @@ Implementation guidance (the code is specified elsewhere):
 * RAM accumulators hold exact totals. The stored P15 and U31 values are derived from them at flush and totals are reloaded from the stored image at boot, so sub-unit fractions of the second-, charge- and energy-based fields are lost at boot: at most 1 unit per field per power cycle (1 s, 1 mAh, 0.1 Wh). The count-based fields (samples, events, sag sums) are integers and lose nothing.
 * A small set of generic helpers (saturating add to a slot, bin lookup against an edge constant, P15 get and set) driven by constant tables, not one `defun` per field. No debug string building in the sampling loop.
 * Lisp size budget: the main build is 106,110 B (81.0 % of the 131,064 B limit) and the rig build with the test fixture is 117,835 B (89.9 %). The rig build is 11,725 B larger than the main build. The whole log feature (all code changes together) is allocated 11,000 B, which puts the rig build at 128,835 B (98.3 %). Keeping to the 98 % target of 128,443 B would leave 10,608 B. Per-change allocations are set in the code changes.
+* **Heap budget (proposal; the figures are bench numbers, not a design limit).** The LispBM heap on the HW 60 rig is 22024 B, which is 2753 cons cells. The 37 KB bench probe alone uses 2526 cells at idle, with 227 free. The production package's own heap use is UNKNOWN and cannot be scaled from the probe: the 106 KB package already runs, so heap use does not scale with source size. Every code change reports the free cons cells before and after (estimated with the native REPL harness; the authoritative on-hardware `:info` figure is a human step in the validation work). The proposed minimum is at least 500 free cons cells after the whole log feature on the production build. The rig build with the test fixture is larger and may be tighter; that is a risk to flag, not to fix by trimming the log.
 
 #### Block B test vectors
 
-These are for the unit tests of the later implementation (pure functions: packing, offset-binary, bin lookup, edge derivation, ring index and block classification). Every value below was computed with the reference script at the end of this subsection and checked with a second method: CRC with both Python `zlib.crc32` and a bitwise port of `crc32_with_init` (the script asserts that they agree), and spot-checked the P15, offset-binary and bin values by hand arithmetic. CRC semantics are those of block A (`crc32` builtin, `init = 0`, each slot four bytes big-endian, masked to 31 bits for storage). Nothing here was run on hardware or on the VESC LispBM runtime.
+These are for the unit tests of the later implementation (pure functions: packing, offset-binary, bin lookup, edge derivation, flag and reference derivation, ring index, block classification and the extraction frames). Every value below was computed with the reference script at the end of this subsection, which asserts all of them and prints `all vectors ok`. Every CRC was verified by a second method: the script computes it with Python `zlib.crc32` and with a bitwise port of the firmware's `crc32_with_init` and asserts that they agree. The P15, offset-binary, bin and frame values were also spot-checked by hand arithmetic. CRC semantics are those of block A (`crc32` builtin, `init = 0`, each slot four bytes big-endian, masked to 31 bits for storage). Nothing here was run on hardware or on the VESC LispBM runtime.
+
+**Changes of 5 Nov 2026** (flag redefinition, motor range 30.0 to 250.0 °C, fixed FET reference). Every vector that contains a slot 131 value, or a CRC over one, was recomputed or re-stated:
+
+| Vector | Status |
+|---|---|
+| Populated block B image, now flags 279 (bits 0, 1, 2, 4: realistic 7.00 pattern) | Changed: slot 131 277 to 279; CRC32 `0x8507C610` to `0x7865D08A`; slot 129 84395536 to 2019938442; first CRC input bytes `... 00 00 01 15 ...` to `... 00 00 01 17 ...`. The old image (flags 277, bit 1 = 0) is kept as a variant and its values are unchanged. |
+| Cleared image with flags 273 (motor read failed, bit 1 = 0) | Unchanged: CRC32 `0xF8B2DEF6`, slot 129 2024988406 |
+| Cleared image with flags 275 (motor read accepted, bit 1 = 1) | New: CRC32 `0x05D0C86C`, slot 129 97568876 |
+| Populated image with slot 158 = 7001 | Changed (base image changed): CRC32 `0x98CDB30E` to `0x65AFA594`, masked 416133902 to 1706010004; the old value is unchanged for the flags 277 image |
+| Slot 131 = 513 (layout version 2), slot 131 = 276 (bit 0 clear, bits 2 and 4) | Unchanged: CRC32 `0x3A52D4DB` and `0xFBB6CD5D` (slot 131 is replaced, the other slots are as before) |
+| Slot 131 = 278 (bit 0 clear, bits 1, 2, 4: valid-disabled in the new pattern) | New: CRC32 `0x06D4DBC7`, masked 114613191 |
+| Slot 131 = 307 (bits 0, 1, 4 and unknown bit 5) | New: CRC32 `0x8F08A616`, masked 252225046 |
+| Reference derivation, flag words, stored-reference cases, counter 165 labels | Re-stated below (range 30.0 to 250.0, bit 1 meaning, bit 4 always 1) |
+| Block A images, P15 packing, bin lookups, sag, ring index, edge derivation | Unchanged |
 
 **Offset-binary and saturation** (`sag_sum`, bias 2^30 = 1073741824, stored range 0 to 2147483647):
 
@@ -825,20 +1144,45 @@ These are for the unit tests of the later implementation (pure functions: packin
 
 **One sag sample.** `I_REF` 228 (`step` 30), `v_ref` 36.4 V (`vref10` 364), `get-vin` 35.1 V (`vin10` 351), `|get-current-in|` 14.0 A (`I10` 140): bin 4, sag +13, so `n` of slot 142 gains 1 and `sag_sum` of slot 143 gains 13. With `get-vin` 36.5 V the sag is -1.
 
-**Reference derivation** (`conf-get` results are floats in °C, accepted if in 30.0 to 150.0):
+**Reference derivation** (`conf-get 'l-temp-motor-start` results are floats in °C, accepted only if a number in 30.0 to 250.0; `T_FET_REF` is the fixed 850 and is never read, so bit 4 is 1 in every row):
 
-| Case | Result |
+| Read result | `T_MOT_REF` (slot 190 field A) | Bit 1 | Counter 165 label |
+|---|---|---|---|
+| 160.0 (the factory value) | 1600 | 1 | limit read from configuration (value in slot 190) |
+| 180.0 | 1800 | 1 | limit read from configuration (value in slot 190) |
+| 250.0 (upper bound, accepted) | 2500 | 1 | limit read from configuration (value in slot 190) |
+| 30.0 (lower bound, accepted) | 300 | 1 | limit read from configuration (value in slot 190) |
+| 159.96 | 1600 (`floor(1599.6 + 0.5)`) | 1 | limit read from configuration (value in slot 190) |
+| 85.06 | 851 | 1 | limit read from configuration (value in slot 190) |
+| 29.9 | 1600 (fallback) | 0 | assumed 160 deg C factory fallback, configured limit unknown |
+| 250.1 | 1600 (fallback) | 0 | assumed 160 deg C factory fallback, configured limit unknown |
+| NaN, `nil`, a non-number or a trap error | 1600 (fallback) | 0 | assumed 160 deg C factory fallback, configured limit unknown |
+
+A read of exactly 160.0 (slot 190 = 1600, bit 1 = 1) is therefore distinguishable from the fallback (slot 190 = 1600, bit 1 = 0). Counter 164 is labelled "assumed 85 deg C limit" in every case. Slot 189 and slot 190 packing for the 7.00 case: `P15(228, 850)` = 7471954 and `P15(1600, 0)` = 52428800 (both 1600 rows); `P15(1800, 0)` = 58982400, `P15(2500, 0)` = 81920000 and `P15(300, 0)` = 9830400 (these values fit a P15 field: 2500 is at most 32767).
+
+**Flag words** (slot 131 = `256 + bits`; bit 0 = 1, value 1; bit 1 = 2; bit 2 = 4; bit 3 = 8; bit 4 = 16):
+
+| Case | Slot 131 |
 |---|---|
-| `l-temp-motor-start` 160.0 | `T_MOT_REF` 1600 |
-| 159.96 | 1600 (`floor(1599.6 + 0.5)`) |
-| 85.06 | 851 |
-| 30.0 and 150.0 | 300 and 1500 (accepted at the bounds) |
-| 29.9, 150.1, NaN, `nil` or an error | fallback (850 for FET, 1600 for motor), flag bit 4 set |
-| FET read raises an error (the 7.00 case) and motor read is 160.0 | refs 228, 850, 1600; bit 1 = 0, bit 4 = 1; with block B enabled and imbalance configured the flags slot is 277 (`256 + 1 + 4 + 16`); without imbalance 273 |
-| Both reads succeed (hypothetical, later firmware), imbalance not configured | bit 1 = 1, bit 4 = 0, flags slot 259 (`256 + 1 + 2`) |
-| Slot 189 / slot 190 packing for the 7.00 case | 7471954 and 52428800 |
+| Enabled, motor read accepted (bit 1 = 1, bit 4 = 1), imbalance not configured | 275 (`256 + 1 + 2 + 16`) |
+| The same with imbalance configured | 279 (`256 + 1 + 2 + 4 + 16`) |
+| Enabled, motor read failed (bit 1 = 0, bit 4 = 1), imbalance not configured | 273 |
+| The same with imbalance configured | 277 |
+| Bit 3 additionally set | 283 (from 275) and 281 (from 273) |
+| Unknown flag bit 5 set with bits 0, 1, 4 | 307 (`275 + 32`); the decoder decodes normally and notes the unknown bit. Bits 5 to 7 all set: 499 (`275 + 224`) |
 
-**Stored reference wins.** Stored references `I_REF` 228, `T_FET_REF` 850, `T_MOT_REF` 1600 (flags 273). At the next boot a fresh read of `l-temp-motor-start` returns 150.0, so the fresh `T_MOT_REF` is 1500 and differs from the stored 1600: flag bit 3 becomes 1 (flags slot 281, `273 + 8`), bits 1 and 4 are carried over unchanged, and counter 165 still uses 1600: a motor reading of 1550 does not increment slot 165, where a fresh-read implementation would have counted it. The same applies when a package update changes `MAX_CURRENT_BLACKTIP` so that the fresh `I_REF` (for example 460) differs from the stored 228.
+**Stored reference wins** (`I_REF` 228 unless stated; the counters keep using the stored references):
+
+| Stored (flags) | Fresh read | Result |
+|---|---|---|
+| `T_MOT_REF` 1600, bit 1 = 1 (275) | 180.0, so fresh 1800 | bit 3 = 1, bit 1 stays 1, 1600 stays in use (flags 283); counter 165 label "limit read from configuration" |
+| `T_MOT_REF` 1600, bit 1 = 0 (273) | 160.0 (exactly, a successful read) | bit 3 = 0 (the values are equal), bit 1 stays 0, 1600 in use (flags 273); label stays "assumed 160 deg C factory fallback" until the user exports and clears block B |
+| 1600, bit 1 = 0 (273) | 150.0, so fresh 1500 | bit 3 = 1 (flags 281), bit 1 stays 0, 1600 in use: a motor reading of 1550 does not increment slot 165, where a fresh-read implementation would have counted it |
+| 1800, bit 1 = 1 | a failed read, so fresh 1600 | bit 3 = 1, bit 1 stays 1, 1800 in use |
+| 1600, bit 1 = 1 | a failed read, so fresh 1600 | bit 3 = 0, bit 1 stays 1 (carried, not recomputed) |
+| 1600, bit 1 = 1, `I_REF` 228 | 160.0 after a package update changed `MAX_CURRENT_BLACKTIP` so that fresh `I_REF` is 460 | bit 3 = 1; stored 228 stays in use |
+| None stored (zero) | 180.0 | 1800, bit 1 = 1, bit 3 = 0 |
+| None stored (zero) | 29.9 | 1600, bit 1 = 0, bit 3 = 0 |
 
 **Ring index** (`r = (session_seq - 1) mod 4`, record slot `169 + 5r`):
 
@@ -852,23 +1196,28 @@ These are for the unit tests of the later implementation (pure functions: packin
 
 **Images and CRC.**
 
-*Cleared image* (the state a clear leaves, enabled, 7.00 reference case): slot 130 is the magic, slot 131 is 273 (layout 1, bit 0, bit 4), slots 135, 137, 139, 141, 143, 145, 147 and 149 are 1073741824 (`sag_sum` of zero), slots 171, 175, 179 and 183 are 32767 (ring minimum voltage "none"), slot 189 is 7471954, slot 190 is 52428800, and all other slots 132 to 191 are 0.
+*Cleared image* (the state a clear leaves, enabled, 7.00 reference case): slot 130 is the magic, slot 131 is the flags word (273 when the motor read failed, 275 when it was accepted; layout 1, bit 0, bit 4, and bit 1 for 275), slots 135, 137, 139, 141, 143, 145, 147 and 149 are 1073741824 (`sag_sum` of zero), slots 171, 175, 179 and 183 are 32767 (ring minimum voltage "none"), slot 189 is 7471954, slot 190 is 52428800, and all other slots 132 to 191 are 0. The two cleared images differ only in slot 131, so slot 190 alone does not show whether 1600 was read or assumed; bit 1 does.
 
 | Check | Value |
 |---|---|
-| Cleared image CRC32 (slots 130 to 191, 248 bytes) | `0xF8B2DEF6`; stored slot 129 is 2024988406 |
-| Populated image CRC32 (below) | `0x8507C610`; stored slot 129 is 84395536 (`0x0507C610`, the masked value) |
+| Cleared image CRC32 (slots 130 to 191, 248 bytes), flags 273 | `0xF8B2DEF6`; stored slot 129 is 2024988406 (unchanged) |
+| Cleared image CRC32, flags 275 | `0x05D0C86C`; stored slot 129 is 97568876 (`0x05D0C86C`, new) |
+| Populated image CRC32 (below, flags 279) | `0x7865D08A`; stored slot 129 is 2019938442 (`0x7865D08A`, the masked value is equal because bit 31 is clear; new) |
+| Populated image with flags 277 (the earlier example: bit 1 = 0) | CRC32 `0x8507C610`; stored slot 129 is 84395536 (`0x0507C610`, masked); unchanged value |
 | Populated image, `commit_seq` 6 | state `ok` (valid) |
 | Populated image with slot 128 = 7 and the CRC unchanged | state `in_progress` (torn); CRC input is unchanged |
-| Populated image with slot 158 read back as 7001 instead of 7000, stored CRC unchanged | recomputed CRC32 `0x98CDB30E`, masked 416133902, differs from 84395536: state `crc_mismatch` (torn) |
+| Populated image with slot 158 read back as 7001 instead of 7000, stored CRC unchanged | recomputed CRC32 `0x65AFA594`, masked 1706010004, differs from 2019938442: state `crc_mismatch` (torn). (For the flags 277 image: `0x98CDB30E`, masked 416133902, against 84395536.) |
 | Populated image with slot 131 = 513 (layout version 2, bit 0) | state `unknown_layout`, whatever the CRC (its recomputed CRC32 would be `0x3A52D4DB`) |
-| Populated image with slot 131 = 276 (bit 0 clear), slot 129 recomputed | CRC32 `0xFBB6CD5D`, masked 2075577693: state `ok` with bit 0 clear, that is valid-disabled |
+| Populated image with slot 131 = 278 (bit 0 clear, bits 1, 2, 4), slot 129 recomputed | CRC32 `0x06D4DBC7`, masked 114613191: state `ok` with bit 0 clear, that is valid-disabled |
+| Populated image with slot 131 = 276 (bit 0 clear, bits 2, 4), slot 129 recomputed | CRC32 `0xFBB6CD5D`, masked 2075577693 (unchanged): valid-disabled |
+| Populated image with slot 131 = 307 (bits 0, 1, 4 and unknown bit 5), slot 129 recomputed | CRC32 `0x8F08A616`, masked 252225046: state `ok` (valid); the decoder notes unknown flag bit 5 |
 | Slots 128 to 255 all `nil` | state `empty` (uninitialised) |
 | Slot 130 = `0x42544C47` (block A's magic, in block B's range), slot 131 = 257 | state `foreign` |
 | Only slot 129 = 5, slots 128, 130 and 131 `nil` | state `foreign` |
 | Block A: slots 64 to 67 all `nil` | state `empty`; with slot 65 = 7 and the rest `nil`, state `foreign` |
+| Block A populated image (the export example), slots 66 to 126 | CRC32 `0x2C9626B5` (748037813), as in [Test vectors](#test-vectors) |
 
-*Populated image* (`session_seq` 5, so the ring has wrapped once; slot 128 is 6; the first 16 CRC input bytes are `42 54 4C 48 00 00 01 15 00 00 00 05 00 03 80 00`). Slot 131 is 277. Slot 133 is `P15(7, 0)` = 229376. The sag table, `(n, total)` per bin 0 to 7: (40, -120), (1200, +7200), (3000, +27000), (2500, +35000), (1800, +36000), (900, +22500), (600, +18000), (350, +12250), stored as `n` in the even slot and the offset-binary value in the odd slot. Slots 150 to 154 are 0, 0, 3, 12, 1146970. Slots 155 to 158 are 400, 5200, 9100, 7000. Slots 159 to 165 are 30000, 9000, 2500, 300, 12, 12, 0. Slots 166 to 168 are 2, `P15(215, 38)` = 7045158 and 40. Slots 189 to 191 are 7471954, 52428800 and 0. The ring:
+*Populated image* (`session_seq` 5, so the ring has wrapped once; slot 128 is 6; the first 16 CRC input bytes are `42 54 4C 48 00 00 01 17 00 00 00 05 00 03 80 00`). Slot 131 is 279 (bits 0, 1, 2 and 4: enabled, motor reference read, imbalance configured, FET constant). Slot 133 is `P15(7, 0)` = 229376. The sag table, `(n, total)` per bin 0 to 7: (40, -120), (1200, +7200), (3000, +27000), (2500, +35000), (1800, +36000), (900, +22500), (600, +18000), (350, +12250), stored as `n` in the even slot and the offset-binary value in the odd slot. Slots 150 to 154 are 0, 0, 3, 12, 1146970. Slots 155 to 158 are 400, 5200, 9100, 7000. Slots 159 to 165 are 30000, 9000, 2500, 300, 12, 12, 0. Slots 166 to 168 are 2, `P15(215, 38)` = 7045158 and 40. Slots 189 to 191 are 7471954, 52428800 and 0. The ring:
 
 | Record `r` | Session | Slots (motor-on s; mAh, Wh × 10; max FET offset-binary, min Vin; max A × 10, max eRPM; tag, start `v_ref`) | Raw slots |
 |---|---|---|---|
@@ -879,14 +1228,15 @@ These are for the unit tests of the later implementation (pure functions: packin
 
 Offset-binary FET fields are `1000 + 10 × °C`: 1412 is 41.2 °C, 1388 is 38.8 °C, 1455 is 45.5 °C and 1362 is 36.2 °C.
 
-The reference script (Python 3, standard library only; it asserts every CRC, packing, bin and ring value in the tables above and prints `all vectors ok`):
+The reference script (Python 3, standard library only; it asserts every CRC, packing, flag, reference, bin, ring and protocol-frame value in the tables above, including the block A images, and prints `all vectors ok`). Each CRC is computed twice, with `zlib.crc32` and with `crc_fw`, a bitwise port of the firmware's `crc32_with_init`, and the two must agree:
 
 ```python
-import struct, zlib
+import math, struct, zlib
 
 U31 = 0x7FFFFFFF
 BIAS = 1 << 30
-MAGIC_B = 0x42544C48
+MAGIC_A, MAGIC_B = 0x42544C47, 0x42544C48
+NIL = 0xFFFFFFFF                     # a slot that reads nil is sent as this
 
 def p15(a, b):                       # clamp both fields, pack A*32768 + B
     return (max(0, min(32767, a)) << 15) | max(0, min(32767, b))
@@ -902,26 +1252,55 @@ def crc_fw(data, init=0):            # port of crc32_with_init (bitwise, reflect
             c = (c >> 1) ^ (0xEDB88320 if c & 1 else 0)
     return ~c & 0xFFFFFFFF
 
-def crc_image(slots):                # slots 130..191, big-endian, 248 bytes
-    d = b"".join(struct.pack(">I", slots[n]) for n in range(130, 192))
-    assert len(d) == 248 and zlib.crc32(d) == crc_fw(d)
+def crc_range(slots, lo, hi):        # slots lo..hi, big-endian, second method inside
+    d = b"".join(struct.pack(">I", slots[n]) for n in range(lo, hi + 1))
+    assert len(d) == 4 * (hi - lo + 1) and zlib.crc32(d) == crc_fw(d)
     return zlib.crc32(d)
+
+def crc_image(slots): return crc_range(slots, 130, 191)       # block B, 248 bytes
+def crc_image_a(slots): return crc_range(slots, 66, 126)      # block A, 244 bytes
 
 def i_step(i_ref): return 5 * ((i_ref + 39) // 40)
 def i_bin(i10, step): return min(7, i10 // step)
 def fet_bin(t10, ref): return sum(e <= t10 for e in (ref - 450, ref - 300, ref - 150, ref))
 def ring_slot(seq): return 169 + 5 * ((seq - 1) % 4)
 
-def cleared(flags, i_ref=228, t_fet=850, t_mot=1600):
+# ---- slot 131 flags (layout version 1) -------------------------------------
+T_FET_REF, T_MOT_FALLBACK = 850, 1600      # 7.00: the FET limit is never read
+
+def motor_ref(read):                 # conf-get 'l-temp-motor-start result -> (ref, bit1)
+    ok = (isinstance(read, (int, float)) and not isinstance(read, bool)
+          and not math.isnan(read) and 30.0 <= read <= 250.0)
+    return (math.floor(10 * read + 0.5), 1) if ok else (T_MOT_FALLBACK, 0)
+
+def flags(imb=0, bit1=0, bit3=0, bit4=1, unknown=0):   # bit4 is always 1 on 7.00
+    return 256 | 1 | (bit1 << 1) | (imb << 2) | (bit3 << 3) | (bit4 << 4) | unknown
+
+def at_boot(stored_i, stored_mot, stored_bit1, fresh_i, fresh_read):
+    """Stored references win; bit1 is carried; bit3 flags any difference."""
+    fresh_mot, fresh_bit1 = motor_ref(fresh_read)
+    if stored_mot == 0:                       # unset: fresh value and status used
+        return fresh_mot, fresh_bit1, 0
+    differs = int(fresh_i != stored_i or fresh_mot != stored_mot)
+    return stored_mot, stored_bit1, differs
+
+def label_165(bit1):
+    return ("limit read from configuration (value in slot 190)" if bit1
+            else "assumed 160 deg C factory fallback, configured limit unknown")
+
+LABEL_164 = "assumed 85 deg C limit"          # never depends on a flag on 7.00
+
+# ---- block images -------------------------------------------------------------
+def cleared(flag_word, i_ref=228, t_fet=850, t_mot=1600):
     s = {n: 0 for n in range(128, 192)}
-    s[130], s[131] = MAGIC_B, flags
+    s[130], s[131] = MAGIC_B, flag_word
     for b in range(8): s[135 + 2 * b] = BIAS            # sag_sum 0
     for r in range(4): s[171 + 5 * r] = p15(0, 32767)   # min Vin "none"
     s[189], s[190] = p15(i_ref, t_fet), p15(t_mot, 0)
     return s
 
-def populated():
-    s = cleared(277)                                    # bits 0, 2, 4
+def populated(flag_word=279):                           # bits 0, 1, 2, 4
+    s = cleared(flag_word)
     s[132], s[133] = 5, p15(7, 0)
     sag = [(40, -120), (1200, 7200), (3000, 27000), (2500, 35000),
            (1800, 36000), (900, 22500), (600, 18000), (350, 12250)]
@@ -942,10 +1321,41 @@ def populated():
         s[b + 3], s[b + 4] = p15(ii, er), p15(tag, vr)
     return s
 
-c = cleared(273)
-assert crc_image(c) == 0xF8B2DEF6
-p = populated()
-assert crc_image(p) == 0x8507C610 and crc_image(p) & U31 == 84395536
+A_RAW = [6, 748037813, 1112820807, 257, 12, 47, 32771, 1, 123000, 12345, 2764,
+         48268582, 8323293, 131468403, 0, 0, 0, 0, 0, 0, 3000, 90000, 0, 6000,
+         240000, 300, 36000, 1512000, 7200, 54000, 3240000, 67500, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 9000, 1890000, 72000, 0, 0, 12, 0, 95, 420, 1350, 5100, 1,
+         0, 65536, 0, 0, 1, 21000, 102236506, 46271721, 6491664, 98306]
+assert len(A_RAW) == 63
+block_a = dict(zip(range(64, 127), A_RAW))              # block A populated image
+
+def cleared_a(enabled=1):
+    s = {n: 0 for n in range(64, 127)}
+    s[66], s[67] = MAGIC_A, 256 | enabled
+    s[77] = s[124] = 32767                              # minima "none" (P15 field B)
+    return s
+
+# ---- extraction protocol frames --------------------------------------------
+def read_response(first, values, state, block, part):
+    data = b"".join(struct.pack(">I", v) for v in values)
+    count = -(-len(data) // 24)                          # ceil
+    out = []
+    for i in range(count):
+        f = bytes([0xB1, block, part, i, count, state if i == 0 else 0])
+        f += data[24 * i:24 * i + 24]
+        assert len(f) <= 30
+        out.append(f)
+    return out
+
+def ack(opcode, status, block): return bytes([0xB2, opcode, status, block])
+
+DEFAULT_PACE_MS = 10                                      # LOG_CHUNK_PACE_MS (provisional)
+def pace_ms(req):                                         # optional 4th byte
+    p = req[3] if len(req) > 3 else 0
+    return DEFAULT_PACE_MS if p == 0 else min(p, 250)
+def retry_pace_ms(first_pace): return min(250, 2 * first_pace)
+
+# ---- assertions: offset-binary, packing, bins, ring (unchanged vectors) ------
 assert (enc_ob(7200), enc_ob(-120)) == (1073749024, 1073741704)
 assert (enc_ob(2**30 - 1), enc_ob(2**30), enc_ob(-2**30), enc_ob(-2**30 - 5)) == (U31, U31, 0, 0)
 assert (p15(228, 850), p15(1600, 0), p15(40000, 5)) == (7471954, 52428800, 1073709061)
@@ -954,26 +1364,93 @@ assert [i_bin(x, 30) for x in (29, 30, 209, 210, 228, 300)] == [0, 1, 6, 7, 7, 7
 assert [fet_bin(t, 850) for t in (399, 400, 849, 850)] == [0, 1, 3, 4]
 assert [fet_bin(t, 450) for t in (-50, 0, 450)] == [0, 1, 4]
 assert [ring_slot(q) for q in (1, 4, 5, 9)] == [169, 184, 169, 169]
-q = dict(p); q[158] += 1
-assert crc_image(q) != crc_image(p)
-q = dict(p); q[131] = 276
-assert crc_image(q) == 0xFBB6CD5D
-q = dict(p); q[131] = 513
-assert crc_image(q) == 0x3A52D4DB
+
+# ---- block A images (slot 126 and the rest are unchanged) ---------------------
+assert crc_image_a(block_a) == 0x2C9626B5 and block_a[65] == 0x2C9626B5 & U31
+ca = cleared_a(); assert crc_image_a(ca) == 0x6178A90A
+
+# ---- motor reference derivation and flags --------------------------------------
+nan = float("nan")
+assert [motor_ref(v) for v in (160.0, 180.0, 250.0, 30.0)] == [(1600, 1), (1800, 1), (2500, 1), (300, 1)]
+assert motor_ref(159.96) == (1600, 1) and motor_ref(85.06) == (851, 1) and motor_ref(150.0) == (1500, 1)
+assert all(motor_ref(v) == (1600, 0) for v in (29.9, 250.1, nan, None, "err", True))
+assert p15(motor_ref(250.0)[0], 0) < 1 << 30 and motor_ref(250.0)[0] <= 32767
+assert [flags(imb=1), flags(imb=0)] == [277, 273]                    # read failed (7.00 fallback)
+assert [flags(imb=1, bit1=1), flags(imb=0, bit1=1)] == [279, 275]    # motor read accepted
+assert flags(bit1=1, bit3=1) == 283 and flags(bit3=1) == 281
+assert flags(bit1=1, unknown=32) == 307 and flags(bit1=1, unknown=224) == 499
+assert [(f >> 1) & 1 for f in (273, 275)] == [0, 1] and all((f >> 4) & 1 for f in (273, 275, 277, 279))
+assert at_boot(228, 1600, 1, 228, 180.0) == (1600, 1, 1)             # stored wins, bit3 set
+assert at_boot(228, 1600, 0, 228, 160.0) == (1600, 0, 0)             # stays "assumed"
+assert at_boot(228, 1600, 0, 228, 150.0) == (1600, 0, 1)
+assert at_boot(228, 1800, 1, 228, None) == (1800, 1, 1)              # fresh read failed
+assert at_boot(228, 1600, 1, 228, "err") == (1600, 1, 0)
+assert at_boot(228, 1600, 1, 460, 160.0) == (1600, 1, 1)             # I_REF changed
+assert at_boot(0, 0, 0, 228, 180.0) == (1800, 1, 0)                  # nothing stored
+assert at_boot(0, 0, 0, 228, 29.9) == (1600, 0, 0)
+assert label_165(1).startswith("limit read") and label_165(0).startswith("assumed 160")
+assert cleared(flags(bit1=1))[190] == cleared(flags(bit1=0))[190] == 52428800   # same slot 190
+
+# ---- block B images and CRCs ----------------------------------------------------
+c273, c275 = cleared(273), cleared(275)
+assert crc_image(c273) == 0xF8B2DEF6 and crc_image(c275) == 0x05D0C86C
+p279, p277 = populated(279), populated(277)
+assert crc_image(p277) == 0x8507C610 and crc_image(p277) & U31 == 84395536     # old example
+assert crc_image(p279) == 0x7865D08A and crc_image(p279) & U31 == 2019938442   # new example
+q = dict(p279); q[158] += 1
+assert crc_image(q) == 0x65AFA594 and crc_image(q) & U31 == 1706010004
+q = dict(p277); q[158] += 1
+assert crc_image(q) == 0x98CDB30E and crc_image(q) & U31 == 416133902
+for fw, crc in ((513, 0x3A52D4DB), (278, 0x06D4DBC7), (276, 0xFBB6CD5D), (307, 0x8F08A616)):
+    q = dict(p279); q[131] = fw
+    assert crc_image(q) == crc
+assert crc_image(p279) & U31 != crc_image(p277) & U31
+
+# ---- protocol frames --------------------------------------------------------------
+a_vals = [block_a[n] for n in range(64, 127)]
+a = read_response(64, a_vals, 0x09, 0, 0)
+assert len(a) == 11 and [len(f) for f in a] == [30] * 10 + [18]
+assert a[0] == bytes.fromhex("B1 00 00 00 0B 09".replace(" ", "")
+    + "00000006" "2C9626B5" "42544C47" "00000101" "0000000C" "0000002F")
+assert a[10] == bytes.fromhex("B1 00 00 0A 0B 00".replace(" ", "")
+    + "02C20CE9" "00630E10" "00018002")                  # slots 124, 125, 126
+live = dict(p279); live[155] = 417; live[128] = 6; live[129] = 2019938442
+b_vals = [live[n] for n in range(128, 192)]
+b = read_response(128, b_vals, 0x09, 1, 1)
+assert len(b) == 11 and [len(f) for f in b] == [30] * 10 + [22]
+assert b[0] == bytes.fromhex("B1 01 01 00 0B 09".replace(" ", "")
+    + "00000006" "7865D08A" "42544C48" "00000117" "00000005" "00038000")
+assert b[10] == bytes.fromhex("B1 01 01 0A 0B 00".replace(" ", "")
+    + "0000016B" "00720352" "03200000" "00000000")      # slots 188 to 191
+assert sum(len(f) for f in a) == 318 and sum(len(f) for f in b) == 322   # per part
+assert 2 * (11 + 11) == 44
+ACKS = [(0xA1, 3, 2, "B2A10302"), (0xA2, 0, 1, "B2A20001"), (0xA2, 1, 1, "B2A20101"),
+        (0xA2, 3, 1, "B2A20301"), (0xA2, 2, 0, "B2A20200"), (0xA3, 0, 0, "B2A30000"),
+        (0xA3, 2, 1, "B2A30201"), (0xA3, 3, 0, "B2A30300"), (0xA4, 0, 1, "B2A40001"),
+        (0xA4, 3, 1, "B2A40301"), (0xA4, 2, 1, "B2A40201"), (0xA4, 1, 1, "B2A40101")]
+assert all(ack(o, st, bl) == bytes.fromhex(h) for o, st, bl, h in ACKS)
+assert (0x7F << 8 | 0xFF, 0x80 << 8 | 0x00) == (32767, 32768)        # pack tag bytes
+reqs = ("A10000", "A1000000", "A100000A", "A1000019", "A10000FA", "A10000FF")
+assert [pace_ms(bytes.fromhex(x)) for x in reqs] == [10, 10, 10, 25, 250, 250]
+assert [retry_pace_ms(p) for p in (10, 25, 100, 200, 250)] == [20, 50, 200, 250, 250]
+assert (p15(1800, 0), p15(2500, 0), p15(300, 0)) == (58982400, 81920000, 9830400)
 print("all vectors ok")
 ```
 
 ### Open points and verification still needed
 
-* On the MK5 DPV: per-store time, flush duration and the start-latency effect of a press during a flush; the at-rest readings behind the thresholds; whether a prop or motor connected changes them.
-* Whether a page transfer occurs and how long it takes (none observed on the rig; cause of the earlier estimate failing is unknown).
-* The `LOG_*` constants, the stack size of the sampler thread (start at the `THREAD_STACK_MOTOR` value of 150 words and measure) and the chunk pacing over Bluetooth.
+* On the MK5 DPV: confirmation of the rig-measured per-store cost (about 1.3 ms real, rig only), flush duration and the start-latency effect of a press during a flush; the at-rest readings behind the thresholds (`|eRPM| < 25`, `|duty| < 0.02`); whether a prop or motor connected changes them. If a measurement shows an added start delay of about 1 s or more, the planner revisits the design (see [Timing figures](#timing-figures)).
+* Whether a page transfer occurs and how long it takes: no multi-second stall seen on the rig; a stall up to about 1 s is not excluded; MK5 unmeasured. The page model of [Page transfers and wear](#page-transfers-and-wear) is an estimate.
+* The five-click flush path cannot be exercised on the rig (plain HW 60 without the power switch: no five-click, no idle auto-off). It needs a human validation on a modified MK5, and the idle auto-off behaviour with a short `shutdown_mode` needs the same. The stock MK5's open button input is human-confirmed but not yet measured with `(shutdown-btn-read)`.
+* The `LOG_*` constants (`LOG_SETTLE_S` 5 s and `LOG_MIN_FLUSH_INTERVAL_S` 60 s are decided but stay easy to change), the stack size of the sampler thread (start at the `THREAD_STACK_MOTOR` value of 150 words and measure), and the chunk pacing and retry rules over Bluetooth (`LOG_CHUNK_PACE_MS` is provisional until the on-DPV read test).
+* A `systime`-independent clock for flush diagnostics, if one exists (see [Flush diagnostics and clocks](#flush-diagnostics-and-clocks)); whether any count beyond `aborted_flushes` is stored needs a layout decision.
+* The flush implementation re-verifies the non-interference rule against the source it is built on and states the result.
+* Heap: the production package's own free cons cells are unknown; the proposed minimum is 500 free cells after the whole log feature (see [Collector and size budget](#collector-and-size-budget)).
 * The untested single-record design option above.
 * CudaX behaviour.
-* Block B: the FET derating start cannot be read with `conf-get` on firmware 7.00, so counter 164 is always an assumed-limit counter and a changed FET limit is not detected (see [Derating limits and conf-get names](#derating-limits-and-conf-get-names)). The motor-side `conf-get` read and the `trap` handling of the failed FET read have not been run on a controller.
-* Block B: whether a motor NTC is fitted to the Blacktip, and so whether counter 165 means anything, until `(get-temp-mot)` has been read once at rest on the production unit.
-* Block B: slots 128 to 255 of the production HW 60 MK5 DPV have not been read; the 256-slot range is confirmed on the plain HW 60 rig only. The sweep result for slots 128 to 255 is not yet in `tools/nv_write_probe_results.md`.
-* Block B: the page-transfer and flush-time consequence of the 64 additional slots (timing section), and the extraction opcodes and export schema for block B.
+* Block B: the `trap` handling of the motor `conf-get` read (including the failed-read and out-of-range cases) has not been run on a controller. A changed FET limit is not detected, by design (see [Derating limits and conf-get names](#derating-limits-and-conf-get-names)).
+* Block B: the plausibility of `(get-temp-mot)` on the production unit (a motor sensor is fitted, human-confirmed 5 Nov 2026) is still to be confirmed with one at-rest read.
+* Block B: slots 128 to 255 of the production HW 60 MK5 DPV have not been read; the 256-slot range is confirmed on the plain HW 60 rig only, and the sweep of slots 128 to 255 is bench-reported and not yet in `tools/nv_write_probe_results.md`.
 * Block B: that the sag table, `v_ref` rule and bin edges give a useful pack-resistance estimate is a design expectation, not tested. The lowest FET bin may hold nearly everything on a water-cooled unit (inference).
 
 ## Build System
