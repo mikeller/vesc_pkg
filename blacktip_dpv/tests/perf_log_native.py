@@ -33,7 +33,10 @@ def source_with_mocks():
     sample = sample.replace('(secs-since (bufget-u32 st 0))', '(mock-dt)')
     source = source[:start] + sample + source[end:]
     source = source.replace("(conf-get 'l-temp-motor-start)", '(mock-conf-get)')
-    mocks = '''(define mock_motor_ref 160)
+    source = source.replace('(secs-since (- (bufget-u32 bs 0) 1))', '(mock-vref-elapsed)')
+    mocks = '''(define mock_vref_time 0)
+(defun mock-vref-elapsed () mock_vref_time)
+(define mock_motor_ref 160)
 (defun mock-conf-get () {
     (if (= mock_motor_ref -123456) nil
         (if (= mock_motor_ref -123457) (car 1) mock_motor_ref))
@@ -61,6 +64,7 @@ def source_with_mocks():
 })
 (defun mock-setup () {
     (setvar 'log_b nil) (setvar 'log_bs nil) (setvar 'log_enable_b 0)
+    (setvar 'mock_vref_time 0)
     (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))
     (log_apply log_a LOG_A_INIT)
     (setvar 'log_st (bufcreate 108))

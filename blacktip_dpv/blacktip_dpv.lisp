@@ -2143,13 +2143,13 @@
 {
     (var t0 (log_get (trap (conf-get 'l-temp-motor-start))))
     (if (and (number? t0) (>= t0 30.0) (<= t0 250.0))
-        (list (log_q t0 10 0) 2)
+        (list (to-i (log_q t0 10 0)) 2)
         (list 1600 0))
 })
 
 (defun log_b_references (b)
 {
-    (var iref (log_q (if (= scooter_type SCOOTER_CUDAX) MAX_CURRENT_CUDAX MAX_CURRENT_BLACKTIP) 10 0))
+    (var iref (to-i (log_q (if (= scooter_type SCOOTER_CUDAX) MAX_CURRENT_CUDAX MAX_CURRENT_BLACKTIP) 10 0)))
     (var motor (log_motor_reference))
     (log_apply b (list (list 131 (+ 273 (ix motor 1) (if (> battery_imbalance_threshold_centi 0) 4 0)))
                        (list 189 (+ (shl iref 15) LOG_FET_REF))
@@ -2157,7 +2157,7 @@
     (setvar 'log_fet_edges (list (- LOG_FET_REF 450) (- LOG_FET_REF 300)
                                   (- LOG_FET_REF 150) LOG_FET_REF))
     ; log_bs[16] is the integer step in 0.1 A, derived once at start.
-    (bufset-u32 log_bs 16 (* 5 (div (+ iref 39) 40)))
+    (bufset-u32 log_bs 16 (* 5 (to-i (/ (+ iref 39) 40))))
 })
 
 ; Unlike the generic fractional positive-only adder, sag is signed and biased.
@@ -2192,7 +2192,7 @@
     (var bs log_bs)
     (var run (!= sp SPEED_OFF))
     (var steady (and run (= soft_start_active 0)))
-    (var v10 (if (and (number? vin) (>= vin 0)) (log_q vin 10 0) nil))
+    (var v10 (if (and (number? vin) (>= vin 0)) (to-i (log_q vin 10 0)) nil))
     (var ref (bufget-u32 bs 4))
     (if (and (= ref 0) (number? v10)) {
         (bufset-u32 bs 4 (to-u32 v10))
@@ -2200,8 +2200,8 @@
     })
     (if (and (= sp SPEED_OFF) (number? rpm) (number? duty)
              (< (abs rpm) LOG_REST_ERPM_MAX) (< (abs duty) LOG_REST_DUTY_MAX)) {
-        (if (= (bufget-u32 bs 0) 0) (bufset-u32 bs 0 (systime)))
-        (if (and (number? v10) (>= (secs-since (bufget-u32 bs 0)) LOG_VREF_IDLE_S))
+        (if (= (bufget-u32 bs 0) 0) (bufset-u32 bs 0 (+ 1 (systime))))
+        (if (and (number? v10) (>= (secs-since (- (bufget-u32 bs 0) 1)) LOG_VREF_IDLE_S))
             (bufset-u32 bs 4 (to-u32 v10)))
     } (bufset-u32 bs 0 0))
     (if (and run (= (bufget-u32 bs 12) 0)) {
@@ -2211,7 +2211,7 @@
     (if (and steady (not (eq safe_start_status 'running))
              (number? duty) (>= (abs duty) DUTY_AT_REST_THRESHOLD)
              (number? iin) (number? v10) (> (bufget-u32 bs 4) 0)) {
-        (var bin (clamp (div (log_q (abs iin) 10 0) (bufget-u32 bs 16)) 0 7))
+        (var bin (clamp (to-i (/ (log_q (abs iin) 10 0) (bufget-u32 bs 16))) 0 7))
         (log_upd b 0 (* 2 (+ 134 (* 2 bin))) 1)
         (log_b_sag b (+ 135 (* 2 bin)) (- (bufget-u32 bs 4) v10))
     })

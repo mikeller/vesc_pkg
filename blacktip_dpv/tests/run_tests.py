@@ -327,7 +327,7 @@ def test_performance_log_collector():
                    'secs-since systime trap log_apply log_bin log_upd log_rules '
                     'log_q log_get log_set log_motor_reference log_b_sag log_b_sample '
                     'log_b_last_imbalance get_battery_imbalance_warning '
-                    'get_battery_imbalance_voltage div conf-get setvar list not').split())
+                    'get_battery_imbalance_voltage conf-get setvar list not').split())
     assert_eq(calls - allowed, set(), 'complete sampling call set stays read-only')
     assert_eq(all('(trap (' + getter in sample for getter in
                   ('get-ah', 'get-wh', 'get-rpm', 'get-rpm-set', 'get-current',
@@ -350,14 +350,14 @@ def test_performance_log_native():
 
     cases = [
         ('block B references: read 160 versus fallback 160',
-         '(mock-setup-b) (var accepted (mock-slot-b 131)) '
+         '(mock-setup-b) (define accepted (mock-slot-b 131)) '
          "(setvar 'mock_motor_ref -123457) (log_b_references log_b) "
          '(list accepted (mock-slot-b 131) (mock-slot-b 189) (mock-slot-b 190))',
          [275, 273, 7471954, 52428800]),
         ('block B references: 180 accepted; 250 accepted; 250.1 rejected',
-         "(setvar 'mock_motor_ref 180) (mock-setup-b) (var a (mock-slot-b 190)) "
+         "(setvar 'mock_motor_ref 180) (mock-setup-b) (define a (mock-slot-b 190)) "
          "(setvar 'mock_motor_ref 250) (log_b_references log_b) "
-         "(var b (mock-slot-b 190)) (setvar 'mock_motor_ref 250.1) "
+         "(define b (mock-slot-b 190)) (setvar 'mock_motor_ref 250.1) "
          '(log_b_references log_b) (list a b (mock-slot-b 190) (mock-slot-b 131))',
          [58982400, 81920000, 52428800, 273]),
         ('block B sag table, FET histogram, duty time and reference',
@@ -370,6 +370,19 @@ def test_performance_log_native():
          '(mock-setup-b) (trap (log_sample)) (list (bufget-u32 log_bs 4) '
          '(mock-slot-b 142) (mock-slot-b 143))',
          [351, 0, 1073741824]),
+        ('block B captures settled idle Vin then credits signed sag',
+         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
+         "(trap (log_sample)) (setvar 'mock_vref_time 2.1) (mock-put 9 36.4) "
+         '(trap (log_sample)) (setvar \'speed 5) (mock-put 10 0.96) '
+         '(mock-put 9 35.1) (trap (log_sample)) '
+         '(list (bufget-u32 log_bs 4) (mock-slot-b 142) (mock-slot-b 143))',
+         [364, 1, 1073741837]),
+        ('block B invalid motor reference values use fallback',
+         "(setvar 'mock_motor_ref 29.9) (mock-setup-b) "
+         '(define low (mock-slot-b 131)) '
+         "(setvar 'mock_motor_ref -123456) (log_b_references log_b) "
+         '(list low (mock-slot-b 131) (mock-slot-b 190))',
+         [273, 273, 52428800]),
         ('block B settled imbalance polling and latch transition',
          "(mock-setup-b) (setvar 'battery_imbalance_threshold_centi 200) "
          "(setvar 'balance_smoothing_held 0) (setvar 'lower_voltage_smooth 18.0) "
@@ -380,14 +393,14 @@ def test_performance_log_native():
          [1, 13107600, 2]),
         ('block B sag saturates in both directions',
          '(mock-setup-b) (log_b_sag log_b 143 -1073741825) '
-         '(var low (mock-slot-b 143)) (log_b_sag log_b 143 1073741824) '
+         '(define low (mock-slot-b 143)) (log_b_sag log_b 143 1073741824) '
          '(log_b_sag log_b 143 1073741824) '
          '(list low (mock-slot-b 143))',
          [0, 2147483647]),
         ('block B disabled makes no block B allocation or changes',
          "(mock-setup) (setvar 'speed 5) (trap (log_sample)) "
-         '(list (if log_b 1 0) (mock-slot 72))',
-         [0, 2]),
+         '(list (if log_b 11u32 10u32) (mock-slot 72))',
+         [10, 2]),
         ('sample vector: index 5, 14 A, duty .96',
          "(mock-setup) (setvar 'speed 5) (trap (log_sample)) "
          '(list (mock-slot 68) (mock-slot 69) (mock-slot 72) '
@@ -461,6 +474,10 @@ def test_performance_log_native():
          "(mock-setup) (setvar 'speed 5) (spawn THREAD_STACK_LOG log_sample) "
          '(sleep 0.1) (list (mock-slot 72) (mock-slot 93))',
          [2, 2]),
+        ('160-word spawned block B sample succeeds',
+         "(mock-setup-b) (setvar 'speed 5) (spawn THREAD_STACK_LOG log_sample) "
+         '(sleep 0.1) (list (mock-slot-b 132) (mock-slot-b 142))',
+         [1, 1]),
     ]
     for name, script, expected in cases:
         try:
