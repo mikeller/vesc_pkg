@@ -192,6 +192,52 @@ def log_b_sag(stored, delta):
     return clamp(stored + delta, 0, 0x7fffffff)
 
 
+def log_b_ring_slot(seq):
+    return 169 + 5 * ((seq - 1) % 4)
+
+
+def log_b_ring_begin(image, pending, seq, tag, vref):
+    seq = min(seq + 1, 0x7fffffff)
+    base = log_b_ring_slot(seq)
+    for k in range(5):
+        image[base + k] = 32767 if k == 2 else 0
+        pending.pop((base + k, None), None)
+        for half in (0, 1):
+            pending.pop((base + k, half), None)
+    image[base + 4] = (tag << 15) | min(vref, 32767)
+    return seq
+
+
+def test_performance_log_ring():
+    print('\n=== Testing RAM session ring ===')
+    assert_eq([log_b_ring_slot(n) for n in (1, 2, 4, 5, 9)],
+              [169, 174, 184, 169, 169], 'ring index and wrap vectors')
+    image, pending, seq = {}, {}, 0
+    assert_eq(seq, 0, 'idle controller does not start a session')
+    seq = log_b_ring_begin(image, pending, seq, 7, 364)
+    assert_eq([image[slot] for slot in range(169, 174)],
+              [0, 0, 32767, 0, 229740], 'record reset sentinel and tag/start voltage')
+    log_update(image, pending, 169, None, 'add', 1.2)
+    log_update(image, pending, 170, 0, 'add', 3120)
+    log_update(image, pending, 170, 1, 'add', 346)
+    log_update(image, pending, 171, 0, 'max', 1412)
+    log_update(image, pending, 171, 1, 'min', 330)
+    log_update(image, pending, 172, 0, 'max', 198)
+    log_update(image, pending, 172, 1, 'max', 3600)
+    assert_eq([image[slot] for slot in range(169, 174)],
+              [1, 102236506, 46268746, 6491664, 229740], 'ring record spec vector')
+    log_update(image, pending, 169, None, 'add', .8)
+    assert_eq(image[169], 2, 'motor-on seconds carry a fractional remainder')
+    for _ in range(4):
+        seq = log_b_ring_begin(image, pending, seq, 0, 0)
+    assert_eq((seq, [image[slot] for slot in range(169, 174)]),
+              (5, [0, 0, 32767, 0, 0]), 'wrapped record clears old totals and pending fractions')
+    assert_eq((pending.get((169, None), 0), image[171] & 32767),
+              (0, 32767), 'wrapped minimum stays at no-sample sentinel')
+    assert_eq(log_b_ring_begin(image, pending, 0x7fffffff, 0, 0),
+              0x7fffffff, 'saturated sequence stays in the final ring record')
+
+
 def log_b_accumulate(image, pending, state, *, speed=SPEED_OFF, soft_start=False,
                      safe_start_running=False, dt=.2, iin=None, vin=None,
                      rpm=None, duty=None, fet=None, mot=None,
@@ -417,7 +463,8 @@ def test_performance_log_collector():
                    'get-duty get-fault get-temp-fet get-temp-mot get-vin '
                    'secs-since systime trap log_apply log_bin log_upd log_rules '
                     'log_q log_get log_set log_motor_reference log_b_sag log_b_sample '
-                    'log_b_last_imbalance get_battery_imbalance_warning '
+                    'log_b_last_imbalance log_b_ring_begin log_b_ring_slot log_b_ring_sample '
+                    'get_battery_imbalance_warning '
                     'get_battery_imbalance_voltage conf-get setvar list not').split())
     assert_eq(calls - allowed, set(), 'complete sampling call set stays read-only')
     assert_eq(all('(trap (' + getter in sample for getter in
@@ -440,6 +487,56 @@ def test_performance_log_native():
         return
 
     cases = [
+        ('ring index vectors from LispBM',
+         '(list (to-u32 (log_b_ring_slot 1)) (to-u32 (log_b_ring_slot 2)) '
+         '(to-u32 (log_b_ring_slot 4)) (to-u32 (log_b_ring_slot 5)) '
+         '(to-u32 (log_b_ring_slot 9)))',
+         [169, 174, 184, 169, 169]),
+        ('ring idle never advances session sequence',
+         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
+         '(looprange k 0 5 (trap (log_sample))) '
+         '(list (mock-slot-b 132) (mock-slot-b 169) (mock-slot-b 171))',
+         [0, 0, 32767]),
+        ('ring idle and first start with tag, vref and empty minimum',
+         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) (trap (log_sample)) '
+         '(log_b_set_tag 7) (bufset-u32 log_bs 4 364) '
+         "(setvar 'speed 5) (trap (log_sample)) "
+         '(list (mock-slot-b 132) (mock-slot-b 169) (mock-slot-b 170) '
+         '(mock-slot-b 171) (mock-slot-b 173))',
+         [1, 0, 0, 46268767, 229740]),
+        ('ring running totals, extrema and tag update',
+         '(mock-setup-b) (bufset-u32 log_bs 4 364) '
+         "(setvar 'speed 5) (mock-put 3 1.25) (mock-put 4 2.5) "
+         '(trap (log_sample)) (log_b_set_tag 7) '
+         '(mock-put 3 1.5) (mock-put 4 3.0) (mock-put 9 33.0) '
+         '(mock-put 2 19.8) (mock-put 0 3600) '
+         '(looprange k 0 5 (trap (log_sample))) '
+         '(list (mock-slot-b 132) (mock-slot-b 169) (mock-slot-b 170) '
+         '(mock-slot-b 171) (mock-slot-b 172) (mock-slot-b 173))',
+         [1, 1, 49152030, 46268746, 6491664, 229740]),
+        ('ring four sessions wrap and clear prior minima',
+         '(mock-setup-b) (bufset-u32 log_bs 4 364) '
+         "(setvar 'speed 5) (log_b_set_tag 7) "
+         '(looprange k 0 5 { (bufset-u32 log_bs 12 0) (trap (log_sample)) }) '
+         '(list (mock-slot-b 132) (mock-slot-b 169) (mock-slot-b 171) '
+         '(mock-slot-b 173) (mock-slot-b 176) (mock-slot-b 181) (mock-slot-b 186))',
+         [5, 0, 46268767, 229740, 46268767, 46268767, 46268767]),
+        ('ring tag rejects invalid values and disabled block',
+         '(mock-setup-b) (log_b_set_tag 32767) '
+         '(define hi (mock-slot-b 133)) (log_b_set_tag -1) '
+         '(log_b_set_tag 32768) (log_b_set_tag 1.5) '
+         '(define same (mock-slot-b 133)) (mock-setup) '
+         '(define disabled (log_b_set_tag 2)) '
+         '(list hi same (if disabled 1u32 0u32) (if log_b 1u32 0u32))',
+         [1073709056, 1073709056, 0, 0]),
+        ('ring sequence saturation and reset clears fractional carry',
+         '(mock-setup-b) (bufset-u32 log_b (+ 8 (* 4 (- 132 LOG_B_BASE))) 2147483647u32) '
+         '(log_upd log_b 0 358 0.8) '
+         '(log_b_ring_begin log_b log_bs) '
+         '(list (mock-slot-b 132) (mock-slot-b 179) (mock-slot-b 181) '
+         '(if (= (bufget-f32 log_b (+ 8 (shr (- (buflen log_b) 8) 1) '
+         '(* 4 (- 358 (* 2 LOG_B_BASE))))) 0) 1u32 0u32))',
+         [2147483647, 0, 32767, 1]),
         ('block B references: read 160 versus fallback 160',
          '(mock-setup-b) (define accepted (mock-slot-b 131)) '
          "(setvar 'mock_motor_ref -123457) (log_b_references log_b) "
@@ -1919,6 +2016,7 @@ def run_all_tests():
     test_click_and_beep_regressions()
     test_performance_log_collector()
     test_performance_log_b()
+    test_performance_log_ring()
     test_performance_log_native()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()

@@ -211,7 +211,8 @@
 (define LOG_SAG_BIAS 1073741824u32)
 (define LOG_B_INIT '((130 1112820808) (131 273) (135 1073741824) (137 1073741824)
     (139 1073741824) (141 1073741824) (143 1073741824) (145 1073741824)
-    (147 1073741824) (149 1073741824)))
+    (147 1073741824) (149 1073741824) (171 32767) (176 32767)
+    (181 32767) (186 32767)))
 (define LOG_DUTY_EDGES '(0.8 0.9 0.95))
 (define LOG_ABORT_REASONS '("invalid telemetry" "timeout" "high current stall"))
 (define LOG_A_INIT '((66 1112820807) (67 257) (77 32767) (124 32767)))
@@ -2184,6 +2185,70 @@
     })
 })
 
+; The tag is a RAM-only choice until the protocol and flush paths are added.
+(defun log_b_set_tag (tag)
+{
+    (if (and log_b log_bs (number? tag) (= tag tag) (>= tag 0)
+             (<= tag 32767) (= tag (floor tag))) {
+        (var b log_b)
+        (var v (shl (to-i tag) 15))
+        (var o (+ 8 (* 4 (- 133 LOG_B_BASE))))
+        (if (!= (bufget-u32 b o) v) {
+            (bufset-u32 b o v)
+            (bufset-u32 b 4 1)
+        })
+        (if (= (bufget-u32 log_bs 12) 1) {
+            (var seq (bufget-u32 b (+ 8 (* 4 (- 132 LOG_B_BASE)))))
+            (var ro (+ 8 (* 4 (- (+ (log_b_ring_slot seq) 4) LOG_B_BASE))))
+            (var rv (bitwise-or v (bitwise-and (bufget-u32 b ro) 32767)))
+            (if (!= rv (bufget-u32 b ro)) {
+                (bufset-u32 b ro rv)
+                (bufset-u32 b 4 1)
+            })
+        })
+        t
+    } nil)
+})
+
+(defun log_b_ring_slot (seq) (+ 169 (* 5 (mod (- seq 1) 4))))
+
+(defun log_b_ring_begin (b bs)
+{
+    (var seq_o (+ 8 (* 4 (- 132 LOG_B_BASE))))
+    (var seq (bufget-u32 b seq_o))
+    (if (< seq 2147483647) (setq seq (+ seq 1)))
+    (bufset-u32 b seq_o seq)
+    (bufset-u32 b 4 1)
+    (var base (log_b_ring_slot seq))
+    (looprange k 0 5 {
+        (var slot (+ base k))
+        (bufset-u32 b (+ 8 (* 4 (- slot LOG_B_BASE))) (if (= k 2) 32767 0))
+        (looprange h 0 2
+            (bufset-f32 b (+ 8 (shr (- (buflen b) 8) 1)
+                            (* 4 (- (+ (* 2 slot) h) (* 2 LOG_B_BASE)))) 0))
+    })
+    (bufset-u32 b (+ 8 (* 4 (- (+ base 4) LOG_B_BASE)))
+        (bitwise-or (bufget-u32 b (+ 8 (* 4 (- 133 LOG_B_BASE))))
+                    (to-u32 (clamp (bufget-u32 bs 4) 0 32767))))
+})
+
+; Signals are already quantised by log_sample; negative deltas are skipped.
+(defun log_b_ring_sample (b dt fet vin iin rpm)
+{
+    (var base (log_b_ring_slot (bufget-u32 b (+ 8 (* 4 (- 132 LOG_B_BASE))))))
+    (var st log_st)
+    (log_upd b 0 (* 2 base) dt)
+    (looprange k 0 2 {
+        (var x (bufget-f32 st (+ 40 (* 4 (+ 5 k)))))
+        (if (>= x 0) (log_upd b 8 (+ (* 2 (+ base 1)) k) x))
+    })
+    (if (number? fet) (log_upd b 9 (* 2 (+ base 2)) (log_q fet 10 1000)))
+    (if (and (number? vin) (>= vin 0))
+        (log_upd b 10 (+ (* 2 (+ base 2)) 1) (log_q vin 10 0)))
+    (if (number? iin) (log_upd b 9 (* 2 (+ base 3)) (log_q (abs iin) 10 0)))
+    (if (number? rpm) (log_upd b 9 (+ (* 2 (+ base 3)) 1) (abs rpm)))
+})
+
 ; Called only for an enabled block. bs: idle timestamp, vref10, previous latch,
 ; session-seen, current step. No new arrays or lists are made per sample.
 (defun log_b_sample (sp dt rpm iin fet mot vin duty)
@@ -2206,8 +2271,9 @@
     } (bufset-u32 bs 0 0))
     (if (and run (= (bufget-u32 bs 12) 0)) {
         (bufset-u32 bs 12 1)
-        (log_upd b 0 264 1)
+        (log_b_ring_begin b bs)
     })
+    (if run (log_b_ring_sample b dt fet vin iin rpm))
     (if (and steady (not (eq safe_start_status 'running))
              (number? duty) (>= (abs duty) DUTY_AT_REST_THRESHOLD)
              (number? iin) (number? v10) (> (bufget-u32 bs 4) 0)) {
