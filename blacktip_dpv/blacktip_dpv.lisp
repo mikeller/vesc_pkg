@@ -198,9 +198,20 @@
 (define THREAD_STACK_LOG 160)
 (define LOG_SAMPLE_PERIOD 0.2)
 (define LOG_DT_MAX 0.5)
+(define LOG_DUTY_SATURATED 0.95)
 (define LOG_LIMIT_FRACTION 0.95)
 (define LOG_A_BASE 64)
 (define LOG_A_SLOTS 63)
+(define LOG_B_BASE 128)
+(define LOG_B_SLOTS 64)
+(define LOG_VREF_IDLE_S 2.0)
+(define LOG_REST_ERPM_MAX 25.0)
+(define LOG_REST_DUTY_MAX 0.02)
+(define LOG_FET_REF 850)
+(define LOG_SAG_BIAS 1073741824u32)
+(define LOG_B_INIT '((130 1112820808) (131 273) (135 1073741824) (137 1073741824)
+    (139 1073741824) (141 1073741824) (143 1073741824) (145 1073741824)
+    (147 1073741824) (149 1073741824)))
 (define LOG_DUTY_EDGES '(0.8 0.9 0.95))
 (define LOG_ABORT_REASONS '("invalid telemetry" "timeout" "high current stall"))
 (define LOG_A_INIT '((66 1112820807) (67 257) (77 32767) (124 32767)))
@@ -317,7 +328,11 @@
 
 ; Performance log: block A buffer, sampler state, enable (nil / 0 while off)
 (define log_enable_a 0)
+(define log_enable_b 0)
 (define log_a nil)
+(define log_b nil)
+(define log_bs nil)
+(define log_fet_edges nil)
 (define log_st nil)
 
 ; Display LUT byte array. import MUST be a top-level form (not inside a flashed
@@ -2122,6 +2137,119 @@
 (defun log_set (st k v)
     (bufset-f32 st (+ 40 (* 4 k)) (if (and (number? v) (>= v 0)) v -1)))
 
+; The status accompanies the value: a successful read of 160 differs from fallback 160.
+; Reused when a future clear or enable operation re-references an empty block.
+(defun log_motor_reference ()
+{
+    (var t0 (log_get (trap (conf-get 'l-temp-motor-start))))
+    (if (and (number? t0) (>= t0 30.0) (<= t0 250.0))
+        (list (log_q t0 10 0) 2)
+        (list 1600 0))
+})
+
+(defun log_b_references (b)
+{
+    (var iref (log_q (if (= scooter_type SCOOTER_CUDAX) MAX_CURRENT_CUDAX MAX_CURRENT_BLACKTIP) 10 0))
+    (var motor (log_motor_reference))
+    (log_apply b (list (list 131 (+ 273 (ix motor 1) (if (> battery_imbalance_threshold_centi 0) 4 0)))
+                       (list 189 (+ (shl iref 15) LOG_FET_REF))
+                       (list 190 (shl (ix motor 0) 15))))
+    (setvar 'log_fet_edges (list (- LOG_FET_REF 450) (- LOG_FET_REF 300)
+                                  (- LOG_FET_REF 150) LOG_FET_REF))
+    ; log_bs[16] is the integer step in 0.1 A, derived once at start.
+    (bufset-u32 log_bs 16 (* 5 (div (+ iref 39) 40)))
+})
+
+; Unlike the generic fractional positive-only adder, sag is signed and biased.
+(defun log_b_sag (b slot delta)
+{
+    (var o (+ 8 (* 4 (- slot LOG_B_BASE))))
+    (var old (bufget-u32 b o))
+    (var v (if (and (> delta 0) (>= delta (- 2147483647u32 old))) 2147483647u32
+               (if (and (< delta 0) (>= (- delta) old)) 0u32 (+ old delta))))
+    (if (!= old v) {
+        (bufset-u32 b o (to-u32 v))
+        (bufset-u32 b 4 1)
+    })
+})
+
+(defun log_b_last_imbalance (b centi)
+{
+    (var o (+ 8 (* 4 (- 167 LOG_B_BASE))))
+    (var v (bufget-u32 b o))
+    (var n (bitwise-or (bitwise-and v 0x3FFF8000) (to-u32 (clamp centi 0 32767))))
+    (if (!= n v) {
+        (bufset-u32 b o n)
+        (bufset-u32 b 4 1)
+    })
+})
+
+; Called only for an enabled block. bs: idle timestamp, vref10, previous latch,
+; session-seen, current step. No new arrays or lists are made per sample.
+(defun log_b_sample (sp dt rpm iin fet mot vin duty)
+{
+    (var b log_b)
+    (var bs log_bs)
+    (var run (!= sp SPEED_OFF))
+    (var steady (and run (= soft_start_active 0)))
+    (var v10 (if (and (number? vin) (>= vin 0)) (log_q vin 10 0) nil))
+    (var ref (bufget-u32 bs 4))
+    (if (and (= ref 0) (number? v10)) {
+        (bufset-u32 bs 4 (to-u32 v10))
+        (setq ref v10)
+    })
+    (if (and (= sp SPEED_OFF) (number? rpm) (number? duty)
+             (< (abs rpm) LOG_REST_ERPM_MAX) (< (abs duty) LOG_REST_DUTY_MAX)) {
+        (if (= (bufget-u32 bs 0) 0) (bufset-u32 bs 0 (systime)))
+        (if (and (number? v10) (>= (secs-since (bufget-u32 bs 0)) LOG_VREF_IDLE_S))
+            (bufset-u32 bs 4 (to-u32 v10)))
+    } (bufset-u32 bs 0 0))
+    (if (and run (= (bufget-u32 bs 12) 0)) {
+        (bufset-u32 bs 12 1)
+        (log_upd b 0 264 1)
+    })
+    (if (and steady (not (eq safe_start_status 'running))
+             (number? duty) (>= (abs duty) DUTY_AT_REST_THRESHOLD)
+             (number? iin) (number? v10) (> (bufget-u32 bs 4) 0)) {
+        (var bin (clamp (div (log_q (abs iin) 10 0) (bufget-u32 bs 16)) 0 7))
+        (log_upd b 0 (* 2 (+ 134 (* 2 bin))) 1)
+        (log_b_sag b (+ 135 (* 2 bin)) (- (bufget-u32 bs 4) v10))
+    })
+    (if (and steady (number? duty)) {
+        (var d (abs duty))
+        (if (>= d LOG_DUTY_SATURATED)
+            (if (and (>= sp 0) (< sp 10))
+                (log_upd b 8 (+ 300 sp) dt))
+            (if (< d 0.8) (log_upd b 0 (* 2 (+ 155 (log_bin d '(0.2 0.4 0.6)))) 1)))
+    })
+    (if run {
+        (if (number? fet) {
+            (var bin (log_bin (log_q fet 10 0) log_fet_edges))
+            (log_upd b 0 (* 2 (+ 159 bin)) 1)
+            (if (= bin 4) (log_upd b 0 328 1))
+        })
+        (if (and (number? mot) (>= (log_q mot 10 0) (shr (bufget-u32 b (+ 8 (* 4 (- 190 LOG_B_BASE)))) 15)))
+            (log_upd b 0 330 1))
+    })
+    (if (> battery_imbalance_threshold_centi 0) {
+        (var latch battery_imbalance_latched)
+        (if (and (!= latch BATTERY_IMBALANCE_WARN_NONE) (!= latch (bufget-u32 bs 8)))
+            (log_upd b 0 332 1))
+        (bufset-u32 bs 8 latch)
+        (if (and (= balance_smoothing_held 0) (> lower_voltage_smooth 0.1)) {
+            (var imbalance (log_get (trap (get_battery_imbalance_voltage))))
+            (if (number? imbalance) {
+                (var centi (log_q (abs imbalance) 100 0))
+                (log_upd b 9 334 centi)
+                (log_b_last_imbalance b centi)
+                (var warning (log_get (trap (get_battery_imbalance_warning))))
+                (if (and (number? warning) (!= warning BATTERY_IMBALANCE_WARN_NONE))
+                    (log_upd b 0 336 1))
+            })
+        })
+    } (bufset-u32 bs 8 0))
+})
+
 ; One sample. Each getter is independently trapped; no per-iteration arrays/lists.
 (defun log_sample ()
 {
@@ -2160,30 +2288,31 @@
     (log_set st 12 (if (number? vin) (log_q vin 100 0) nil))
     (if (and run (number? ah)) (bufset-f32 st 16 ah))
     (if (and run (number? wh)) (bufset-f32 st 20 wh))
-    (if (and run (number? fc) (> fc 0) (!= fc (bufget-f32 st 12)))
+    (if (and b run (number? fc) (> fc 0) (!= fc (bufget-f32 st 12)))
         (log_upd b 8 (+ 231 (to-i (clamp fc 0 11))) 1))
     (if (number? fc) (bufset-f32 st 12 fc))
-    (looprange k 0 4 {
+    (if b (looprange k 0 4 {
         (var c (bufget-u32 st (+ 92 (* 4 k))))
         (log_upd b 8 (+ 140 k) (- c (bufget-u32 st (+ 24 (* 4 k)))))
         (bufset-u32 st (+ 24 (* 4 k)) c)
-    })
-    (if ns {
+    }))
+    (if (and b ns) {
         (bufset-f32 st 8 1)
         (log_apply b LOG_A_SESSION)
     })
     (bufset-f32 st 4 (if run 1 0))
-    (log_rules b st
+    (if b (log_rules b st
         (+ (if run 1 0) (if steady 2 0) (if ns 16 0) (if start 32 0)
            (if (and steady (number? iin) (>= iin (* LOG_LIMIT_FRACTION (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)))) 4 0)
            (if (and steady (number? duty)) (shl 64 (log_bin (abs duty) LOG_DUTY_EDGES)) 0))
-        sp LOG_A_RULES)
+        sp LOG_A_RULES))
+    (if log_b (log_b_sample sp dt rpm iin fet mot vin duty))
 })
 
 ; Hook in safe_start_abort_with_reason: counts only, no control flow.
 (defun log_note_abort (reason)
 {
-    (if log_st {
+    (if (and log_a log_st) {
         (var k 0)
         (loopforeach r LOG_ABORT_REASONS {
             (if (= (str-cmp r reason) 0) (log_inc k))
@@ -2202,8 +2331,16 @@
 
 (defun log_start ()
 {
-    (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))
-    (log_apply log_a LOG_A_INIT)
+    (if (= log_enable_a 1) {
+        (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))
+        (log_apply log_a LOG_A_INIT)
+    })
+    (if (= log_enable_b 1) {
+        (setvar 'log_b (log_blk_new LOG_B_BASE LOG_B_SLOTS))
+        (log_apply log_b LOG_B_INIT)
+        (setvar 'log_bs (bufcreate 20))
+        (log_b_references log_b)
+    })
     (var st (bufcreate 108))
     (bufset-u32 st 0 (systime))
     (bufset-f32 st 40 1)
@@ -2462,7 +2599,7 @@
 
     (start_balance_loop)
 
-    (if (= log_enable_a 1) (trap (log_start)))
+    (if (or (= log_enable_a 1) (= log_enable_b 1)) (trap (log_start)))
 
     (setvar 'smart_cruise SMART_CRUISE_OFF)
 

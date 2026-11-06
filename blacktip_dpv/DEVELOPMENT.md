@@ -185,7 +185,7 @@ Before calling the VESC hardware shutdown path, the request selects the existing
 
 ## Performance Log (on-device)
 
-Status: block A RAM collector only; boot load, storage writer, block B, extraction and host tooling remain unimplemented. The following contract covers the complete feature.
+Status: block A and block B RAM collectors only; boot load, storage writer, block B session ring, extraction and host tooling remain unimplemented. The following contract covers the complete feature.
 
 **Implementation decisions for the RAM collector.** A failed, nil or non-number getter skips only the metric that needs it, not the other signals in that sample. The Ah and Wh baselines advance only on running samples: idle drift is captured in the first running delta, and an idle unit changes no slots. Their accumulator rows are quiet: increments are kept in RAM without setting dirty; they reach EEPROM only on a later flush triggered by a non-quiet change. Dirty denotes a non-quiet slot value changing since the last flush. No storage writer exists in this phase.
 
@@ -886,7 +886,7 @@ Mean-value formulas use the units above (`on` in ds, `cur` in 0.01 A·s, `def` i
 
 ### Block B: extended log (layout v1)
 
-Status: specification, like the rest of this section. Block B is a second, optional record that carries detail the frozen block A has no room for: a supply-current histogram with supply sag per bin, per-speed-index time at the duty ceiling, duty and FET temperature histograms, derating exposure, battery-imbalance events at rest, and a ring of the last four sessions. It uses EEPROM slots 128 to 191.
+Status: RAM-only accumulators for slots 132 to 168 and fresh references in 189 to 190 are implemented; boot loading, persistence and the session ring remain specified but unimplemented. Block B is a second, optional record that carries detail the frozen block A has no room for: a supply-current histogram with supply sag per bin, per-speed-index time at the duty ceiling, duty and FET temperature histograms, derating exposure, battery-imbalance events at rest, and a ring of the last four sessions. It uses EEPROM slots 128 to 191.
 
 #### Independence and scope
 

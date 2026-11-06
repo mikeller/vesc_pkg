@@ -32,7 +32,13 @@ def source_with_mocks():
     assert '(secs-since (bufget-u32 st 0))' in sample
     sample = sample.replace('(secs-since (bufget-u32 st 0))', '(mock-dt)')
     source = source[:start] + sample + source[end:]
-    mocks = '''(define mock_values (bufcreate 44))
+    source = source.replace("(conf-get 'l-temp-motor-start)", '(mock-conf-get)')
+    mocks = '''(define mock_motor_ref 160)
+(defun mock-conf-get () {
+    (if (= mock_motor_ref -123456) nil
+        (if (= mock_motor_ref -123457) (car 1) mock_motor_ref))
+})
+(define mock_values (bufcreate 44))
 (define mock_elapsed 0.2)
 (defun mock-dt () mock_elapsed)
 (defun mock-read (i) {
@@ -44,7 +50,17 @@ def source_with_mocks():
         mocks += f'(defun mock-get-{name} () (mock-read {index}))\n'
     mocks += '''(defun mock-put (i v) (bufset-f32 mock_values (* i 4) v))
 (defun mock-slot (slot) (bufget-u32 log_a (+ 8 (* 4 (- slot LOG_A_BASE)))))
+(defun mock-slot-b (slot) (bufget-u32 log_b (+ 8 (* 4 (- slot LOG_B_BASE)))))
+(defun mock-setup-b () {
+    (mock-setup)
+    (setvar 'log_enable_b 1)
+    (setvar 'log_bs (bufcreate 20))
+    (setvar 'log_b (log_blk_new LOG_B_BASE LOG_B_SLOTS))
+    (log_apply log_b LOG_B_INIT)
+    (log_b_references log_b)
+})
 (defun mock-setup () {
+    (setvar 'log_b nil) (setvar 'log_bs nil) (setvar 'log_enable_b 0)
     (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))
     (log_apply log_a LOG_A_INIT)
     (setvar 'log_st (bufcreate 108))

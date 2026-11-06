@@ -180,6 +180,61 @@ def log_bin(value, edges):
     return sum(value >= edge for edge in edges)
 
 
+def log_b_reference(motor, cudax=False, imbalance=False):
+    iref = 460 if cudax else 228
+    read = isinstance(motor, (int, float)) and not isinstance(motor, bool) and 30 <= motor <= 250
+    motref = int(motor * 10 + .5) if read else 1600
+    flags = 273 + (2 if read else 0) + (4 if imbalance else 0)
+    return (iref, 850, motref, flags, 5 * ((iref + 39) // 40))
+
+
+def log_b_sag(stored, delta):
+    return clamp(stored + delta, 0, 0x7fffffff)
+
+
+def test_performance_log_b():
+    print('\n=== Testing extended RAM collector vectors ===')
+    for value, ref, bit in [(160, 1600, 1), (180, 1800, 1), (250, 2500, 1),
+                            (None, 1600, 0), ('error', 1600, 0),
+                            ('exit-error', 1600, 0), (29.9, 1600, 0), (250.1, 1600, 0)]:
+        iref, fet, mot, flags, step = log_b_reference(value)
+        assert_eq((fet, mot, flags, (flags >> 1) & 1, (flags >> 4) & 1),
+                  (850, ref, 273 + bit * 2, bit, 1), f'reference and header {value}')
+    assert_eq(log_b_reference(160, imbalance=True)[3], 279, 'imbalance header flag')
+    assert_eq(log_b_reference(None, imbalance=True)[3], 277, 'fallback with imbalance')
+    assert_eq(log_b_reference(160, cudax=True)[::4], (460, 60), 'Cuda X current step')
+    assert_eq((step, [step * n for n in range(1, 8)]),
+              (30, [30, 60, 90, 120, 150, 180, 210]), 'Blacktip current edges in 0.1 A')
+    assert_eq([min(7, x // step) for x in (0, 29, 30, 139, 140, 209, 210, 228)],
+              [0, 0, 1, 4, 4, 6, 7, 7], 'current boundary bins')
+    fet_edges = [fet - n for n in (450, 300, 150, 0)]
+    assert_eq(fet_edges, [400, 550, 700, 850], 'fixed FET edges')
+    assert_eq([log_bin(v, fet_edges) for v in (399, 400, 549, 550, 699, 700, 849, 850)],
+              [0, 1, 1, 2, 2, 3, 3, 4], 'signed FET boundaries')
+    assert_eq([log_bin(v, (.2, .4, .6)) for v in (0, .2, .4, .6, .79)],
+              [0, 1, 2, 3, 3], 'duty histogram edges')
+    bias = 1 << 30
+    assert_eq((log_b_sag(bias, 364 - 351), log_b_sag(bias, 364 - 365)),
+              (bias + 13, bias - 1), 'signed sag sample and bin-four vector')
+    assert_eq((log_b_sag(0, -1), log_b_sag(0x7fffffff, 1)),
+              (0, 0x7fffffff), 'sag saturates at both ends')
+    image, pending = {150: 0}, {}
+    log_update(image, pending, 150, 0, 'add', 32767)
+    log_update(image, pending, 150, 1, 'add', 3)
+    log_update(image, pending, 150, 0, 'add', 1)
+    assert_eq(image[150], (32767 << 15) + 3, 'per-index duty P15 saturation and isolation')
+    assert_eq((int(85 >= 85), int(160 >= 160), int(159.9 >= 160)),
+              (1, 1, 0), 'both derating boundaries')
+    assert_eq((sum(x != 0 and x != prev for prev, x in zip((0, 1, 1, 2), (1, 1, 2, 0))),
+               max(38, 215), 38, sum(x > 200 for x in (38, 215))),
+              (2, 215, 38, 1), 'latch transition, settled maximum/last and over-warn')
+    source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
+    assert_eq(bool(re.search(r"\(conf-get\s+'l-(?:temp-fet-(?:start|end)|in-current-max)", source)),
+              False, 'no unsupported FET or transient current reference reads')
+    assert_eq('eeprom-store-' in source[source.index('(defun log_blk_new'):source.index('; Init-only peripheral setup.')],
+              False, 'block B remains RAM-only')
+
+
 def log_update(image, pending, slot, half, operation, value, quiet=False):
     """Mirror the slot-addressed accumulator, including independent fractional carry."""
     limit = 32767 if half is not None else 0x7fffffff
@@ -270,7 +325,9 @@ def test_performance_log_collector():
                    'get-ah get-wh get-rpm get-rpm-set get-current get-current-in '
                    'get-duty get-fault get-temp-fet get-temp-mot get-vin '
                    'secs-since systime trap log_apply log_bin log_upd log_rules '
-                   'log_q log_get log_set').split())
+                    'log_q log_get log_set log_motor_reference log_b_sag log_b_sample '
+                    'log_b_last_imbalance get_battery_imbalance_warning '
+                    'get_battery_imbalance_voltage div conf-get setvar list not').split())
     assert_eq(calls - allowed, set(), 'complete sampling call set stays read-only')
     assert_eq(all('(trap (' + getter in sample for getter in
                   ('get-ah', 'get-wh', 'get-rpm', 'get-rpm-set', 'get-current',
@@ -292,6 +349,45 @@ def test_performance_log_native():
         return
 
     cases = [
+        ('block B references: read 160 versus fallback 160',
+         '(mock-setup-b) (var accepted (mock-slot-b 131)) '
+         "(setvar 'mock_motor_ref -123457) (log_b_references log_b) "
+         '(list accepted (mock-slot-b 131) (mock-slot-b 189) (mock-slot-b 190))',
+         [275, 273, 7471954, 52428800]),
+        ('block B references: 180 accepted; 250 accepted; 250.1 rejected',
+         "(setvar 'mock_motor_ref 180) (mock-setup-b) (var a (mock-slot-b 190)) "
+         "(setvar 'mock_motor_ref 250) (log_b_references log_b) "
+         "(var b (mock-slot-b 190)) (setvar 'mock_motor_ref 250.1) "
+         '(log_b_references log_b) (list a b (mock-slot-b 190) (mock-slot-b 131))',
+         [58982400, 81920000, 52428800, 273]),
+        ('block B sag table, FET histogram, duty time and reference',
+         "(mock-setup-b) (setvar 'speed 5) (bufset-u32 log_bs 4 364) "
+         '(looprange k 0 5 (trap (log_sample))) '
+         '(list (mock-slot-b 132) (mock-slot-b 142) (mock-slot-b 143) '
+         '(mock-slot-b 152) (mock-slot-b 160) (mock-slot-b 164))',
+         [1, 5, 1073741889, 1, 5, 0]),
+        ('block B idle before 2 seconds does not replace vref',
+         '(mock-setup-b) (trap (log_sample)) (list (bufget-u32 log_bs 4) '
+         '(mock-slot-b 142) (mock-slot-b 143))',
+         [351, 0, 1073741824]),
+        ('block B settled imbalance polling and latch transition',
+         "(mock-setup-b) (setvar 'battery_imbalance_threshold_centi 200) "
+         "(setvar 'balance_smoothing_held 0) (setvar 'lower_voltage_smooth 18.0) "
+         "(setvar 'total_voltage_smooth 40.0) "
+         "(setvar 'battery_imbalance_latched BATTERY_IMBALANCE_WARN_PACK_2) "
+         '(trap (log_sample)) (trap (log_sample)) '
+         '(list (mock-slot-b 166) (mock-slot-b 167) (mock-slot-b 168))',
+         [1, 13107600, 2]),
+        ('block B sag saturates in both directions',
+         '(mock-setup-b) (log_b_sag log_b 143 -1073741825) '
+         '(var low (mock-slot-b 143)) (log_b_sag log_b 143 1073741824) '
+         '(log_b_sag log_b 143 1073741824) '
+         '(list low (mock-slot-b 143))',
+         [0, 2147483647]),
+        ('block B disabled makes no block B allocation or changes',
+         "(mock-setup) (setvar 'speed 5) (trap (log_sample)) "
+         '(list (if log_b 1 0) (mock-slot 72))',
+         [0, 2]),
         ('sample vector: index 5, 14 A, duty .96',
          "(mock-setup) (setvar 'speed 5) (trap (log_sample)) "
          '(list (mock-slot 68) (mock-slot 69) (mock-slot 72) '
@@ -1660,6 +1756,7 @@ def run_all_tests():
     test_startup_trigger_readiness()
     test_click_and_beep_regressions()
     test_performance_log_collector()
+    test_performance_log_b()
     test_performance_log_native()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()
