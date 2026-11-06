@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from perf_log_native import run as run_log_native, integer_values as log_native_ints
 
 # Test counters
 test_passes = 0
@@ -280,6 +281,109 @@ def test_performance_log_collector():
     assert_eq(bool(re.search(r'\((?:min|max)\s', collector)), False,
               'collector does not call unsupported min/max')
     assert_eq('eeprom-store-' in collector, False, 'collector performs no NV writes')
+
+
+def test_performance_log_native():
+    """Use real LispBM helpers and rule table, replacing only getters and time."""
+    print('\n=== Testing actual LispBM RAM collector (native simulation) ===')
+    repl = os.environ.get('LBM_REPL', '')
+    if not repl or not os.access(repl, os.X_OK):
+        print('SKIPPED: set LBM_REPL to the release_7_00 native repl for collector execution')
+        return
+
+    cases = [
+        ('sample vector: index 5, 14 A, duty .96',
+         "(mock-setup) (setvar 'speed 5) (trap (log_sample)) "
+         '(list (mock-slot 68) (mock-slot 69) (mock-slot 72) '
+         '(mock-slot 93) (mock-slot 94) (mock-slot 95) (mock-slot 113))',
+         [1, 1, 2, 2, 280, 10, 2]),
+        ('sample vector: index 9, 21.7 A, duty .92, five samples',
+         "(mock-setup) (setvar 'speed 9) (mock-put 0 4000) (mock-put 1 4000) "
+         '(mock-put 2 21.7) (mock-put 10 0.92) '
+         '(looprange k 0 5 (trap (log_sample))) '
+         '(list (mock-slot 105) (mock-slot 106) (mock-slot 107) '
+         '(mock-slot 112) (mock-slot 114) (mock-slot 113))',
+         [10, 2170, 0, 1, 10, 0]),
+        ('duty .8 enters lowest band; current below limit is excluded',
+         "(mock-setup) (setvar 'speed 9) (mock-put 2 21.65) "
+         '(mock-put 10 0.8) (looprange k 0 5 (trap (log_sample))) '
+         '(list (mock-slot 112) (mock-slot 113) (mock-slot 114) (mock-slot 115))',
+         [0, 0, 0, 10]),
+        ('soft start excludes tracking, limit and duty',
+         "(mock-setup) (setvar 'speed 5) (setvar 'soft_start_active 1) "
+         '(trap (log_sample)) (list (mock-slot 72) (mock-slot 75) '
+         '(mock-slot 93) (mock-slot 94) (mock-slot 113))',
+         [2, 46269716, 0, 0, 0]),
+        ('nil RPM skips only the RPM and tracking deficit metrics',
+         "(mock-setup) (setvar 'speed 5) (mock-put 0 -123456) "
+         '(trap (log_sample)) (list (mock-slot 72) (mock-slot 93) '
+         '(mock-slot 94) (mock-slot 95) (mock-slot 77))',
+         [2, 2, 280, 0, 3510]),
+        ('trapped FET getter failure skips only FET',
+         "(mock-setup) (setvar 'speed 5) (mock-put 6 -123457) "
+         '(trap (log_sample)) (list (mock-slot 72) (mock-slot 75) (mock-slot 76))',
+         [2, 1300, 7864460]),
+        ('fault transition, abort reasons and retries exhausted',
+         "(mock-setup) (setvar 'speed 5) (mock-put 5 5) "
+         '(trap (log_sample)) (trap (log_sample)) '
+         '(setvar \'safe_start_failures SAFE_START_MAX_RETRIES) '
+         '(log_note_abort "timeout") (trap (log_sample)) '
+         '(list (mock-slot 70) (mock-slot 71) (mock-slot 118))',
+         [1, 1, 32768]),
+        ('idle drift changes neither RAM image nor Ah/Wh baselines',
+         '(mock-setup) (looprange k 0 100 { '
+         '(mock-put 3 (* k 0.001)) (mock-put 4 (* k 0.01)) '
+         '(trap (log_sample)) }) '
+         '(list (mock-slot 68) (mock-slot 72) (mock-slot 73) (mock-slot 74) '
+         '(bufget-u32 log_a 4))',
+         [0, 0, 0, 0, 0]),
+        ('fractional carry across five 0.06 s samples',
+         "(mock-setup) (setvar 'speed 5) (setvar 'mock_elapsed 0.06) "
+         '(looprange k 0 5 (trap (log_sample))) '
+         '(list (mock-slot 72) (mock-slot 93))',
+         [3, 3]),
+        ('sample time clamp, voltage sentinel and offset temperature',
+         "(mock-setup) (setvar 'speed 5) (setvar 'mock_elapsed 2) "
+         '(mock-put 6 -5.3) (mock-put 9 31.876) (trap (log_sample)) '
+         '(list (mock-slot 72) (mock-slot 75) (mock-slot 77))',
+         [5, 31032596, 96668788]),
+        ('P15 ceiling and separate field preservation',
+         '(mock-setup) (log_upd log_a 8 216 32760) '
+         '(log_upd log_a 8 217 3) (log_upd log_a 8 216 100) '
+         '(list (mock-slot 108))',
+         [1073709059]),
+        ('U31 ceiling does not round up through f32',
+         '(mock-setup) (log_upd log_a 0 144 2147483647) '
+         '(log_upd log_a 0 144 1000) (list (mock-slot 72))',
+         [2147483647]),
+        ('1000 running samples retain independent totals',
+         "(mock-setup) (setvar 'speed 5) "
+         '(looprange k 0 1000 (trap (log_sample))) '
+         '(list (mock-slot 72) (mock-slot 93) (mock-slot 94) (mock-slot 95))',
+         [2000, 2000, 280000, 10000]),
+        ('160-word spawned sample succeeds with every getter present',
+         "(mock-setup) (setvar 'speed 5) (spawn THREAD_STACK_LOG log_sample) "
+         '(sleep 0.1) (list (mock-slot 72) (mock-slot 93))',
+         [2, 2]),
+    ]
+    for name, script, expected in cases:
+        try:
+            result = log_native_ints(run_log_native(repl, script))
+        except (AssertionError, subprocess.TimeoutExpired) as exc:
+            result = str(exc)
+        assert_eq(result, expected, 'native collector: ' + name)
+
+    try:
+        alloc = []
+        for count in (100, 1000):
+            result = run_log_native(repl, "(mock-setup) (setvar 'speed 5) "
+                                    f'(trap (log_sample)) (looprange k 0 {count} '
+                                    '(trap (log_sample))) (gc) '
+                                    "(list (lbm-heap-state 'get-num-alloc-cells) (mock-slot 72))")
+            alloc.append(int(re.search(r'\((\d+)u\b', result).group(1)))
+        assert_eq(alloc[1], alloc[0], 'native collector: GC-reclaimed heap stable from 100 to 1000 samples')
+    except (AssertionError, AttributeError, subprocess.TimeoutExpired) as exc:
+        assert_eq(str(exc), 'stable', 'native collector: GC-reclaimed heap stable')
 
 
 def trigger_click_accepted(trigger_input_ready, trigger_armed, sw_pressed):
@@ -1556,6 +1660,7 @@ def run_all_tests():
     test_startup_trigger_readiness()
     test_click_and_beep_regressions()
     test_performance_log_collector()
+    test_performance_log_native()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()
     test_strip_lisp_mutation_check()

@@ -2083,10 +2083,16 @@
         (0 {
             (var q (+ 8 (shr (- (buflen b) 8) 1) (* 4 r)))
             (var a (+ x (bufget-f32 b q)))
-            ; Bound before conversion/addition so even a huge counter jump cannot wrap.
-            (var d (to-i (clamp a 0 (- mx f))))
-            (bufset-f32 b q (if (>= a (- mx f)) 0 (- a d)))
-            (setq n (+ f d))
+            ; Avoid converting the U31 ceiling through f32 (which rounds it up
+            ; to 2^31), and tolerate f32 error at a whole-unit boundary.
+            (if (>= a (- mx f)) {
+                (setq n mx)
+                (bufset-f32 b q 0)
+            } {
+                (var d (to-i (floor (+ a 0.000001))))
+                (setq n (+ f d))
+                (bufset-f32 b q (clamp (- a d) 0 1))
+            })
         })
         (1 (setq n (clamp (to-i x) f mx)))
         (_ (setq n (clamp (to-i x) 0 f))))
@@ -2155,7 +2161,7 @@
     (if (and run (number? ah)) (bufset-f32 st 16 ah))
     (if (and run (number? wh)) (bufset-f32 st 20 wh))
     (if (and run (number? fc) (> fc 0) (!= fc (bufget-f32 st 12)))
-        (log_upd b 8 (+ 231 (clamp fc 0 11)) 1))
+        (log_upd b 8 (+ 231 (to-i (clamp fc 0 11))) 1))
     (if (number? fc) (bufset-f32 st 12 fc))
     (looprange k 0 4 {
         (var c (bufget-u32 st (+ 92 (* 4 k))))
