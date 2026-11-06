@@ -38,8 +38,9 @@ def source_with_mocks():
 (defun mock-vref-elapsed () mock_vref_time)
 (define mock_motor_ref 160)
 (defun mock-conf-get () {
-    (if (= mock_motor_ref -123456) nil
-        (if (= mock_motor_ref -123457) (car 1) mock_motor_ref))
+    (if (eq mock_motor_ref 'non-number) 'invalid
+        (if (= mock_motor_ref -123456) nil
+            (if (= mock_motor_ref -123457) (car 1) mock_motor_ref)))
 })
 (define mock_values (bufcreate 44))
 (define mock_elapsed 0.2)

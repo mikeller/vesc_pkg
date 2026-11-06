@@ -192,6 +192,58 @@ def log_b_sag(stored, delta):
     return clamp(stored + delta, 0, 0x7fffffff)
 
 
+def log_b_accumulate(image, pending, state, *, speed=SPEED_OFF, soft_start=False,
+                     safe_start_running=False, dt=.2, iin=None, vin=None,
+                     rpm=None, duty=None, fet=None, mot=None,
+                     settled=False, imbalance=None, warning=0, latch=0):
+    """Mirror the RAM-only 132..168 sample path, with a caller-supplied resting vref."""
+    run = speed != SPEED_OFF
+    steady = run and not soft_start
+    if vin is not None and vin >= 0 and state['vref10'] == 0:
+        state['vref10'] = log_quantise(vin, 10)
+    if not state['session'] and run:
+        log_update(image, pending, 132, None, 'add', 1)
+        state['session'] = True
+    if (steady and not safe_start_running and duty is not None and
+            abs(duty) >= .02 and iin is not None and vin is not None and
+            vin >= 0 and state['vref10'] > 0):
+        b = min(7, log_quantise(abs(iin), 10) // state['step'])
+        log_update(image, pending, 134 + 2 * b, None, 'add', 1)
+        slot = 135 + 2 * b
+        image[slot] = log_b_sag(image[slot], state['vref10'] - log_quantise(vin, 10))
+    if steady and duty is not None:
+        d = abs(duty)
+        if d >= .95 and 0 <= speed < 10:
+            log_update(image, pending, 150 + speed // 2, speed % 2, 'add', dt)
+        elif d < .8:
+            log_update(image, pending, 155 + log_bin(d, (.2, .4, .6)), None, 'add', 1)
+    if run:
+        if fet is not None:
+            b = log_bin(log_quantise(fet, 10), (400, 550, 700, 850))
+            log_update(image, pending, 159 + b, None, 'add', 1)
+            if b == 4:
+                log_update(image, pending, 164, None, 'add', 1)
+        if mot is not None and log_quantise(mot, 10) >= state['motref']:
+            log_update(image, pending, 165, None, 'add', 1)
+    if state['imbalance_enabled']:
+        if latch and latch != state['previous_latch']:
+            log_update(image, pending, 166, None, 'add', 1)
+        state['previous_latch'] = latch
+        if settled and imbalance is not None:
+            magnitude = min(32767, log_quantise(abs(imbalance), 100))
+            log_update(image, pending, 167, 0, 'max', magnitude)
+            image[167] = (image[167] & 0x3fff8000) | magnitude
+            if warning:
+                log_update(image, pending, 168, None, 'add', 1)
+
+
+def log_b_mirror_new(vref10=0, motref=1600, imbalance_enabled=True, step=30):
+    image = {slot: 1 << 30 for slot in range(135, 150, 2)}
+    state = dict(vref10=vref10, motref=motref, imbalance_enabled=imbalance_enabled,
+                 step=step, session=False, previous_latch=0)
+    return image, {}, state
+
+
 def test_performance_log_b():
     print('\n=== Testing extended RAM collector vectors ===')
     for value, ref, bit in [(160, 1600, 1), (180, 1800, 1), (250, 2500, 1),
@@ -228,6 +280,45 @@ def test_performance_log_b():
     assert_eq((sum(x != 0 and x != prev for prev, x in zip((0, 1, 1, 2), (1, 1, 2, 0))),
                max(38, 215), 38, sum(x > 200 for x in (38, 215))),
               (2, 215, 38, 1), 'latch transition, settled maximum/last and over-warn')
+    image, pending, state = log_b_mirror_new(vref10=364)
+    for _ in range(5):
+        log_b_accumulate(image, pending, state, speed=5, iin=14, vin=35.1,
+                         rpm=2950, duty=.96, fet=41.2, mot=30)
+    assert_eq(tuple(image.get(slot, 0) for slot in (132, 142, 143, 152, 160, 164, 165)),
+              (1, 5, bias + 65, 1, 5, 0, 0), 'mirror matches native sag, duty and FET vector')
+    image, pending, state = log_b_mirror_new(motref=1600)
+    for fet_temp, mot_temp in ((39.9, 159.9), (40, 160), (55, 160),
+                               (70, 160), (85, 160)):
+        log_b_accumulate(image, pending, state, speed=5, soft_start=True,
+                         fet=fet_temp, mot=mot_temp, duty=.96, iin=14, vin=35)
+    assert_eq(tuple(image.get(slot, 0) for slot in range(159, 166)),
+              (1, 1, 1, 1, 1, 1, 4), 'FET bins and assumed derating match at boundaries during soft start')
+    assert_eq(tuple(image.get(slot, 0) for slot in (142, 152, 155)),
+              (0, 0, 0), 'soft start excludes loaded current and duty bins')
+    image, pending, state = log_b_mirror_new()
+    for settled, magnitude, warning, latch in ((False, 2.15, 2, 1),
+                                                 (True, 2.15, 2, 1),
+                                                 (True, .38, 0, 2),
+                                                 (True, None, 0, 0),
+                                                 (True, .38, 0, 0),
+                                                 (True, .38, 0, 2)):
+        log_b_accumulate(image, pending, state, settled=settled,
+                         imbalance=magnitude, warning=warning, latch=latch)
+    assert_eq(tuple(image.get(slot, 0) for slot in (166, 167, 168)),
+              (3, (215 << 15) | 38, 1), 'settled imbalance, last/max and changed nonzero latch')
+    image, pending, state = log_b_mirror_new(imbalance_enabled=False)
+    log_b_accumulate(image, pending, state, settled=True, imbalance=3,
+                     warning=2, latch=1)
+    assert_eq(tuple(image.get(slot, 0) for slot in (166, 167, 168)),
+              (0, 0, 0), 'disabled imbalance never accumulates')
+    image, pending, state = log_b_mirror_new(vref10=364)
+    image[142], image[143], image[159], image[164], image[165], image[166], image[168] = (
+        0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff,
+        0x7fffffff, 0x7fffffff, 0x7fffffff)
+    log_b_accumulate(image, pending, state, speed=5, iin=14, vin=35.1,
+                     fet=85, mot=160, settled=True, imbalance=1, warning=2, latch=1)
+    assert_eq(tuple(image[s] for s in (142, 143, 159, 164, 165, 166, 168)),
+              (0x7fffffff,) * 7, 'all U31 count and sag sums saturate without wrapping')
     source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
     assert_eq(bool(re.search(r"\(conf-get\s+'l-(?:temp-fet-(?:start|end)|in-current-max)", source)),
               False, 'no unsupported FET or transient current reference reads')
@@ -383,6 +474,60 @@ def test_performance_log_native():
          "(setvar 'mock_motor_ref -123456) (log_b_references log_b) "
          '(list low (mock-slot-b 131) (mock-slot-b 190))',
          [273, 273, 52428800]),
+        ('block B non-number and out-of-range motor references',
+         "(mock-setup-b) (setvar 'mock_motor_ref 'non-number) "
+         '(log_b_references log_b) (define bad (mock-slot-b 131)) '
+         "(setvar 'mock_motor_ref 250.1) (log_b_references log_b) "
+         '(list bad (mock-slot-b 131) (mock-slot-b 190))',
+         [273, 273, 52428800]),
+        ('block B trapped motor read error falls back with bit 4 unchanged',
+         "(mock-setup-b) (setvar 'mock_motor_ref -123457) "
+         '(log_b_references log_b) (list (mock-slot-b 131) (mock-slot-b 190))',
+         [273, 52428800]),
+        ('block B Cuda X reference selects 6 A current bin step',
+         "(mock-setup) (setvar 'scooter_type SCOOTER_CUDAX) "
+         '(setvar \'log_bs (bufcreate 20)) '
+         '(setvar \'log_b (log_blk_new LOG_B_BASE LOG_B_SLOTS)) '
+         '(log_apply log_b LOG_B_INIT) (log_b_references log_b) '
+         '(list (bufget-u32 log_bs 16) (mock-slot-b 189))',
+         [60, 15074130]),
+        ('block B invalid rest RPM and duty reset idle window',
+         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
+         '(trap (log_sample)) (mock-put 9 36.4) '
+         "(setvar 'mock_vref_time 2.1) (mock-put 0 25) "
+         '(trap (log_sample)) (define rpm_reset (bufget-u32 log_bs 0)) '
+         '(mock-put 0 0) (mock-put 10 0.02) (trap (log_sample)) '
+         '(define duty_reset (bufget-u32 log_bs 0)) '
+         '(mock-put 10 -123456) (trap (log_sample)) '
+         '(list rpm_reset duty_reset (bufget-u32 log_bs 0) (bufget-u32 log_bs 4))',
+         [0, 0, 0, 351]),
+        ('block B nil RPM cannot capture resting Vin',
+         '(mock-setup-b) (mock-put 0 -123456) (mock-put 10 0) '
+         "(setvar 'mock_vref_time 2.1) (mock-put 9 36.4) "
+         '(trap (log_sample)) (list (bufget-u32 log_bs 0) (bufget-u32 log_bs 4))',
+         [0, 364]),
+        ('block B running never refreshes resting reference',
+         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
+         '(trap (log_sample)) (setvar \'speed 5) '
+         "(setvar 'mock_vref_time 2.1) (mock-put 9 36.4) "
+         '(trap (log_sample)) (list (bufget-u32 log_bs 0) (bufget-u32 log_bs 4))',
+         [0, 351]),
+        ('block B resting voltage qualifies after a fresh continuous window',
+         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
+         '(trap (log_sample)) (mock-put 0 25) '
+         "(setvar 'mock_vref_time 2.1) (trap (log_sample)) "
+         "(setvar 'mock_vref_time 0) (mock-put 0 0) (mock-put 9 36.4) "
+         '(trap (log_sample)) (define early (bufget-u32 log_bs 4)) '
+         "(setvar 'mock_vref_time 2.1) (trap (log_sample)) "
+         '(list early (bufget-u32 log_bs 4))',
+         [351, 364]),
+        ('block B nil duty and trapped RPM getter block rest reference',
+         '(mock-setup-b) (mock-put 0 -123457) (mock-put 10 0) '
+         "(setvar 'mock_vref_time 2.1) (trap (log_sample)) "
+         '(define rpm_block (bufget-u32 log_bs 0)) '
+         '(mock-put 0 0) (mock-put 10 -123456) '
+         '(trap (log_sample)) (list rpm_block (bufget-u32 log_bs 0))',
+         [0, 0]),
         ('block B settled imbalance polling and latch transition',
          "(mock-setup-b) (setvar 'battery_imbalance_threshold_centi 200) "
          "(setvar 'balance_smoothing_held 0) (setvar 'lower_voltage_smooth 18.0) "
