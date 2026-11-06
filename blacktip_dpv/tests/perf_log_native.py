@@ -64,6 +64,7 @@ def source_with_mocks():
     (log_b_references log_b)
 })
 (defun mock-setup () {
+    (setvar 'log_enable_a 1)
     (setvar 'log_b nil) (setvar 'log_bs nil) (setvar 'log_enable_b 0)
     (setvar 'mock_vref_time 0)
     (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))

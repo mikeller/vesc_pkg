@@ -8,6 +8,7 @@ import csv
 import importlib.util
 import os
 import re
+import zlib
 import shutil
 import struct
 import subprocess
@@ -15,6 +16,8 @@ import sys
 import tempfile
 from pathlib import Path
 from perf_log_native import run as run_log_native, integer_values as log_native_ints
+from perf_log_boot import classify as boot_classify, crc as boot_crc, make_image as boot_image
+from perf_log_boot import references as boot_references, native as run_boot_native
 
 # Test counters
 test_passes = 0
@@ -463,6 +466,7 @@ def test_performance_log_collector():
                    'get-duty get-fault get-temp-fet get-temp-mot get-vin '
                    'secs-since systime trap log_apply log_bin log_upd log_rules '
                     'log_q log_get log_set log_motor_reference log_b_sag log_b_sample '
+                    'log_boot_block log_b_boot_references log_blk_new eeprom-read-i crc32 bufcreate not-eq or '
                     'log_b_last_imbalance log_b_ring_begin log_b_ring_slot log_b_ring_sample '
                     'get_battery_imbalance_warning '
                     'get_battery_imbalance_voltage conf-get setvar list not').split())
@@ -1986,6 +1990,97 @@ def test_strip_lisp_native_reader():
 # Test Runner
 # =============================================================================
 
+def test_performance_log_boot():
+    print('\n=== Testing read-only boot and CRC ===')
+    for base, count, magic, flags in ((64, 63, 1112820807, 257),
+                                      (128, 64, 1112820808, 279)):
+        good = boot_image(base, count, magic, flags)
+        variants = [('empty', {}, False), ('foreign', {base: 0}, False),
+                    ('ok', good, True)]
+        disabled = {**good, base + 3: flags & ~1}
+        disabled[base + 1] = boot_crc(disabled, base, count)
+        variants.append(('ok', disabled, False))
+        unknown = {**good, base + 3: 513}
+        variants.append(('unknown_layout', unknown, False))
+        odd = {**good, base: 1}
+        variants.append(('in_progress', odd, False))
+        missing_seq = dict(good)
+        missing_seq.pop(base)
+        variants.append(('in_progress', missing_seq, False))
+        damaged = {**good, base + 5: 1}
+        variants.append(('crc_mismatch', damaged, False))
+        missing = dict(good)
+        missing.pop(base + 5)
+        variants.append(('crc_mismatch', missing, False))
+        for name, image, enabled in variants:
+            assert_eq(boot_classify(image, base, count, magic), (name, enabled),
+                      f'block {base} {name}, enabled={enabled}')
+        assert_eq(boot_crc(good, base, count), good[base + 1], f'block {base} CRC')
+    for stored, flags, fresh, status, expected in (
+        (1600, 275, 1800, False, (1600, 283)),
+        (1600, 275, 1600, False, (1600, 275)),
+        (1600, 273, 1600, True, (1600, 273)),
+        (0, 273, 1600, True, (1600, 275)),
+        (0, 275, 1600, False, (1600, 273))):
+        result = boot_references(228, 850, stored, flags, 228, fresh, status)
+        assert_eq((result[2], result[3]), expected, f'restored motor reference {stored}/{fresh}')
+    assert_eq(boot_references(228, 850, 1600, 275, 460, 1600, False),
+              (228, 850, 1600, 283), 'stored current reference wins and marks mismatch')
+    assert_eq(boot_references(0, 0, 0, 273, 228, 1600, True),
+              (228, 850, 1600, 275), 'unset references use fresh read and fixed FET')
+    source = LISP_SOURCE.read_text()
+    boot = source[source.index('(defun log_boot_block'):source.index('; Unlike the generic fractional')]
+    assert_eq('eeprom-store-i' in boot or "conf-get 'l-temp-fet" in source,
+              False, 'boot reads only; no FET configuration read')
+    repl = os.environ.get('LBM_REPL', '')
+    if repl:
+        assert_eq(run_boot_native(repl, '''(define bytes (bufcreate 9))
+(looprange i 0 9 (bufset-u8 bytes i (+ 49 i)))
+(mock-crc32 bytes 0)''').strip(), '3421780262',
+                  'native harness CRC32 standard check value (extension stub unavailable)')
+        scenario = '''(log_boot)
+(list log_state_a log_state_b log_enable_a log_enable_b)
+'''
+        assert_eq(run_boot_native(repl, scenario).strip(), '(empty empty 0 0)',
+                  'native LispBM empty boot, no sampling thread')
+        for base, count, magic, flags in ((64, 63, 1112820807, 257),
+                                          (128, 64, 1112820808, 279)):
+            image = boot_image(base, count, magic, flags)
+            image[base + 5] = 42
+            image[base + 1] = boot_crc(image, base, count)
+            writes = '\n'.join(f'(put {i} {v})' for i, v in sorted(image.items()))
+            result = run_boot_native(repl, writes + '''\n(log_boot)
+(list log_state_a log_state_b log_enable_a log_enable_b
+      (bufget-u32 (if (= log_enable_a 1) log_a log_b) 28))''')
+            state = 'ok empty' if base == 64 else 'empty ok'
+            enable = '1u32 0' if base == 64 else '0 1u32'
+            assert_eq(result.strip(), f'({state} {enable} 42u32)',
+                      f'native block {base} CRC, enable, restored counter')
+            for change, expected in (((base, 1), 'in_progress'),
+                                     ((base + 5, 43), 'crc_mismatch'),
+                                     ((base + 3, 513), 'unknown_layout'),
+                                     ((base + 2, 0), 'foreign')):
+                broken = writes + f'\n(put {change[0]} {change[1]})\n(log_boot)\n'
+                state_result = run_boot_native(repl, broken +
+                    '(list log_state_a log_state_b log_enable_a log_enable_b)')
+                a, b = (expected, 'empty') if base == 64 else ('empty', expected)
+                assert_eq(state_result.strip(), f'({a} {b} 0 0)',
+                          f'native block {base} {expected} stays disabled')
+        for stored_m, flags, expected_flag, expected_m in (
+            (1600, 275, 283, 1600), (1800, 275, 275, 1800),
+            (1600, 273, 281, 1600), (0, 273, 275, 1800)):
+            image = boot_image(128, 64, 1112820808, flags)
+            image[189] = (228 << 15) | 850
+            image[190] = stored_m << 15
+            image[129] = boot_crc(image, 128, 64)
+            writes = '\n'.join(f'(put {i} {v})' for i, v in sorted(image.items()))
+            result = run_boot_native(repl, writes + '''\n(log_boot)
+(list log_state_b (bufget-u32 log_b 20)
+      (shr (bufget-u32 log_b 256) 15) (bufget-u32 log_bs 16))''')
+            assert_eq(result.strip(), f'(ok {expected_flag}u32 {expected_m}u32 30u32)',
+                      f'native stored motor {stored_m}, flags {flags}')
+
+
 def run_all_tests():
     """Run all test suites"""
     print("\n╔══════════════════════════════════════════╗")
@@ -2017,6 +2112,7 @@ def run_all_tests():
     test_performance_log_collector()
     test_performance_log_b()
     test_performance_log_ring()
+    test_performance_log_boot()
     test_performance_log_native()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()

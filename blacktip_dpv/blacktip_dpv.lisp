@@ -330,6 +330,8 @@
 ; Performance log: block A buffer, sampler state, enable (nil / 0 while off)
 (define log_enable_a 0)
 (define log_enable_b 0)
+(define log_state_a 'empty)
+(define log_state_b 'empty)
 (define log_a nil)
 (define log_b nil)
 (define log_bs nil)
@@ -2161,6 +2163,113 @@
     (bufset-u32 log_bs 16 (* 5 (to-i (/ (+ iref 39) 40))))
 })
 
+; Check a stored image byte-for-byte in ascending slot order. A nil or invalid
+; covered slot cannot be represented as zero: it makes the image unverified.
+(defun log_boot_block (base n magic)
+{
+    (var h (bufcreate 16))
+    (var any 0)
+    (looprange i 0 4 {
+        (var v (eeprom-read-i (+ base i)))
+        (if (not-eq v nil) (setq any 1))
+        (if (and (number? v) (>= v 0) (<= v 2147483647))
+            (bufset-u32 h (* i 4) v)
+            (bufset-u32 h (* i 4) 0))
+    })
+    (if (= any 0) 'empty
+        (if (!= (bufget-u32 h 8) magic) 'foreign
+            (if (!= (bitwise-and (shr (bufget-u32 h 12) 8) 255) 1) 'unknown_layout {
+                (var b (log_blk_new base n))
+                (var check (bufcreate 4))
+                (var crc 0u32)
+                (var complete 1)
+                (var seq_present 1)
+                (looprange i 0 n {
+                    (var v (eeprom-read-i (+ base i)))
+                    (if (and (= i 0) (eq v nil)) (setq seq_present 0))
+                    (if (or (not (number? v)) (< v 0) (> v 2147483647)) {
+                        (setq complete 0)
+                        (setq v 0)
+                    })
+                    ; Keep the unverified raw values available in the stored mirror.
+                    (bufset-u32 b (+ 8 (* 4 i) (* 4 n)) v)
+                    (if (>= i 2) {
+                        (bufset-u32 check 0 v)
+                        (setq crc (crc32 check crc))
+                    })
+                })
+                (var seq (bufget-u32 b (+ 8 (* 4 n))))
+                (var saved (bufget-u32 b (+ 12 (* 4 n))))
+                (var state (if (or (= (bitwise-and seq 1) 1) (= seq_present 0))
+                    'in_progress
+                    (if (or (= complete 0) (!= (bitwise-and crc 2147483647u32) saved))
+                        'crc_mismatch 'ok)))
+                (if (eq state 'ok) {
+                    ; Only verified images can become the live accumulator.
+                    (looprange i 0 n (bufset-u32 b (+ 8 (* 4 i))
+                        (bufget-u32 b (+ 8 (* 4 i) (* 4 n)))))
+                    (if (= base LOG_A_BASE)
+                        (setvar 'log_a b)
+                        (setvar 'log_b b))
+                })
+                state
+            })))
+})
+
+; Restore references before sampling, never replacing a non-zero stored edge.
+; The stored motor-read provenance (bit 1) belongs to the stored reference.
+(defun log_b_boot_references (b)
+{
+    (var iref (to-i (log_q (if (= scooter_type SCOOTER_CUDAX)
+        MAX_CURRENT_CUDAX MAX_CURRENT_BLACKTIP) 10 0)))
+    (var motor (log_motor_reference))
+    (var io (+ 8 (* 4 (- 189 LOG_B_BASE))))
+    (var mo (+ 8 (* 4 (- 190 LOG_B_BASE))))
+    (var fo (+ 8 (* 4 (- 131 LOG_B_BASE))))
+    (var old_i (shr (bufget-u32 b io) 15))
+    (var old_f (bitwise-and (bufget-u32 b io) 32767))
+    (var old_m (shr (bufget-u32 b mo) 15))
+    (var flags (bufget-u32 b fo))
+    (if (or (and (> old_i 0) (!= old_i iref))
+            (and (> old_m 0) (!= old_m (ix motor 0))))
+        (setq flags (bitwise-or flags 8))
+        (setq flags (bitwise-and flags (bitwise-not 8))))
+    (if (= old_m 0)
+        (setq flags (bitwise-or (bitwise-and flags (bitwise-not 2)) (ix motor 1))))
+    (bufset-u32 b fo flags)
+    (var final_i (if (> old_i 0) old_i iref))
+    (var final_f (if (> old_f 0) old_f LOG_FET_REF))
+    (bufset-u32 b io (+ (shl final_i 15) final_f))
+    (bufset-u32 b mo (shl (if (> old_m 0) old_m (ix motor 0)) 15))
+    (setvar 'log_fet_edges (list (- final_f 450) (- final_f 300)
+        (- final_f 150) final_f))
+    (bufset-u32 log_bs 16 (* 5 (to-i (/ (+ final_i 39) 40))))
+})
+
+(defun log_boot ()
+{
+    (setvar 'log_enable_a 0) (setvar 'log_enable_b 0)
+    (setvar 'log_a nil) (setvar 'log_b nil) (setvar 'log_bs nil)
+    (var a (trap (log_boot_block LOG_A_BASE LOG_A_SLOTS 1112820807)))
+    (setvar 'log_state_a (if (eq (ix a 0) 'exit-ok) (ix a 1) 'read_error))
+    (if (eq log_state_a 'ok)
+        (setvar 'log_enable_a (bitwise-and (bufget-u32 log_a 20) 1)))
+    (var b (trap (log_boot_block LOG_B_BASE LOG_B_SLOTS 1112820808)))
+    (setvar 'log_state_b (if (eq (ix b 0) 'exit-ok) (ix b 1) 'read_error))
+    (if (eq log_state_b 'ok) {
+        (setvar 'log_enable_b (bitwise-and (bufget-u32 log_b 20) 1))
+        (var refs (trap {
+            (setvar 'log_bs (bufcreate 20))
+            (log_b_boot_references log_b)
+        }))
+        (if (not (eq (ix refs 0) 'exit-ok)) {
+            (setvar 'log_state_b 'read_error)
+            (setvar 'log_enable_b 0)
+            (setvar 'log_b nil)
+        })
+    })
+})
+
 ; Unlike the generic fractional positive-only adder, sag is signed and biased.
 (defun log_b_sag (b slot delta)
 {
@@ -2188,7 +2297,7 @@
 ; The tag is a RAM-only choice until the protocol and flush paths are added.
 (defun log_b_set_tag (tag)
 {
-    (if (and log_b log_bs (number? tag) (= tag tag) (>= tag 0)
+    (if (and (= log_enable_b 1) log_b log_bs (number? tag) (= tag tag) (>= tag 0)
              (<= tag 32767) (= tag (floor tag))) {
         (var b log_b)
         (var v (shl (to-i tag) 15))
@@ -2319,7 +2428,7 @@
 ; One sample. Each getter is independently trapped; no per-iteration arrays/lists.
 (defun log_sample ()
 {
-    (var b log_a)
+    (var b (if (= log_enable_a 1) log_a nil))
     (var st log_st)
     (var sp (to-i speed))
     (var dt (clamp (secs-since (bufget-u32 st 0)) 0 LOG_DT_MAX))
@@ -2372,13 +2481,13 @@
            (if (and steady (number? iin) (>= iin (* LOG_LIMIT_FRACTION (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)))) 4 0)
            (if (and steady (number? duty)) (shl 64 (log_bin (abs duty) LOG_DUTY_EDGES)) 0))
         sp LOG_A_RULES))
-    (if log_b (log_b_sample sp dt rpm iin fet mot vin duty))
+    (if (= log_enable_b 1) (log_b_sample sp dt rpm iin fet mot vin duty))
 })
 
 ; Hook in safe_start_abort_with_reason: counts only, no control flow.
 (defun log_note_abort (reason)
 {
-    (if (and log_a log_st) {
+    (if (and (= log_enable_a 1) log_a log_st) {
         (var k 0)
         (loopforeach r LOG_ABORT_REASONS {
             (if (= (str-cmp r reason) 0) (log_inc k))
@@ -2397,11 +2506,11 @@
 
 (defun log_start ()
 {
-    (if (= log_enable_a 1) {
+    (if (and (= log_enable_a 1) (eq log_a nil)) {
         (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))
         (log_apply log_a LOG_A_INIT)
     })
-    (if (= log_enable_b 1) {
+    (if (and (= log_enable_b 1) (eq log_b nil)) {
         (setvar 'log_b (log_blk_new LOG_B_BASE LOG_B_SLOTS))
         (log_apply log_b LOG_B_INIT)
         (setvar 'log_bs (bufcreate 20))
@@ -2586,6 +2695,8 @@
 (defun main ()
 {
     (update_settings_from_eeprom)
+
+    (trap (log_boot))
 
     (log_startup)
 

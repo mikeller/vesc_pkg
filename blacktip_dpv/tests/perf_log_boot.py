@@ -1,0 +1,96 @@
+"""Read-only boot classifier vectors and isolated real LispBM execution."""
+import re
+import subprocess
+import tempfile
+import zlib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def crc(image, base, count):
+    return zlib.crc32(b''.join(image[i].to_bytes(4, 'big')
+                               for i in range(base + 2, base + count))) & 0x7fffffff
+
+
+def classify(image, base, count, magic):
+    if all(image.get(i) is None for i in range(base, base + 4)):
+        return 'empty', False
+    if image.get(base + 2) != magic:
+        return 'foreign', False
+    if image.get(base + 3) is None or (image[base + 3] >> 8) & 255 != 1:
+        return 'unknown_layout', False
+    if image.get(base) is None or image[base] & 1:
+        return 'in_progress', False
+    if any(not isinstance(image.get(i), int) or not 0 <= image[i] <= 0x7fffffff
+           for i in range(base, base + count)):
+        return 'crc_mismatch', False
+    if image[base + 1] != crc(image, base, count):
+        return 'crc_mismatch', False
+    return 'ok', bool(image[base + 3] & 1)
+
+
+def references(stored_i, stored_f, stored_m, flags, fresh_i, fresh_m, motor_read):
+    mismatch = (stored_i and stored_i != fresh_i) or (stored_m and stored_m != fresh_m)
+    flags = (flags & ~8) | (8 if mismatch else 0)
+    if not stored_m:
+        flags = (flags & ~2) | (2 if motor_read else 0)
+    return stored_i or fresh_i, stored_f or 850, stored_m or fresh_m, flags
+
+
+def native_source():
+    source = (ROOT / 'blacktip_dpv.lisp').read_text()
+    section = source[source.index('(defun log_blk_new'):source.index('; Unlike the generic fractional positive-only adder')]
+    # Only the exact production boot functions and their common helpers are
+    # evaluated; the full native REPL runs out of flash even on the parent tip.
+    section = section[:section.index('(defun log_motor_reference')] + section[section.index('(defun log_boot_block'):]
+    section = section.replace('(eeprom-read-i ', '(mock-eeprom-read ')
+    # The native BLDC stub returns eval_error for crc32. Exercise the production
+    # loader with an equivalent CRC32 implementation in this harness only.
+    section = section.replace('(crc32 ', '(mock-crc32 ')
+    return '''(define LOG_A_BASE 64) (define LOG_A_SLOTS 63)
+(define LOG_B_BASE 128) (define LOG_B_SLOTS 64) (define LOG_FET_REF 850)
+(define MAX_CURRENT_BLACKTIP 22.8) (define MAX_CURRENT_CUDAX 46)
+(define SCOOTER_CUDAX 1) (define scooter_type 0)
+(define log_a nil) (define log_b nil) (define log_bs nil) (define log_fet_edges nil)
+(define log_enable_a 0) (define log_enable_b 0)
+(define log_state_a 'empty) (define log_state_b 'empty)
+(define nv (bufcreate 1024)) (define present (bufcreate 256))
+(defun mock-eeprom-read (addr) {
+    (if (or (< addr 64) (and (> addr 126) (< addr 128)) (> addr 191)) (car 1))
+    (if (= (bufget-u8 present addr) 0) nil (bufget-u32 nv (* addr 4)))
+})
+(defun put (addr val) { (bufset-u32 nv (* addr 4) val) (bufset-u8 present addr 1) })
+(defun log_motor_reference () (list 1800 2))
+(defun mock-crc32 (b init) {
+    (var c (bitwise-xor init 0xFFFFFFFFu32))
+    (looprange i 0 (buflen b) {
+        (setq c (bitwise-xor c (bufget-u8 b i)))
+        (looprange j 0 8
+            (setq c (if (= (bitwise-and c 1) 1)
+                (bitwise-xor (shr c 1) 0xEDB88320u32) (shr c 1))))
+    })
+    (bitwise-xor c 0xFFFFFFFFu32)
+})
+''' + section
+
+
+def native(repl, scenario):
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'boot.lisp'
+        path.write_text(native_source() + '\n' + scenario + '\n')
+        p = subprocess.run([repl, '-H', '2753', '-M', '262144', '-C', '262144',
+                            '--bldc_stubs', '--terminate', '-s', str(path)], capture_output=True,
+                           text=True, timeout=30)
+    values = [line[2:] for line in p.stdout.splitlines() if line.startswith('> ')]
+    assert p.returncode == 0 and values and not any(x in p.stdout for x in
+        ('fatal_error', 'exit-error', 'out_of_memory')), p.stdout + p.stderr
+    return values[-1]
+
+
+def make_image(base, count, magic, flags):
+    image = {i: 0 for i in range(base, base + count)}
+    image[base + 2] = magic
+    image[base + 3] = flags
+    image[base + 1] = crc(image, base, count)
+    return image

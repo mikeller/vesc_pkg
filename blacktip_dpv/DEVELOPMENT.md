@@ -185,7 +185,9 @@ Before calling the VESC hardware shutdown path, the request selects the existing
 
 ## Performance Log (on-device)
 
-Status: block A and block B RAM collectors only; boot load, storage writer, block B session ring, extraction and host tooling remain unimplemented. The following contract covers the complete feature.
+Status: block A and block B RAM collectors and session ring, plus read-only boot classification and restoration. The storage writer, extraction and host tooling remain unimplemented. The following contract covers the complete feature.
+
+At boot, each log block is classified independently under `trap`. Only an intact, CRC-verified v1 image is copied into the live accumulator; its stored mirror retains the EEPROM values. Disabled, torn, foreign and unknown-layout blocks do not start collection. A valid disabled block remains available in RAM for a later explicit enable. Uncommitted fractional pending deltas are not persisted, so less than one unit per fractional field is lost on a power cycle. Block B's non-zero stored edge references take precedence over fresh limits, and a difference in current or motor reference sets flag bit 3 in RAM; stored motor-read provenance (bit 1) survives unchanged. Boot never writes EEPROM. The production full-package heap and boot-read latency still require measurement on the controller.
 
 **Implementation decisions for the RAM collector.** A failed, nil or non-number getter skips only the metric that needs it, not the other signals in that sample. The Ah and Wh baselines advance only on running samples: idle drift is captured in the first running delta, and an idle unit changes no slots. Their accumulator rows are quiet: increments are kept in RAM without setting dirty; they reach EEPROM only on a later flush triggered by a non-quiet change. Dirty denotes a non-quiet slot value changing since the last flush. No storage writer exists in this phase.
 
