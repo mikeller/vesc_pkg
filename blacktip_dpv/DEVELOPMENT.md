@@ -185,7 +185,9 @@ Before calling the VESC hardware shutdown path, the request selects the existing
 
 ## Performance Log (on-device)
 
-Status: specification. Nothing in this section is implemented yet; it is the contract that the sampler, the storage writer, the extraction opcodes and the host tooling are built against. A change that departs from it must update this section in the same commit.
+Status: block A RAM collector only; boot load, storage writer, block B, extraction and host tooling remain unimplemented. The following contract covers the complete feature.
+
+**Implementation decisions for the RAM collector.** A failed, nil or non-number getter skips only the metric that needs it, not the other signals in that sample. The Ah and Wh baselines advance only on running samples: idle drift is captured in the first running delta, and an idle unit changes no slots. Their accumulator rows are quiet: increments are kept in RAM without setting dirty; they reach EEPROM only on a later flush triggered by a non-quiet change. Dirty denotes a non-quiet slot value changing since the last flush. No storage writer exists in this phase.
 
 The section was amended on 5 Nov 2026 after the owner's decisions of 4 and 5 Nov 2026 and the rig measurements described in [Flash write behaviour](#flash-write-behaviour). It is now the binding contract for block A and [block B](#block-b-extended-log-layout-v1) together: timing ([Flush gate](#flush-gate)), the firmware gate ([Firmware gate and slot capacity](#firmware-gate-and-slot-capacity)), power-off paths and the idle auto-off non-interference rule ([Power-off paths](#power-off-paths-and-idle-auto-off)), the extraction protocol ([Extraction](#extraction)), the export schema ([Export format](#export-format)) and the block B flag and reference rules. Where an amendment corrects an earlier statement, the correction is stated in place.
 

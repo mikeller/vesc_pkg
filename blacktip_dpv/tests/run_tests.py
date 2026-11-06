@@ -171,6 +171,117 @@ def request_five_click_shutdown_simulate(state):
     return 0 if five_click_shutdown_rejection_reason(state) is not None else 1
 
 
+def log_quantise(value, scale, offset=0):
+    return None if value is None else offset + int(value * scale + 0.5)
+
+
+def log_bin(value, edges):
+    return sum(value >= edge for edge in edges)
+
+
+def log_update(image, pending, slot, half, operation, value, quiet=False):
+    """Mirror the slot-addressed accumulator, including independent fractional carry."""
+    limit = 32767 if half is not None else 0x7fffffff
+    shift = (15 if half == 0 else 0) if half is not None else 0
+    old = (image.get(slot, 0) >> shift) & limit
+    if operation == 'add':
+        field = (slot, half)
+        total = pending.get(field, 0) + value
+        whole = int(total)
+        pending[field] = total - whole
+        new = clamp(old + whole, 0, limit)
+    elif operation == 'max':
+        new = clamp(int(value), old, limit)
+    else:
+        new = clamp(int(value), 0, old)
+    image[slot] = (image.get(slot, 0) & ~(limit << shift)) | (new << shift)
+    return new != old and not quiet
+
+
+def test_performance_log_collector():
+    print('\n=== Testing RAM-only performance collector ===')
+    image, pending = {}, {}
+    assert_eq(log_quantise(41.2, 10, 1000), 1412, 'offset-binary temperature vector')
+    assert_eq(log_quantise(35.125, 100), 3513, 'voltage rounded half up')
+    assert_eq([log_bin(v, [.8, .9, .95]) for v in [.79, .8, .9, .95]],
+              [0, 1, 2, 3], 'duty-band boundaries and saturation')
+    assert_eq([log_bin(v, [30 * i for i in range(1, 8)]) for v in [29, 30, 209, 210, 228]],
+              [0, 1, 6, 7, 7], 'Blacktip current bins')
+    assert_eq([78 + 3 * i for i in [0, 1, 9]], [78, 81, 105], 'per-gear slot mapping')
+    assert_eq([(108 + i // 2, i % 2) for i in [0, 1, 8, 9]],
+              [(108, 0), (108, 1), (112, 0), (112, 1)], 'per-gear P15 packing')
+    for half, value in [(0, 1), (1, 3)]:
+        log_update(image, pending, 108, half, 'add', value)
+    assert_eq(image[108], 32771, 'P15(1, 3) vector')
+    assert_eq(log_update(image, pending, 108, 0, 'add', 40000), True, 'P15 saturates')
+    assert_eq((image[108] >> 15) & 32767, 32767, 'P15 field A ceiling')
+    log_update(image, pending, 72, None, 'add', 0x7fffffff)
+    assert_eq(log_update(image, pending, 72, None, 'add', 50), False, 'U31 saturation no wrap')
+    for slot in (72, 78, 79, 80):
+        image.pop(slot, None)
+    for _ in range(5):
+        log_update(image, pending, 72, None, 'add', .2)
+        log_update(image, pending, 78, None, 'add', .4)
+    assert_eq((image[72], image[78]), (1, 2), 'per-field fractional carry')
+    assert_eq(log_update(image, pending, 77, 1, 'min', 3511), False,
+              'minimum preserves unset sentinel without initialisation')
+    image[77] = 32767
+    assert_eq(log_update(image, pending, 77, 1, 'min', 3511), True, 'minimum voltage sentinel')
+    assert_eq(image[77], 3511, 'running minimum voltage')
+    # A nil RPM getter must not discard independent time/current/temperature.
+    readings = {'rpm': None, 'iin': 22.8, 'fet': 41.2}
+    for signal, slot, scale in [('rpm', 77, 1), ('iin', 76, 10), ('fet', 75, 10)]:
+        if readings[signal] is not None:
+            log_update(image, pending, slot, 0, 'max', log_quantise(readings[signal], scale))
+    log_update(image, pending, 72, None, 'add', 2)
+    assert_eq((image[72], image[76] >> 15, image[75] >> 15), (3, 228, 412),
+              'nil getter skips only its metric')
+    before = dict(image)
+    dirty = False
+    last_ah, last_wh = 1.0, 10.0
+    for tick in range(5000):
+        ah, wh = 1.0 + tick * .0001, 10.0 + tick * .001
+        running = False
+        if running:
+            dirty |= log_update(image, pending, 73, None, 'add', (ah - last_ah) * 1000, quiet=True)
+            dirty |= log_update(image, pending, 74, None, 'add', (wh - last_wh) * 10, quiet=True)
+            last_ah, last_wh = ah, wh
+    assert_eq((image, dirty), (before, False), 'long idle with drifting Ah/Wh changes no slots')
+    assert_eq((last_ah, last_wh), (1.0, 10.0), 'Ah/Wh baseline retained across idle')
+    assert_eq(log_update(image, pending, 73, None, 'add', (ah - last_ah) * 1000, quiet=True),
+              False, 'quiet charge increment does not mark dirty')
+
+    source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
+    commands = ('set-rpm', 'set-duty', 'set-current', 'set-brake', 'conf-set',
+                'conf-store', 'foc-beep', 'foc-play-tone')
+    expected = (1, 2, 1, 0, 3, 0, 11, 5)
+    assert_eq(tuple(len(re.findall(r'\(' + re.escape(name) + r'\s', source))
+                    for name in commands), expected, 'motor-command call sites unchanged')
+    collector = source[source.index('(defun log_blk_new'):source.index('; Init-only peripheral setup.')]
+    sample = collector[collector.index('(defun log_sample'):collector.index('; Hook in safe_start_abort_with_reason')]
+    sample_path = collector[collector.index('(defun log_apply'):collector.index('; Hook in safe_start_abort_with_reason')]
+    sample_path = '\n'.join(line.split(';', 1)[0] for line in sample_path.splitlines())
+    sample_path = re.sub(r'\(defun [^\n]*', '', sample_path)
+    calls = set(re.findall(r'\(([a-z][\w?-]*)', sample_path))
+    allowed = set(('defun var if and match loopforeach looprange setq eq number? '
+                   'abs floor clamp ix bitwise-and bitwise-or bitwise-not shl shr to-i to-u32 '
+                   'bufget-f32 bufget-u32 bufset-f32 bufset-u32 buflen '
+                   'get-ah get-wh get-rpm get-rpm-set get-current get-current-in '
+                   'get-duty get-fault get-temp-fet get-temp-mot get-vin '
+                   'secs-since systime trap log_apply log_bin log_upd log_rules '
+                   'log_q log_get log_set').split())
+    assert_eq(calls - allowed, set(), 'complete sampling call set stays read-only')
+    assert_eq(all('(trap (' + getter in sample for getter in
+                  ('get-ah', 'get-wh', 'get-rpm', 'get-rpm-set', 'get-current',
+                   'get-current-in', 'get-duty', 'get-fault', 'get-temp-fet',
+                   'get-temp-mot', 'get-vin')), True, 'each telemetry getter trapped')
+    assert_eq(bool(re.search(r'\((?:set-[\w-]+|conf-[\w-]+|foc-[\w-]+|eeprom-store-[\w-]+|shutdown-[\w-]+|event-[\w-]+)\b', sample)),
+              False, 'sampling path contains no actuator/inactivity-reset call')
+    assert_eq(bool(re.search(r'\((?:min|max)\s', collector)), False,
+              'collector does not call unsupported min/max')
+    assert_eq('eeprom-store-' in collector, False, 'collector performs no NV writes')
+
+
 def trigger_click_accepted(trigger_input_ready, trigger_armed, sw_pressed):
     """Mirror the stopped-state guard before beginning a click sequence."""
     return trigger_input_ready == 1 and trigger_armed == 1 and sw_pressed == 1
@@ -1444,6 +1555,7 @@ def run_all_tests():
     test_five_click_shutdown_decision()
     test_startup_trigger_readiness()
     test_click_and_beep_regressions()
+    test_performance_log_collector()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()
     test_strip_lisp_mutation_check()

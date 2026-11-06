@@ -193,6 +193,27 @@
 (define SHUTDOWN_TONE_GAP 0.18)
 (define SHUTDOWN_DISPLAY_SETTLE 0.3)
 
+; Performance log block A. Rule rows (op need fid mul sig): op = 0 add, 1 max, 2 min,
+; +4 quiet, +8 P15; need = predicate bits; fid = 2*slot+half+mul*speed; sig = signal.
+(define THREAD_STACK_LOG 160)
+(define LOG_SAMPLE_PERIOD 0.2)
+(define LOG_DT_MAX 0.5)
+(define LOG_LIMIT_FRACTION 0.95)
+(define LOG_A_BASE 64)
+(define LOG_A_SLOTS 63)
+(define LOG_DUTY_EDGES '(0.8 0.9 0.95))
+(define LOG_ABORT_REASONS '("invalid telemetry" "timeout" "high current stall"))
+(define LOG_A_INIT '((66 1112820807) (67 257) (77 32767) (124 32767)))
+(define LOG_A_SESSION '((122 0) (123 0) (124 32767) (125 0)))
+(define LOG_A_RULES '(
+    (0 16 136 0 0) (0 32 138 0 0) (0 1 144 0 1) (4 0 146 0 5) (4 0 148 0 6)
+    (0 2 156 6 1) (0 2 158 6 3) (0 2 160 6 4) (8 4 216 1 2)
+    (0 512 226 0 1) (0 256 228 0 1) (0 128 230 0 1)
+    (0 1 244 0 1) (8 1 246 0 5) (8 1 247 0 6)
+    (9 1 150 0 7) (9 1 151 0 8) (9 1 152 0 9) (9 1 153 0 10) (9 1 154 0 11) (10 1 155 0 12)
+    (9 1 248 0 7) (10 1 249 0 12) (9 1 250 0 10) (9 1 251 0 11)
+))
+
 ; Lightweight macro to conditionally evaluate debug logging expressions
 ; Only evaluates the logging expression when debug_enabled is 1
 ; This prevents expensive str-merge and to-str calls on memory-constrained targets
@@ -293,6 +314,11 @@
 (define balance_log_counter 0)            ; throttle counter for the periodic balance-voltage debug log
 (define battery_imbalance_latched 0)      ; latched warning (BATTERY_IMBALANCE_WARN_*); persists across motor restarts
 (define imbalance_run_flash_counter 0)    ; cycles the periodic warning flash while the motor is running
+
+; Performance log: block A buffer, sampler state, enable (nil / 0 while off)
+(define log_enable_a 0)
+(define log_a nil)
+(define log_st nil)
 
 ; Display LUT byte array. import MUST be a top-level form (not inside a flashed
 ; const-block function), so the binding survives onto the heap. VESC Tool embeds
@@ -581,6 +607,7 @@
 (defun safe_start_abort_with_reason (reason)
 {
     (safe_start_increment_failure reason)
+    (trap (log_note_abort reason))
     (if (safe_start_should_retry) {
         (sleep SAFE_START_RETRY_BACKOFF)
         (safe_start_begin safe_start_attempt_speed)
@@ -2019,6 +2046,168 @@
     })
 })
 
+; Performance log helpers. Block buffer: [base slot][dirty][image 4N][mirror 4N]
+; [pending f32 2N]; fid = 2*slot+half (P15 A even, B odd). Sampler state st: u32
+; t 0, prev run 4, session 8, fault 12, ah 16, wh 20, seen aborts 24..36, signals
+; (f32, -1 = skip) 40.., abort counts 92..
+(defun log_blk_new (base n)
+{
+    (var b (bufcreate (+ 8 (* 16 n))))
+    (bufset-u32 b 0 base)
+    b
+})
+
+(defun log_apply (b pairs)
+    (loopforeach p pairs
+        (bufset-u32 b (+ 8 (* 4 (- (ix p 0) (bufget-u32 b 0)))) (ix p 1))))
+
+(defun log_bin (x edges)
+{
+    (var n 0)
+    (loopforeach e edges (if (>= x e) (setq n (+ n 1))))
+    n
+})
+
+; Saturating field update (op as in LOG_A_RULES), never wraps.
+(defun log_upd (b op fid x)
+{
+    (var r (- fid (* 2 (bufget-u32 b 0))))
+    (var o (+ 8 (* 4 (shr r 1))))
+    (var p15 (> (bitwise-and op 8) 0))
+    (var s (if p15 (* 15 (- 1 (bitwise-and r 1))) 0))
+    (var mx (if p15 32767u32 2147483647u32))
+    (var v (bufget-u32 b o))
+    (var f (bitwise-and (shr v s) mx))
+    (var n f)
+    (match (bitwise-and op 3)
+        (0 {
+            (var q (+ 8 (shr (- (buflen b) 8) 1) (* 4 r)))
+            (var a (+ x (bufget-f32 b q)))
+            ; Bound before conversion/addition so even a huge counter jump cannot wrap.
+            (var d (to-i (clamp a 0 (- mx f))))
+            (bufset-f32 b q (if (>= a (- mx f)) 0 (- a d)))
+            (setq n (+ f d))
+        })
+        (1 (setq n (clamp (to-i x) f mx)))
+        (_ (setq n (clamp (to-i x) 0 f))))
+    (if (!= n f) {
+        (bufset-u32 b o (bitwise-or (bitwise-and v (bitwise-not (shl mx s))) (shl (to-u32 n) s)))
+        (if (= (bitwise-and op 4) 0) (bufset-u32 b 4 1))
+    })
+})
+
+(defun log_rules (b st m sp rules)
+    (loopforeach r rules {
+        (var x (bufget-f32 st (+ 40 (* 4 (ix r 4)))))
+        (if (and (>= x 0) (= (ix r 1) (bitwise-and m (ix r 1))))
+            (log_upd b (ix r 0) (+ (ix r 2) (* (ix r 3) sp)) x))
+    }))
+
+(defun log_q (x s o) (+ o (floor (+ 0.5 (* s x)))))
+
+; A failed trap, nil or non-numeric telemetry skips this signal only.
+(defun log_get (result)
+    (if (and (eq (ix result 0) 'exit-ok) (number? (ix result 1))
+             (= (ix result 1) (ix result 1))
+             (<= (abs (ix result 1)) 100000000))
+        (ix result 1) nil))
+
+; Signal k, or -1 (skip) when negative or NaN.
+(defun log_set (st k v)
+    (bufset-f32 st (+ 40 (* 4 k)) (if (and (number? v) (>= v 0)) v -1)))
+
+; One sample. Each getter is independently trapped; no per-iteration arrays/lists.
+(defun log_sample ()
+{
+    (var b log_a)
+    (var st log_st)
+    (var sp (to-i speed))
+    (var dt (clamp (secs-since (bufget-u32 st 0)) 0 LOG_DT_MAX))
+    (bufset-u32 st 0 (systime))
+    (var run (and (>= sp 0) (< sp 10)))
+    (var steady (and run (= soft_start_active 0)))
+    (var rpm (log_get (trap (get-rpm))))
+    (var rpm_set (log_get (trap (get-rpm-set))))
+    (var iin (log_get (trap (get-current-in))))
+    (var ah (log_get (trap (get-ah))))
+    (var wh (log_get (trap (get-wh))))
+    (var fc (log_get (trap (get-fault))))
+    (var fet (log_get (trap (get-temp-fet))))
+    (var mot (log_get (trap (get-temp-mot))))
+    (var cur (log_get (trap (get-current))))
+    (var vin (log_get (trap (get-vin))))
+    (var duty (log_get (trap (get-duty))))
+    (var start (and run (= 0 (bufget-f32 st 4))))
+    (var ns (and start (= 0 (bufget-f32 st 8))))
+    (log_set st 1 (* dt 10))
+    (log_set st 2 dt)
+    (log_set st 3 (if (number? iin) (* (clamp iin 0 1000) dt 100) nil))
+    (log_set st 4 (if (and (number? rpm) (number? rpm_set))
+        (* (clamp (- (abs rpm_set) (abs rpm)) 0 100000) dt) nil))
+    (log_set st 5 (if (and run (number? ah)) (* 1000 (- ah (bufget-f32 st 16))) nil))
+    (log_set st 6 (if (and run (number? wh)) (* 10 (- wh (bufget-f32 st 20))) nil))
+    (log_set st 7 (if (number? fet) (log_q fet 10 1000) nil))
+    (log_set st 8 (if (number? mot) (log_q mot 10 1000) nil))
+    (log_set st 9 (if (number? cur) (log_q (abs cur) 10 0) nil))
+    (log_set st 10 (if (number? iin) (log_q (abs iin) 10 0) nil))
+    (log_set st 11 (if (number? rpm) (log_q (abs rpm) 1 0) nil))
+    (log_set st 12 (if (number? vin) (log_q vin 100 0) nil))
+    (if (and run (number? ah)) (bufset-f32 st 16 ah))
+    (if (and run (number? wh)) (bufset-f32 st 20 wh))
+    (if (and run (number? fc) (> fc 0) (!= fc (bufget-f32 st 12)))
+        (log_upd b 8 (+ 231 (clamp fc 0 11)) 1))
+    (if (number? fc) (bufset-f32 st 12 fc))
+    (looprange k 0 4 {
+        (var c (bufget-u32 st (+ 92 (* 4 k))))
+        (log_upd b 8 (+ 140 k) (- c (bufget-u32 st (+ 24 (* 4 k)))))
+        (bufset-u32 st (+ 24 (* 4 k)) c)
+    })
+    (if ns {
+        (bufset-f32 st 8 1)
+        (log_apply b LOG_A_SESSION)
+    })
+    (bufset-f32 st 4 (if run 1 0))
+    (log_rules b st
+        (+ (if run 1 0) (if steady 2 0) (if ns 16 0) (if start 32 0)
+           (if (and steady (number? iin) (>= iin (* LOG_LIMIT_FRACTION (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)))) 4 0)
+           (if (and steady (number? duty)) (shl 64 (log_bin (abs duty) LOG_DUTY_EDGES)) 0))
+        sp LOG_A_RULES)
+})
+
+; Hook in safe_start_abort_with_reason: counts only, no control flow.
+(defun log_note_abort (reason)
+{
+    (if log_st {
+        (var k 0)
+        (loopforeach r LOG_ABORT_REASONS {
+            (if (= (str-cmp r reason) 0) (log_inc k))
+            (setq k (+ k 1))
+        })
+        (if (>= safe_start_failures SAFE_START_MAX_RETRIES) (log_inc 3))
+    })
+})
+
+(defun log_inc (k)
+{
+    (var o (+ 92 (* 4 k)))
+    (var n (bufget-u32 log_st o))
+    (if (< n 2147483647) (bufset-u32 log_st o (+ n 1)))
+})
+
+(defun log_start ()
+{
+    (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))
+    (log_apply log_a LOG_A_INIT)
+    (var st (bufcreate 108))
+    (bufset-u32 st 0 (systime))
+    (bufset-f32 st 40 1)
+    (setvar 'log_st st)
+    (loopwhile-thd THREAD_STACK_LOG t {
+        (sleep LOG_SAMPLE_PERIOD)
+        (trap (log_sample))
+    })
+})
+
 ; Init-only peripheral setup. Lives in the init/main call path because
 ; image-save does not restore external hardware state.
 (defun peripherals_setup ()
@@ -2266,6 +2455,8 @@
     (start_display_battery_loop)
 
     (start_balance_loop)
+
+    (if (= log_enable_a 1) (trap (log_start)))
 
     (setvar 'smart_cruise SMART_CRUISE_OFF)
 
