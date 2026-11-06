@@ -1,6 +1,6 @@
 """Exercise the real RAM collector in the 7.00 native LispBM REPL.
 
-Only the external telemetry getters and elapsed-time source are replaced. The
+External telemetry getters, time and the motor-limit read are replaced. The
 collector, its tables, buffer layout and rule engine are loaded from the source.
 This is a simulation, not a substitute for measuring a controller's stack or
 heap. Run with LBM_REPL pointing to a native REPL built from release_7_00.
@@ -31,10 +31,20 @@ def source_with_mocks():
         sample = sample.replace(old, '(mock-get-' + name + ')')
     assert '(secs-since (bufget-u32 st 0))' in sample
     sample = sample.replace('(secs-since (bufget-u32 st 0))', '(mock-dt)')
+    # Native BLDC stubs return eval_error for systime as well as for telemetry.
+    sample = sample.replace('(systime)', '(mock-systime)')
     source = source[:start] + sample + source[end:]
     source = source.replace("(conf-get 'l-temp-motor-start)", '(mock-conf-get)')
     source = source.replace('(secs-since (- (bufget-u32 bs 0) 1))', '(mock-vref-elapsed)')
+    for first, last in (('(defun get_lower_battery_voltage ()', '(defun update_lower_voltage_smooth ()'),
+                        ('(defun get_battery_imbalance_voltage ()', '(defun get_battery_imbalance_warning ()')):
+        start = source.index(first)
+        end = source.index(last, start)
+        source = source[:start] + source[start:end].replace('(get-vin)', '(mock-get-vin)') + source[end:]
+    ring = source.index('(defun log_b_sample (')
+    source = source[:ring] + source[ring:].replace('(systime)', '(mock-systime)', 1)
     mocks = '''(define mock_vref_time 0)
+(defun mock-systime () 1)
 (defun mock-vref-elapsed () mock_vref_time)
 (define mock_motor_ref 160)
 (defun mock-conf-get () {

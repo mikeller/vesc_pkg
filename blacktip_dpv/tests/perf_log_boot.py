@@ -1,4 +1,5 @@
 """Read-only boot classifier vectors and isolated real LispBM execution."""
+import ctypes
 import re
 import subprocess
 import tempfile
@@ -94,3 +95,36 @@ def make_image(base, count, magic, flags):
     image[base + 3] = flags
     image[base + 1] = crc(image, base, count)
     return image
+
+
+def firmware_crc_vectors(source):
+    """Compile the unmodified firmware CRC implementation and compare vectors.
+
+    LBM_CRC_SOURCE points at the firmware's lispBM/lispBM/utils/crc.c. Neither
+    the firmware source nor the package's C library is edited.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        lib_path = str(Path(tmp) / 'crc.so')
+        subprocess.run(['cc', '-shared', '-fPIC', '-O2', '-o', lib_path, source],
+                       check=True, capture_output=True, text=True)
+        fn = ctypes.CDLL(lib_path).crc32_with_init
+        fn.argtypes = (ctypes.POINTER(ctypes.c_uint8), ctypes.c_uint32, ctypes.c_uint32)
+        fn.restype = ctypes.c_uint32
+
+        def checksum(data, init=0):
+            buf = (ctypes.c_uint8 * len(data)).from_buffer_copy(data)
+            return fn(buf, len(data), init)
+
+        results = [(checksum(b'123456789'), 0xcbf43926)]
+        for base, count, magic, flags in ((64, 63, 1112820807, 257),
+                                          (128, 64, 1112820808, 279)):
+            image = make_image(base, count, magic, flags)
+            image[base + 5] = 42
+            data = b''.join(image[i].to_bytes(4, 'big')
+                            for i in range(base + 2, base + count))
+            chained = 0
+            for i in range(0, len(data), 4):
+                chained = checksum(data[i:i + 4], chained)
+            results.extend(((checksum(data), zlib.crc32(data)),
+                            (chained & 0x7fffffff, crc(image, base, count))))
+        return results

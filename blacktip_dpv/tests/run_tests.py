@@ -18,6 +18,7 @@ from pathlib import Path
 from perf_log_native import run as run_log_native, integer_values as log_native_ints
 from perf_log_boot import classify as boot_classify, crc as boot_crc, make_image as boot_image
 from perf_log_boot import references as boot_references, native as run_boot_native
+from perf_log_boot import firmware_crc_vectors
 
 # Test counters
 test_passes = 0
@@ -2028,6 +2029,10 @@ def test_performance_log_boot():
               (228, 850, 1600, 283), 'stored current reference wins and marks mismatch')
     assert_eq(boot_references(0, 0, 0, 273, 228, 1600, True),
               (228, 850, 1600, 275), 'unset references use fresh read and fixed FET')
+    crc_source = os.environ.get('LBM_CRC_SOURCE')
+    if crc_source:
+        for index, (actual, expected) in enumerate(firmware_crc_vectors(crc_source)):
+            assert_eq(actual, expected, f'unmodified firmware CRC32 vector {index}')
     source = LISP_SOURCE.read_text()
     boot = source[source.index('(defun log_boot_block'):source.index('; Unlike the generic fractional')]
     assert_eq('eeprom-store-i' in boot or "conf-get 'l-temp-fet" in source,
