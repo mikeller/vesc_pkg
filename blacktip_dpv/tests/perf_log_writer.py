@@ -45,8 +45,9 @@ def source():
 (define log_rest_since 0) (define log_last_flush 0) (define log_flush_seen 0)
 (define log_flush_stores 0) (define log_flush_count 0)
 (define log_flush_aborts 0) (define log_flush_largest 0)
-(define log_shutdown_request 0) (define log_shutdown_active 0)
-(define log_shutdown_cancelled 0)
+(define log_owner -1) (define log_shutdown_state 0)
+(define log_shutdown_caller 0) (define log_writer_active 0)
+(define log_shutdown_active 0) (define log_store_entered 0)
 (define speed SPEED_OFF) (define startup_tune_active 0)
 (define scooter_type 0) (define SCOOTER_CUDAX 1)
 (define MAX_CURRENT_BLACKTIP 22.8) (define MAX_CURRENT_CUDAX 46)
@@ -58,17 +59,52 @@ def source():
 (define press_write -1) (define cancel_write -1) (define mock_pressed 0)
 (define mock_rpm_value 0.0) (define mock_duty_value 0.0)
 (define mock_now 10000) (define mock_sleep_calls 0)
+(define mock_phase 0) (define mock_release 0)
+(define mock_release_wait 0)
+(define mock_block_write -1) (define mock_block_yield -1)
+(define mock_block_read -1) (define mock_block_read_slot -1)
+(define mock_wait_index -1) (define mock_fail_sleep 0)
+(defun mock-barrier (phase) {
+    (setvar 'mock_phase phase)
+    (loopwhile (= (if (= phase 4) mock_release_wait mock_release) 0)
+        (sleep 0.001))
+})
+(defun mock-await (phase) {
+    (var tries 0)
+    (loopwhile (and (!= mock_phase phase) (< tries 4000)) {
+        (sleep 0.001)
+        (setq tries (+ tries 1))
+    })
+    (= mock_phase phase)
+})
 (defun mock-rpm () mock_rpm_value)
 (defun mock-duty () mock_duty_value)
 (defun mock-pin () mock_pressed)
 (defun mock-systime () mock_now)
 (defun mock-secs-since (start) (/ (- mock_now start) 1000.0))
-(defun mock-sleep (s) (setvar 'mock_sleep_calls (+ mock_sleep_calls 1)))
+(defun mock-sleep (s) {
+    (setvar 'mock_sleep_calls (+ mock_sleep_calls 1))
+    (if (= mock_fail_sleep 1) (car 1))
+    (if (= mock_sleep_calls mock_wait_index) (mock-barrier 4))
+    (if (= writes mock_block_yield) {
+        (setvar 'mock_block_yield -1)
+        (mock-barrier 2)
+    })
+    ; The caller keeps its real 10 ms sleep in concurrent tests only.
+    (if (= mock_concurrent 1) (sleep s))
+})
+(define mock_concurrent 0)
+(define mock_done 0) (define mock_foreign_result nil)
+(define mock_caller_done 0) (define mock_writer_result nil)
 (defun mock-eeprom-read (addr) {
     (if (or (= addr fail_read)
             (and (= addr fail_read_after_write) (= writes fail_read_after_count)))
         (car 1))
     (if (or (< addr 64) (and (> addr 126) (< addr 128)) (> addr 191)) (car 1))
+    (if (and (= addr mock_block_read_slot) (= writes mock_block_read)) {
+        (setvar 'mock_block_read -1)
+        (mock-barrier 3)
+    })
     (if (= (bufget-u8 present addr) 0) nil (bufget-u32 nv (* addr 4)))
 })
 (defun mock-eeprom-store (addr val) {
@@ -76,7 +112,11 @@ def source():
     (setvar 'writes (+ writes 1))
     (bufset-u8 trace (- writes 1) addr)
     (if (= writes press_write) (setvar 'mock_pressed 1))
-    (if (= writes cancel_write) (setvar 'log_shutdown_request 0))
+    (if (= writes cancel_write) (setvar 'log_shutdown_state 3))
+    (if (= writes mock_block_write) {
+        (setvar 'mock_block_write -1)
+        (mock-barrier 1)
+    })
     (if (= writes fail_write) nil
         (if (= writes false_write) t {
             (bufset-u32 nv (* addr 4) val)
@@ -97,6 +137,7 @@ def source():
 (defun log_motor_reference () (list 1600 2))
 (defun log_get (r) (if (and (eq (ix r 0) 'exit-ok) (number? (ix r 1))) (ix r 1) nil))
 (defun mock-setup () {
+    (setvar 'log_owner (self))
     (setvar 'log_a (log_blk_new 64 63))
     (log_apply log_a LOG_A_INIT)
     (setvar 'log_b (log_blk_new 128 64))
@@ -266,20 +307,20 @@ def check(repl):
     expect('cancel unclaimed five-click; no background periodic continuation',
            '(log_initialise log_a 1) (mock-set log_a 72 4) '
            '(log_shutdown_flush) '
-           '(list log_shutdown_request log_shutdown_cancelled mock_sleep_calls '
+           '(list log_shutdown_state log_shutdown_caller mock_sleep_calls '
            ' (log_flush_once nil) (mock-eeprom-read 64))',
-           '(0 1 164 nil 2u32)')
+           '(3 0 164 nil 2u32)')
     expect('cancel claimed five-click between stores, no B or retry',
            '(log_initialise log_a 1) (log_initialise log_b 1) '
            '(mock-set log_a 72 4) (mock-set log_b 133 32768) '
-           '(setvar \'log_shutdown_request 2) '
+           '(setvar \'log_shutdown_state 2) '
            '(setvar \'cancel_write (+ writes 1)) '
            '(list (log_flush_once t) (mock-eeprom-read 128) '
            ' (mock-eeprom-read 72) (log_boot_block 64 63 1112820807))',
            '(nil 2u32 0u32 in_progress)')
     expect('five-click writes once without settle and interval, using sampler ownership',
            '(log_initialise log_a 1) (mock-set log_a 72 4) '
-           '(setvar \'log_rest_since 0) (setvar \'log_shutdown_request 2) '
+           '(setvar \'log_rest_since 0) (setvar \'log_shutdown_state 2) '
            '(list (log_flush_once t) (mock-eeprom-read 72) log_flush_count '
            ' (log_flush_once nil))', '(t 4u32 1 nil)')
     expect('init and clear require ordinary settle and interval',
@@ -301,10 +342,32 @@ def check(repl):
            '(list (log_write_slot 127 3) (log_write_slot 192 3) '
            ' (log_write_slot 0 3) (log_clear log_a) writes)',
            '(nil nil nil nil 0)')
+    expect('unset owner and foreign context cannot mutate even header RAM',
+           '(log_initialise log_a 1) (mock-set log_a 72 9) '
+           '(setvar \'log_owner -1) '
+           '(define unset (list (log_clear log_a) (log_flush_once nil) '
+           ' (log_write_block_inner log_a 2 0) (log_write_slot 72 11))) '
+           '(setvar \'log_owner (self)) '
+           '(spawn 160 (lambda () { '
+           " (setvar 'mock_foreign_result (list "
+           ' (log_initialise log_b 1) (log_clear log_a) '
+           ' (log_set_enabled log_a 0) (log_write_block log_a 0 1) '
+           ' (log_write_block_inner log_a 2 0) '
+           ' (log_flush_once nil) (log_flush_once_inner nil) '
+           ' (log_write_slot 72 11))) '
+           " (setvar 'mock_done 1) })) "
+           '(loopwhile (= mock_done 0) (sleep 0.001)) '
+           '(list unset mock_foreign_result writes '
+           ' (mock-slot log_a 72) (mock-eeprom-read 72) '
+           ' (log_flush_once nil) '
+           " (progn (setvar 'mock_now 80000) (log_initialise log_b 1)))",
+           '((nil nil nil nil) (nil nil nil nil nil nil nil nil) '
+           '64 9u32 0u32 t t)')
     expect('160-word sampler stack commits both blocks in spawned context',
            '(log_initialise log_a 1) (log_initialise log_b 1) '
            '(mock-set log_a 72 4) (mock-set log_b 133 32768) '
-           '(spawn 160 (lambda () (trap (log_flush_once nil)))) (sleep 0.1) '
+           '(spawn 160 (lambda () { (setvar \'log_owner (self)) '
+           '(trap (log_flush_once nil)) })) (sleep 0.1) '
            '(list (mock-eeprom-read 72) (mock-eeprom-read 133) '
            ' (log_boot_block 128 64 1112820808))',
            '(4u32 32768u32 ok)')
@@ -371,4 +434,239 @@ def check(repl):
         assert match and int(match[2]) == count, ('native flush soak', result)
         allocations.append(int(match[1]))
     assert allocations[0] == allocations[1], ('GC-reclaimed writer heap', allocations)
+    check_concurrent(repl)
     print('native writer: gate, init, CRC, phase failure/retry, tag, reboot, clear and soak passed')
+
+
+def check_concurrent(repl):
+    setup = ('(mock-setup) (log_initialise log_a 1) (log_initialise log_b 1) '
+             '(mock-set log_a 72 12) (mock-set log_b 133 32768) '
+             "(setvar 'mock_concurrent 1) ")
+    writer = ('(spawn 180 (lambda () { (setvar \'log_owner (self)) '
+              "(setvar 'mock_writer_result (log_flush_once nil)) "
+              '(log_service_once) '
+              "(setvar 'mock_done 1) })) ")
+    caller = ('(spawn 150 (lambda () { (log_shutdown_flush) '
+              "(setvar 'mock_caller_done 1) })) ")
+    wait_done = ("(loopwhile (= mock_done 0) (sleep 0.001)) "
+                 "(loopwhile (= mock_caller_done 0) (sleep 0.001)) ")
+    for barrier, phase in (('mock_block_write', 1),
+                           ('mock_block_yield', 2),
+                           ('mock_block_read', 3)):
+        extra = "(setvar 'mock_block_read_slot 64) " if phase == 3 else ''
+        script = (setup + extra + f"(setvar '{barrier} (+ writes 1)) " + writer +
+                  f'(mock-await {phase}) '
+                  "(setvar 'mock_wait_index (+ mock_sleep_calls 1)) " + caller +
+                  '(mock-await 4) (define before writes) '
+                  "(setvar 'mock_release 1) "
+                  "(loopwhile (= mock_done 0) (sleep 0.001)) "
+                  "(setvar 'mock_release_wait 1) " + wait_done +
+                  '(list before writes log_shutdown_state log_flush_count '
+                  ' (mock-eeprom-read 72) (mock-eeprom-read 133) '
+                  ' log_writer_active log_store_entered '
+                  ' (bufget-u8 trace 129) (bufget-u8 trace 130) '
+                  ' (bufget-u8 trace 131) (bufget-u8 trace 132) '
+                  ' (bufget-u8 trace 133) (bufget-u8 trace 134) '
+                  ' (bufget-u8 trace 135) (bufget-u8 trace 136) '
+                  ' (bufget-u8 trace 137) (bufget-u8 trace 138))')
+        result = run(repl, script)
+        assert result == ('(130 139 3 1 12u32 32768u32 0 0 '
+                          '64 64 72 126 65 64 128 133 129 128)'), (barrier, result)
+    # Caller reaches its finite wait limit while the reserved store is held.
+    # Releasing that store cannot initiate a second store or a stale retry.
+    script = (setup + "(setvar 'mock_block_write (+ writes 1)) " + writer +
+              '(mock-await 1) ' + caller +
+              "(loopwhile (= mock_caller_done 0) (sleep 0.001)) "
+              '(define before writes) (define revoked log_shutdown_state) '
+              "(setvar 'mock_release 1) " +
+              "(loopwhile (= mock_done 0) (sleep 0.001)) "
+              '(list before writes revoked log_shutdown_state '
+              ' mock_writer_result (mock-eeprom-read 64) '
+              ' (mock-eeprom-read 72) (mock-eeprom-read 128) '
+              ' log_writer_active log_store_entered)')
+    result = run(repl, script)
+    assert result == '(130 130 3 3 nil 3u32 0u32 2u32 0 0)', result
+    # A read paused BEFORE store reservation cannot create an in-flight
+    # exception: cancellation must suppress even its first store.
+    script = (setup + "(setvar 'mock_block_read_slot 64) "
+              "(setvar 'mock_block_read writes) " + writer +
+              '(mock-await 3) ' + caller +
+              "(loopwhile (= mock_caller_done 0) (sleep 0.001)) "
+              '(define before writes) '
+              "(setvar 'mock_release 1) "
+              "(loopwhile (= mock_done 0) (sleep 0.001)) "
+              '(list before writes log_shutdown_state '
+              ' log_writer_active log_store_entered '
+              ' (mock-eeprom-read 64))')
+    result = run(repl, script)
+    assert result == '(129 129 3 0 0 2u32)', result
+    # Revoke a claimed flush at each transaction phase. A store already
+    # reserved at the barrier may finish; no further header or data store may
+    # start after revocation, including a stale service iteration.
+    for offset, slot in ((1, 64), (2, 72), (3, 65), (4, 64)):
+        for barrier, phase in (('mock_block_write', 1),
+                               ('mock_block_yield', 2),
+                               ('mock_block_read', 3)):
+            extra = (f"(setvar 'mock_block_read_slot {slot}) "
+                     if phase == 3 else '')
+            script = (setup + extra +
+                      "(setvar 'mock_wait_index (+ mock_sleep_calls 1)) " + caller +
+                      '(mock-await 4) ' +
+                      f"(setvar '{barrier} (+ writes {offset})) " +
+                      '(spawn 180 (lambda () { '
+                      "(setvar 'log_owner (self)) (log_service_once) "
+                      "(log_service_once) (setvar 'mock_done 1) })) " +
+                      f'(mock-await {phase}) (define before writes) '
+                      "(setvar 'mock_release_wait 1) "
+                      "(loopwhile (= mock_caller_done 0) (sleep 0.001)) "
+                      '(define revoked log_shutdown_state) '
+                      "(setvar 'mock_release 1) "
+                      "(loopwhile (= mock_done 0) (sleep 0.001)) "
+                      '(list before writes revoked log_shutdown_state '
+                      ' log_writer_active log_store_entered '
+                      ' (mock-eeprom-read 128))')
+            result = run(repl, script)
+            expected = f'({129 + offset} {129 + offset} 3 3 0 0 2u32)'
+            assert result == expected, (offset, barrier, result, expected)
+    # No dirty image and a failed safety gate still post and revoke intent;
+    # neither condition may leave a stale claim for the sampler.
+    for setup_case in ('(log_initialise log_a 1)',
+                       '(log_initialise log_a 1) (mock-set log_a 72 12) '
+                       "(setvar 'mock_pressed 1)"):
+        result = run(repl, setup + setup_case +
+                     '(define before writes) (log_shutdown_flush) '
+                     '(log_service_once) '
+                     '(list before writes log_shutdown_state log_shutdown_caller '
+                     ' log_writer_active log_store_entered)')
+        before, after, state, caller_active, active, entered = ints(result)
+        assert (before == after and (state, caller_active, active, entered) ==
+                (3, 0, 0, 0)), (setup_case, result)
+    # Only a new observed active sample, after both contexts quiesce, re-arms.
+    result = run(repl, setup + '(log_shutdown_flush) '
+                 '(define revoked (log_flush_once nil)) '
+                 "(setvar 'speed 5) (log_rest_tick) "
+                 '(define rearmed log_shutdown_state) '
+                 "(setvar 'speed SPEED_OFF) (log_rest_tick) "
+                 "(setvar 'mock_now 15000) "
+                 '(list revoked rearmed log_shutdown_state '
+                 ' (log_flush_once nil) (mock-eeprom-read 72) '
+                 ' log_shutdown_caller log_writer_active log_store_entered)')
+    assert result == '(nil 0 0 t 12u32 0 0 0)', result
+    result = run(repl, setup + '(log_shutdown_flush) '
+                 "(setvar 'log_shutdown_caller 1) (setvar 'speed 5) "
+                 '(log_rest_tick) (define busy log_shutdown_state) '
+                 "(setvar 'log_shutdown_caller 0) "
+                 '(log_rest_tick) (list busy log_shutdown_state)')
+    assert result == '(3 0)', result
+    # Failed sleep must still revoke; no later service or header transaction.
+    result = run(repl, setup + "(setvar 'mock_fail_sleep 1) "
+                 '(log_shutdown_flush) (log_service_once) '
+                 '(list log_shutdown_state log_shutdown_caller writes '
+                 ' log_writer_active log_store_entered)')
+    assert result == '(3 0 129 0 0)', result
+    # A trapped writer exception must clear the in-flight marker, retain
+    # dirty RAM and leave the block's odd sequence for a later valid retry.
+    result = run(repl, setup + "(setvar 'mock_fail_sleep 1) "
+                 '(define failed (log_flush_once nil)) '
+                 "(setvar 'mock_fail_sleep 0) "
+                 '(list failed log_writer_active log_store_entered '
+                 ' (bufget-u32 log_a 4) (mock-eeprom-read 64) '
+                 ' (log_flush_once nil) (mock-eeprom-read 72))')
+    assert result == '(nil 0 0 1u32 3u32 t 12u32)', result
+    for offset in (5, 6):
+        script = (setup + "(setvar 'mock_wait_index (+ mock_sleep_calls 1)) " +
+                  caller + '(mock-await 4) '
+                  f"(setvar 'mock_block_write (+ writes {offset})) " +
+                  '(spawn 180 (lambda () { '
+                  "(setvar 'log_owner (self)) (log_service_once) "
+                  "(setvar 'mock_done 1) })) "
+                  '(mock-await 1) (define before writes) '
+                  "(setvar 'mock_release_wait 1) "
+                  "(loopwhile (= mock_caller_done 0) (sleep 0.001)) "
+                  "(setvar 'mock_release 1) "
+                  "(loopwhile (= mock_done 0) (sleep 0.001)) "
+                  '(list before writes (mock-eeprom-read 64) '
+                  ' (mock-eeprom-read 128) (mock-eeprom-read 133) '
+                  ' log_flush_count log_shutdown_state)')
+        result = run(repl, script)
+        expected = (f'({129 + offset} {129 + offset} 4u32 '
+                    '3u32 '
+                    f'{"0u32" if offset == 5 else "32768u32"} 0 3)')
+        assert result == expected, (offset, result, expected)
+    # Header operation already entered: intent interrupts before its next
+    # store. The one separately claimed attempt may still commit dirty B.
+    script = (setup + "(setvar 'mock_block_yield (+ writes 1)) "
+              '(spawn 180 (lambda () { '
+              "(setvar 'log_owner (self)) "
+              "(setvar 'mock_writer_result (log_set_enabled log_a 0)) "
+              '(log_service_once) (setvar \'mock_done 1) })) '
+              '(mock-await 2) '
+              "(setvar 'mock_wait_index (+ mock_sleep_calls 1)) " + caller +
+              '(mock-await 4) (define before writes) '
+              "(setvar 'mock_release 1) "
+              "(loopwhile (= mock_done 0) (sleep 0.001)) "
+              "(setvar 'mock_release_wait 1) " + wait_done +
+              '(list before writes mock_writer_result '
+              ' (mock-eeprom-read 64) (mock-eeprom-read 67) '
+              ' (mock-eeprom-read 133) log_shutdown_state '
+              ' log_writer_active log_store_entered)')
+    result = run(repl, script)
+    assert result == '(130 134 nil 3u32 257u32 32768u32 3 0 0)', result
+    # No sampler dequeue until timeout: pending request is revoked, and a
+    # later owner iteration cannot consume it as a shutdown or ordinary flush.
+    script = (setup + caller +
+              "(loopwhile (= mock_caller_done 0) (sleep 0.001)) "
+              '(define before writes) '
+              '(spawn 180 (lambda () { '
+              "(setvar 'log_owner (self)) (log_service_once) "
+              "(setvar 'mock_done 1) })) "
+              "(loopwhile (= mock_done 0) (sleep 0.001)) "
+              '(list before writes log_shutdown_state log_shutdown_caller '
+              ' (mock-eeprom-read 64) log_writer_active log_store_entered)')
+    result = run(repl, script)
+    assert result == '(129 129 3 0 2u32 0 0)', result
+    script = (setup + "(setvar 'mock_fail_sleep 1) " + caller +
+              "(loopwhile (= mock_caller_done 0) (sleep 0.001)) "
+              "(setvar 'mock_fail_sleep 0) "
+              '(spawn 180 (lambda () { '
+              "(setvar 'log_owner (self)) (log_service_once) "
+              "(setvar 'mock_done 1) })) "
+              "(loopwhile (= mock_done 0) (sleep 0.001)) "
+              '(list writes log_shutdown_state log_shutdown_caller '
+              ' (mock-eeprom-read 64) log_writer_active log_store_entered)')
+    result = run(repl, script)
+    assert result == '(129 3 0 2u32 0 0)', result
+    # Claim exactly at the caller's final scheduled wait. Completion before
+    # revocation is allowed, but cannot authorise an extra service attempt.
+    script = (setup +
+              "(setvar 'mock_wait_index (+ mock_sleep_calls 100)) " + caller +
+              '(mock-await 4) '
+              '(spawn 180 (lambda () { '
+              "(setvar 'log_owner (self)) (log_service_once) "
+              '(log_service_once) (setvar \'mock_done 1) })) '
+              "(loopwhile (= mock_done 0) (sleep 0.001)) "
+              "(setvar 'mock_release_wait 1) " + wait_done +
+              '(list writes log_flush_count log_shutdown_state '
+              ' (mock-eeprom-read 64) (mock-eeprom-read 128) '
+              ' log_writer_active log_store_entered)')
+    result = run(repl, script)
+    assert result == '(137 1 3 4u32 4u32 0 0)', result
+    # Exception after claim, during the yield after odd-sequence store.
+    # Cleanup clears markers; neither a stale service nor an ordinary retry
+    # may complete the torn image in this shutdown episode.
+    script = (setup + "(setvar 'mock_wait_index (+ mock_sleep_calls 1)) " +
+              caller + '(mock-await 4) '
+              "(setvar 'mock_block_write (+ writes 1)) "
+              '(spawn 180 (lambda () { '
+              "(setvar 'log_owner (self)) (log_service_once) "
+              '(log_service_once) (setvar \'mock_done 1) })) '
+              '(mock-await 1) '
+              "(setvar 'mock_fail_sleep 1) (setvar 'mock_release 1) "
+              "(loopwhile (= mock_done 0) (sleep 0.001)) "
+              "(setvar 'mock_fail_sleep 0) (setvar 'mock_release_wait 1) " +
+              wait_done +
+              '(list writes log_shutdown_state log_writer_active '
+              ' log_store_entered (mock-eeprom-read 64) '
+              ' (mock-eeprom-read 72) (mock-eeprom-read 128))')
+    result = run(repl, script)
+    assert result == '(130 3 0 0 3u32 0u32 2u32)', result

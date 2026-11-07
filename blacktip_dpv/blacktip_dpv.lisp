@@ -348,9 +348,13 @@
 (define log_flush_aborts 0)
 (define log_flush_largest 0)
 ; The shutdown thread only posts a request. EEPROM writes belong to the sampler.
-(define log_shutdown_request 0)
+(define log_owner -1)
+; 0 ordinary, 1 requested, 2 claimed, 3 revoked until fresh activity.
+(define log_shutdown_state 0)
+(define log_shutdown_caller 0)
+(define log_writer_active 0)
 (define log_shutdown_active 0)
-(define log_shutdown_cancelled 0)
+(define log_store_entered 0)
 
 ; Display LUT byte array. import MUST be a top-level form (not inside a flashed
 ; const-block function), so the binding survives onto the heap. VESC Tool embeds
@@ -2265,6 +2269,12 @@
 
 (defun log_boot ()
 {
+    (setvar 'log_owner -1)
+    (setvar 'log_shutdown_state 0)
+    (setvar 'log_shutdown_caller 0)
+    (setvar 'log_writer_active 0)
+    (setvar 'log_shutdown_active 0)
+    (setvar 'log_store_entered 0)
     (setvar 'log_enable_a 0) (setvar 'log_enable_b 0)
     (setvar 'log_a nil) (setvar 'log_b nil) (setvar 'log_bs nil)
     (var a (trap (log_boot_block LOG_A_BASE LOG_A_SLOTS 1112820807)))
@@ -2549,30 +2559,57 @@
 
 (defun log_gate (shutdown) (and (log_dirty) (log_safe_gate shutdown)))
 
+(defun log_writer_owned ()
+    (and (>= log_owner 0) (= (self) log_owner)))
+
+(defun log_writer_permitted (shutdown)
+    (and (log_writer_owned)
+         (= log_shutdown_state (if shutdown 2 0))))
+
 (defun log_rest_tick ()
+    (if (not (log_writer_owned)) nil
     (if (log_at_rest)
         (if (= log_rest_since 0) (setvar 'log_rest_since (systime)))
         {
             (setvar 'log_rest_since 0)
-            (setvar 'log_shutdown_cancelled 0)
-        }))
+            ; Revocation survives the hook and any already-entered store.
+            ; Only activity observed after quiescence re-arms ordinary writes.
+            (atomic (if (and (= log_shutdown_state 3) (= log_shutdown_caller 0)
+                             (= log_writer_active 0) (= log_shutdown_active 0)
+                             (= log_store_entered 0))
+                        (setvar 'log_shutdown_state 0)))
+        })))
 
 ; Called only by the sampler. Check directly before every store, including
 ; the two sequence writes; yield after each actual write to see trigger edges.
 (defun log_write_slot (slot val)
 {
-    (if (or (not (or (and (>= slot LOG_A_BASE) (< slot (+ LOG_A_BASE LOG_A_SLOTS)))
+    (if (or (not (log_writer_permitted (= log_shutdown_active 1)))
+            (not (or (and (>= slot LOG_A_BASE) (< slot (+ LOG_A_BASE LOG_A_SLOTS)))
                      (and (>= slot LOG_B_BASE) (< slot (+ LOG_B_BASE LOG_B_SLOTS)))))
-            (and (= log_shutdown_active 1) (!= log_shutdown_request 2))
             (!= speed SPEED_OFF)
             (not (eq (log_get (trap (gpio-read 'pin-ppm))) 0))) nil {
         (var before (trap (eeprom-read-i slot)))
         (if (not (eq (ix before 0) 'exit-ok)) nil
             (if (and (number? (ix before 1)) (= (ix before 1) val)) t {
-                (var result (trap (eeprom-store-i slot val)))
-                (if (not (and (eq (ix result 0) 'exit-ok) (eq (ix result 1) t))) nil {
+                ; Reserve one in-flight store without yielding. Revocation
+                ; after this point can leave THIS store/readback, never another.
+                (var safe (log_at_rest))
+                (var entered (if safe (atomic
+                    (if (and (log_writer_permitted (= log_shutdown_active 1))
+                             (= speed SPEED_OFF)) {
+                        (setvar 'log_store_entered 1)
+                        t
+                    } nil)) nil))
+                (var result (if entered (trap (eeprom-store-i slot val)) nil))
+                (if (not (and entered (eq (ix result 0) 'exit-ok)
+                              (eq (ix result 1) t))) {
+                    (setvar 'log_store_entered 0)
+                    nil
+                } {
                     (sleep (/ LOG_STORE_YIELD_MS 1000.0))
                     (var after (trap (eeprom-read-i slot)))
+                    (setvar 'log_store_entered 0)
                     (var verified (and (eq (ix after 0) 'exit-ok)
                                        (number? (ix after 1)) (= (ix after 1) val)))
                     (if verified (setvar 'log_flush_stores (+ log_flush_stores 1)))
@@ -2598,7 +2635,7 @@
 ; mode 0: changed slots, 1: full initial image, 2: explicit clear,
 ; 3: set-enabled. Modes 1..3 are entry points for the future sampler mailbox,
 ; not for event handlers or other writer threads.
-(defun log_write_block (b mode enabled)
+(defun log_write_block_inner (b mode enabled)
 {
     (var base (bufget-u32 b 0))
     (var n (shr (- (buflen b) 8) 4))
@@ -2608,7 +2645,8 @@
             (if (= mode 2) (or (eq state 'ok) (eq state 'empty) (eq state 'foreign)
                                 (eq state 'in_progress) (eq state 'crc_mismatch))
                 (eq state 'ok)))))
-    (if (or (not (or (and (= base LOG_A_BASE) (= n LOG_A_SLOTS))
+    (if (or (not (log_writer_permitted (= log_shutdown_active 1)))
+            (not (or (and (= base LOG_A_BASE) (= n LOG_A_SLOTS))
                      (and (= base LOG_B_BASE) (= n LOG_B_SLOTS))))
             (not allowed) (not (or (= enabled 0) (= enabled 1)))
             (not (log_safe_gate (= log_shutdown_active 1)))
@@ -2686,19 +2724,37 @@
     })
 })
 
+; The direct entry point is also sampler-only. Trap all header/CRC failures so
+; no exception can leave active ownership published or silently clean an image.
+(defun log_write_block (b mode enabled)
+    (if (not (log_writer_permitted (= log_shutdown_active 1))) nil {
+        (setvar 'log_writer_active 1)
+        (var result (trap (log_write_block_inner b mode enabled)))
+        (setvar 'log_writer_active 0)
+        (setvar 'log_store_entered 0)
+        (if (eq (ix result 0) 'exit-ok) (ix result 1) {
+            (bufset-u32 b 4 1)
+            (if (!= mode 0) {
+                (if (= (bufget-u32 b 0) LOG_A_BASE)
+                    (setvar 'log_state_a 'in_progress)
+                    (setvar 'log_state_b 'in_progress))
+            })
+            nil
+        })
+    }))
+
 (defun log_initialise (b enabled) (log_write_block b 1 enabled))
 (defun log_clear (b) (log_write_block b 2 0))
 (defun log_set_enabled (b enabled) (log_write_block b 3 enabled))
 
-(defun log_flush_once (shutdown)
+(defun log_flush_once_inner (shutdown)
 {
-    (if (or (and (not shutdown) (= log_shutdown_cancelled 1))
+    (if (or (not (log_writer_permitted shutdown))
             (not (log_gate shutdown))) nil {
         (setvar 'log_flush_stores 0)
         (var ok t)
         (var completed nil)
         (var old_aborts log_flush_aborts)
-        (if shutdown (setvar 'log_shutdown_active 1))
         ; Slot 126 A cannot hold a reliable duration from systime. Clear any
         ; advisory value inherited from an older image on the next real flush.
         (if (and (= log_enable_a 1) (eq log_state_a 'ok) log_a)
@@ -2725,7 +2781,6 @@
             (if (and log_a (= log_enable_a 1) (eq log_state_a 'ok))
                 (log_upd log_a 8 253 1))
         })
-        (setvar 'log_shutdown_active 0)
         (if completed {
             (setvar 'log_last_flush (systime))
             (setvar 'log_flush_seen 1)
@@ -2735,19 +2790,53 @@
     })
 })
 
+(defun log_flush_once (shutdown)
+    (if (not (log_writer_permitted shutdown)) nil {
+        (if shutdown (setvar 'log_shutdown_active 1))
+        (var result (trap (log_flush_once_inner shutdown)))
+        (if shutdown (setvar 'log_shutdown_active 0))
+        (if (eq (ix result 0) 'exit-ok) (ix result 1) nil)
+    }))
+
 (defun log_shutdown_flush ()
 {
-    (if (and log_st (log_gate t)) {
-        (setvar 'log_shutdown_request 1)
-        ; Max 100 scheduled waits. A store in progress can extend a wait by
-        ; its own firmware-bounded release/flash operation, never by a retry.
-        (looprange i 0 100 {
-            (if (!= log_shutdown_request 0) (sleep 0.01))
+    ; Publish intent even if the image is clean or the rest gate fails. Do not
+    ; allow a second request to reuse a generation while the old store runs.
+    (var accepted (atomic (if (= log_shutdown_state 0) {
+        (setvar 'log_shutdown_caller 1)
+        (setvar 'log_shutdown_state 1)
+        t
+    } nil)))
+    (if accepted {
+        (var eligible (trap (and log_st (>= log_owner 0) (log_gate t))))
+        ; Finite scheduled waits, not a wall-clock deadline. Trap a failing
+        ; sleep so revocation always executes before the shutdown call.
+        (if (and (eq (ix eligible 0) 'exit-ok) (ix eligible 1))
+            (trap (looprange i 0 100
+                (if (or (= log_shutdown_state 1) (= log_shutdown_state 2))
+                    (sleep 0.01)))))
+        (atomic {
+            (setvar 'log_shutdown_state 3)
+            (setvar 'log_shutdown_caller 0)
         })
-        (if (!= log_shutdown_request 0) (setvar 'log_shutdown_cancelled 1))
-        (setvar 'log_shutdown_request 0)
     })
+    nil
 })
+
+; Called in the sampler context only. Claim once; an exception or timeout
+; revokes the generation rather than converting it to a periodic retry.
+(defun log_service_once ()
+    (if (not (log_writer_owned)) nil {
+        (var claimed (atomic (if (= log_shutdown_state 1) {
+            (setvar 'log_shutdown_state 2)
+            t
+        } nil)))
+        (if claimed {
+            (trap (log_flush_once t))
+            (atomic (if (= log_shutdown_state 2)
+                (setvar 'log_shutdown_state 3)))
+        } (trap (log_flush_once nil)))
+    }))
 
 (defun log_start ()
 {
@@ -2766,18 +2855,12 @@
     (bufset-f32 st 40 1)
     (setvar 'log_st st)
     (loopwhile-thd THREAD_STACK_LOG t {
+        ; Capture the actual spawned context, not its spawning caller.
+        (if (= log_owner -1) (setvar 'log_owner (self)))
         (sleep LOG_SAMPLE_PERIOD)
         (trap (log_sample))
         (log_rest_tick)
-        (if (= log_shutdown_request 1) {
-            (setvar 'log_shutdown_request 2)
-            (trap (log_flush_once t))
-            (setvar 'log_shutdown_request 0)
-        } {
-            ; A cancelled request must not silently become a periodic retry
-            ; in this same iteration.
-            (trap (log_flush_once nil))
-        })
+        (log_service_once)
     })
 })
 

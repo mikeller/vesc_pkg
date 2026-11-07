@@ -2177,7 +2177,7 @@ def test_performance_log_writer():
     writer = source[source.index('(defun log_rest_ok'):source.index('(defun log_start ()')]
     assert_eq(bool(re.search(r'\(eeprom-store-i\s+slot\s+val\)', writer)), True,
               'only checked generic slot writer stores the log')
-    assert_eq('log_shutdown_request 0' in writer and '(looprange i 0 100' in writer,
+    assert_eq("(setvar 'log_shutdown_state 3)" in writer and '(looprange i 0 100' in writer,
               True, 'queued five-click request is bounded and cancelled')
     assert_eq('shutdown-hold' in writer or 'event-shutdown' in writer, False,
               'no shutdown hold or shutdown event handler in writer')

@@ -56,6 +56,8 @@ def native_source():
 (define log_a nil) (define log_b nil) (define log_bs nil) (define log_fet_edges nil)
 (define log_enable_a 0) (define log_enable_b 0)
 (define log_state_a 'empty) (define log_state_b 'empty)
+(define log_owner -1) (define log_shutdown_state 0) (define log_shutdown_caller 0)
+(define log_writer_active 0) (define log_shutdown_active 0) (define log_store_entered 0)
 (define nv (bufcreate 1024)) (define present (bufcreate 256))
 (define mock_fail_slot -1)
 (defun mock-eeprom-read (addr) {
