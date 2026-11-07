@@ -188,6 +188,60 @@ def check(repl):
     assert int(values[12]) > 0 and int(values[13]) > 0, simultaneous
     print('native production sampler/read/write checkpoint:', simultaneous)
 
+    repeated = run(repl, '''
+(mock-setup) (log_initialise log_a 1) (log_initialise log_b 1)
+(setvar 'log_owner -1) (setvar 'mock_concurrent 1) (log_start)
+(define first_free 0) (define first_longest 0) (define first_gc 0)
+(define complete t)
+(looprange group 0 2 {
+    (looprange iteration 0 3 {
+        (setvar 'frame_count 0)
+        (mock-request 161 0 1)
+        (setvar 'speed 5) (setvar 'mock_rpm_value 3600.0)
+        (setvar 'mock_duty_value 0.3) (setvar 'mock_now (+ mock_now 250))
+        (send log_owner 'log-wake) (sleep 0.01)
+        (setvar 'speed SPEED_OFF) (setvar 'mock_rpm_value 0.0)
+        (setvar 'mock_duty_value 0.0) (setvar 'mock_now (+ mock_now 250))
+        (send log_owner 'log-wake)
+        (mock-request 163 1 0)
+        (var attempts 0)
+        (loopwhile (and (= log_write_busy 1) (< attempts 400)) {
+            (sleep 0.001) (setq attempts (+ attempts 1))
+        })
+        (if (or (!= log_write_busy 0) (!= log_enable_b 0))
+            (setvar 'complete nil))
+        (setq attempts 0)
+        (loopwhile (and (= log_read_busy 1) (< attempts 400)) {
+            (sleep 0.001) (setq attempts (+ attempts 1))
+        })
+        (if (or (!= log_read_busy 0) (!= frame_count 12))
+            (setvar 'complete nil))
+        (mock-request 163 1 1)
+        (setq attempts 0)
+        (loopwhile (and (= log_write_busy 1) (< attempts 400)) {
+            (sleep 0.001) (setq attempts (+ attempts 1))
+        })
+        (if (or (!= log_write_busy 0) (!= log_enable_b 1)
+                (!= frame_count 13)) (setvar 'complete nil))
+    })
+    (gc)
+    (if (= group 0) {
+        (setvar 'first_free (mem-num-free))
+        (setvar 'first_longest (mem-longest-free))
+        (setvar 'first_gc (lbm-heap-state 'get-gc-num))
+    })
+})
+(gc)
+(list complete (> (mock-slot log_a 72) 0) first_free (mem-num-free)
+      first_longest (mem-longest-free) first_gc
+      (lbm-heap-state 'get-gc-num) log_read_busy log_write_busy)
+''', production_sample=True, heap=8000)
+    values = repeated.strip('()').split()
+    assert len(values) == 10 and values[:2] == ['t', 't'] and values[-2:] == ['0', '0'], repeated
+    assert values[2] == values[3] and values[4] == values[5], repeated
+    assert int(values[7].rstrip('u')) > int(values[6].rstrip('u')), repeated
+    print('native production sampler repeated-request checkpoints:', repeated)
+
     expect('empty first enable commits one owner block',
            "(mock-setup) (setvar 'log_a nil) (setvar 'log_state_a 'empty) "
            "(log_operation '(163 0 1 0 3 0)) "
