@@ -65,13 +65,18 @@ Item {
     // Phone RAM only. Never replace a complete display with a partial transfer.
     property var logComplete: null
     property var logRows: []
-    property int logToken: 0
+    // QML int is signed 32-bit; a token must stay a JS number to round-trip u32.
+    property var logToken: Math.floor(Math.random() * 4294967295) + 1
     property int logSequence: 0
     property int logPending: 0
     property int logRow: 0
     property int logRetries: 0
+    property var logExpectedCount: 0
+    property var logExpectedRejected: 0
     property string logMessage: qsTr("Connect after the dive and download before the DPV powers off. Automatic firmware power-off can erase unsaved data.")
     property int logPage: 0
+    property string logConnectedDevice: ""
+    property string logStatus: qsTr("Device status not checked")
 
     function logFail(message) {
         logTimeout.stop()
@@ -81,9 +86,13 @@ Item {
     }
 
     function logRequest(op, row) {
+        if (!VescIf.isPortConnected() || logSequence >= 65535) {
+            logFail(qsTr("Connection unavailable or transaction sequence exhausted."))
+            return
+        }
         logPending = op
         logRow = row
-        logSequence = (logSequence + 1) % 65536
+        logSequence++
         var packet = new ArrayBuffer(op === 3 ? 10 : 9)
         var view = new DataView(packet)
         view.setUint8(0, 177)
@@ -98,15 +107,38 @@ Item {
 
     function logDownload() {
         if (logPending) return
-        // Token is fresh per transaction; no local token is reused on reconnect.
-        logToken = Math.floor(Math.random() * 4294967295) + 1
+        if (!VescIf.isPortConnected()) {
+            logFail(qsTr("Connect to the DPV before downloading."))
+            return
+        }
+        if (logToken >= 4294967295) {
+            logFail(qsTr("Transaction identity exhausted; reopen the results page."))
+            return
+        }
+        logToken++
+        logConnectedDevice = VescIf.getConnectedUuid() || VescIf.getConnectedPortName()
         logRows = []
         logRetries = 0
         logMessage = qsTr("Downloading snapshot; existing results remain visible.")
         logRequest(2, 255)
     }
 
+    function logCheckStatus() {
+        if (logPending) return
+        if (!VescIf.isPortConnected()) {
+            logStatus = qsTr("Device disconnected; previous results remain in phone RAM")
+            return
+        }
+        logConnectedDevice = VescIf.getConnectedUuid() || VescIf.getConnectedPortName()
+        logRequest(1, 255)
+    }
+
     function logReceive(view) {
+        if (!VescIf.isPortConnected() ||
+                logConnectedDevice !== (VescIf.getConnectedUuid() || VescIf.getConnectedPortName())) {
+            if (logPending) logFail(qsTr("Connection or device changed during download."))
+            return
+        }
         if (view.byteLength < 12 || view.getUint8(1) !== 1 || !logPending ||
                 view.getUint8(2) !== logPending || view.getUint16(3) !== logSequence ||
                 view.getUint32(5) !== logToken ||
@@ -117,12 +149,22 @@ Item {
             logFail(qsTr("Device rejected snapshot request (status %1).").arg(status))
             return
         }
+        if (logPending === 1) {
+            if (view.byteLength !== 12) return
+            logStatus = view.getUint8(11) ? qsTr("Logging fault: collection frozen")
+                                           : qsTr("Collecting automatically while running; RAM is volatile")
+            logTimeout.stop()
+            logPending = 0
+            return
+        }
         if (view.getUint8(11) !== 0) {
             logFail(qsTr("Device reports logging fault; aggregates may be incomplete."))
             return
         }
         if (logPending === 2) {
             if (view.byteLength !== 20) return
+            logExpectedCount = view.getUint32(12)
+            logExpectedRejected = view.getUint32(16)
             logTimeout.stop()
             logRetries = 0
             logRequest(3, 0)
@@ -154,9 +196,20 @@ Item {
             logRequest(3, logRow + 1)
         } else {
             var rows = logRows.slice(0)
+            var counts = 0
+            var rejects = 0
+            for (var j = 0; j < rows.length; j++) {
+                counts = Math.min(4294967294, counts + rows[j][0])
+                rejects = Math.min(4294967294, rejects + rows[j][7])
+            }
+            if (counts !== logExpectedCount || rejects !== logExpectedRejected) {
+                logFail(qsTr("Snapshot totals do not match the ten rows."))
+                return
+            }
             logComplete = { token: logToken, rows: rows,
                             downloaded: new Date().toLocaleString(),
-                            firmware: firmwareVersion, hardware: detectedHardwareModel }
+                            firmware: firmwareVersion, hardware: detectedHardwareModel,
+                            device: logConnectedDevice }
             logRows = []
             logPending = 0
             logMessage = qsTr("Complete snapshot in phone RAM only. Take and check screenshots in the gallery before closing the app. CSV export is unavailable in this package build.")
@@ -176,6 +229,16 @@ Item {
                 // Retry the same transaction and row; stale sequences are ignored.
                 logRequest(logPending, logRow)
             }
+        }
+    }
+
+    Connections {
+        target: VescIf
+        function onPortConnectedChanged() {
+            if (logPending) logFail(qsTr("Connection changed during download."))
+        }
+        function onFwRxChanged() {
+            if (logPending) logFail(qsTr("Firmware or device identity changed during download."))
         }
     }
 
@@ -833,12 +896,23 @@ Item {
                             else logDownload()
                         }
                     }
+                    Button {
+                        text: qsTr("Check device status")
+                        enabled: !logPending
+                        onClicked: logCheckStatus()
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: logStatus
+                    }
                     Label {
                         Layout.fillWidth: true
                         wrapMode: Text.WrapAnywhere
-                        text: logComplete ? qsTr("Snapshot token %1 | phone download %2 | firmware %3 | hardware %4")
+                        text: logComplete ? qsTr("Snapshot token %1 | phone download %2 | firmware %3 | hardware %4 | device %5")
                                         .arg(logComplete.token).arg(logComplete.downloaded)
                                         .arg(logComplete.firmware).arg(logComplete.hardware)
+                                        .arg(logComplete.device)
                                           : qsTr("No complete snapshot downloaded")
                     }
                     RowLayout {

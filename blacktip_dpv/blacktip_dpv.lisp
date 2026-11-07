@@ -2045,11 +2045,8 @@
     })
 })
 
-; Performance log helpers. Block buffer: [base slot][dirty][image 4N][mirror 4N]
-; [pending f32 2N]; fid = 2*slot+half (P15 A even, B odd). Sampler state st: u32
-; t 0, prev run 4, session 8, fault 12, ah 16, wh 20, seen aborts 24..36, signals
-; (f32, -1 = skip) 40.., abort counts 92..
- ; Wire format, network (big-endian) integers/floats, one request slot:
+; Volatile 320-byte live buffer and 320-byte snapshot, ten 32-byte rows.
+; Wire format, network (big-endian) integers/floats, one request slot:
 ; B1 version opcode sequence:u16 token:u32 [row:u8]. Commands 1=status,
 ; 2=snapshot, 3=row. Response header B1 version opcode sequence:u16
 ; token:u32 status:u8 row:u8 fault:u8 (12 bytes); snapshot adds count:u32
