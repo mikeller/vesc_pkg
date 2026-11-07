@@ -2655,7 +2655,7 @@
 })
 
 ; mode 0: changed slots, 1: full initial image, 2: explicit clear,
-; 3: set-enabled. Modes 1..3 are entry points for the future sampler mailbox,
+; 3: set-enabled. Modes 1..3 are entry points for the owner mailbox,
 ; not for event handlers or other writer threads.
 (defun log_write_block_inner (b mode enabled)
 {
@@ -2977,10 +2977,10 @@
 
 ; The sender owns the snapshot exclusively. It is never shared back with the
 ; owner, which can continue sampling while the transport yields.
-(defun log_send_snapshot (block part pace image state)
+(defun log_send_snapshot_inner (block part pace image state)
 {
     (var n (if (= block 0) LOG_A_SLOTS LOG_B_SLOTS))
-    (var result (trap (looprange chunk 0 11 {
+    (looprange chunk 0 11 {
         (var count (if (= chunk 10) (- n 60) 6))
         (var frame (bufcreate (+ 6 (* 4 count))))
         (bufset-u8 frame 0 177) (bufset-u8 frame 1 block)
@@ -2991,7 +2991,12 @@
             (bufset-u32 frame (+ 6 (* 4 i)) (bufget-u32 image (* 4 (+ (* chunk 6) i)))))
         (if (eq (send-data frame) nil) (car 1))
         (if (< chunk 10) (sleep (/ pace 1000.0)))
-    })))
+    })
+})
+
+(defun log_send_snapshot (block part pace image state)
+{
+    (var result (trap (log_send_snapshot_inner block part pace image state)))
     (atomic (setvar 'log_read_busy 0))
     result
 })
@@ -3068,7 +3073,8 @@
                                     (if (= block 0) (setvar 'log_skip_a 1)
                                         (setvar 'log_skip_b 1)))
                                 })
-                                0
+                                (if (not (log_at_rest)) 1
+                                    (if (= log_shutdown_state 0) 0 2))
                             } (if (log_at_rest) 2 1))
                         })
                 })))
@@ -3150,10 +3156,19 @@
 
 (defun log_start ()
 {
-    (var owner (spawn THREAD_STACK_LOG log_owner_loop))
-    ; The event handler is not registered until readiness is published.
-    (if (and (number? owner) (>= owner 0))
-        (loopwhile (= log_owner -1) (sleep 0.001)))
+    (if (= log_owner -1) {
+        (var owner (spawn THREAD_STACK_LOG log_owner_loop))
+        ; The event handler is not registered until readiness is published.
+        ; A failed allocation in the spawned startup must not hang the motor's
+        ; main setup forever. Admission stays disabled until publication.
+        (if (and (number? owner) (>= owner 0)) {
+            (var attempts 0)
+            (loopwhile (and (= log_owner -1) (< attempts 1000)) {
+                (sleep 0.001)
+                (setq attempts (+ attempts 1))
+            })
+        })
+    })
 })
 
 ; Init-only peripheral setup. Lives in the init/main call path because
