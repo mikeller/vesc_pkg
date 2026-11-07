@@ -151,6 +151,29 @@ def source():
     (bufset-u32 b (+ 8 (* 4 (- slot (bufget-u32 b 0)))) val)
     (bufset-u32 b 4 1)
 })
+(defun mock-snapshot (b) {
+    (var copy (bufcreate (buflen b)))
+    (looprange i 0 (buflen b) (bufset-u8 copy i (bufget-u8 b i)))
+    copy
+})
+(defun mock-same (b copy) {
+    (var equal (= (buflen b) (buflen copy)))
+    (looprange i 0 (buflen b)
+        (if (!= (bufget-u8 b i) (bufget-u8 copy i)) (setq equal nil)))
+    equal
+})
+(defun mock-denied (operation) {
+    (var a (mock-snapshot log_a)) (var b (mock-snapshot log_b))
+    (var bs (mock-snapshot log_bs)) (var st (mock-snapshot log_st))
+    (var count writes) (var ea log_enable_a) (var eb log_enable_b)
+    (var sa log_state_a) (var sb log_state_b)
+    (var r (operation))
+    (list r (and (mock-same log_a a) (mock-same log_b b)
+                 (mock-same log_bs bs) (mock-same log_st st)
+                 (= ea log_enable_a) (= eb log_enable_b)
+                 (eq sa log_state_a) (eq sb log_state_b))
+          (= count writes))
+})
 @const-start
 ''' + section + '\n@const-end\n'
 
@@ -344,25 +367,43 @@ def check(repl):
            '(nil nil nil nil 0)')
     expect('unset owner and foreign context cannot mutate even header RAM',
            '(log_initialise log_a 1) (mock-set log_a 72 9) '
+           '(define saved_a (mock-snapshot log_a)) '
+           '(define saved_b (mock-snapshot log_b)) '
+           '(define saved_bs (mock-snapshot log_bs)) '
+           '(define saved_st (mock-snapshot log_st)) '
            '(setvar \'log_owner -1) '
-           '(define unset (list (log_clear log_a) (log_flush_once nil) '
-           ' (log_write_block_inner log_a 2 0) (log_write_slot 72 11))) '
+           '(define unset (list '
+           ' (mock-denied (lambda () (log_clear log_a))) '
+           ' (mock-denied (lambda () (log_flush_once nil))) '
+           ' (mock-denied (lambda () (log_write_block_inner log_a 2 0))) '
+           ' (mock-denied (lambda () (log_write_slot 72 11))))) '
+           '(define unset_same (and (mock-same log_a saved_a) '
+           ' (mock-same log_b saved_b) (mock-same log_bs saved_bs) '
+           ' (mock-same log_st saved_st))) '
            '(setvar \'log_owner (self)) '
            '(spawn 160 (lambda () { '
            " (setvar 'mock_foreign_result (list "
-           ' (log_initialise log_b 1) (log_clear log_a) '
-           ' (log_set_enabled log_a 0) (log_write_block log_a 0 1) '
-           ' (log_write_block_inner log_a 2 0) '
-           ' (log_flush_once nil) (log_flush_once_inner nil) '
-           ' (log_write_slot 72 11))) '
+           ' (mock-denied (lambda () (log_initialise log_b 1))) '
+           ' (mock-denied (lambda () (log_clear log_a))) '
+           ' (mock-denied (lambda () (log_set_enabled log_a 0))) '
+           ' (mock-denied (lambda () (log_write_block log_a 0 1))) '
+           ' (mock-denied (lambda () (log_write_block_inner log_a 2 0))) '
+           ' (mock-denied (lambda () (log_flush_once nil))) '
+           ' (mock-denied (lambda () (log_flush_once_inner nil))) '
+           ' (mock-denied (lambda () (log_write_slot 72 11))))) '
            " (setvar 'mock_done 1) })) "
            '(loopwhile (= mock_done 0) (sleep 0.001)) '
-           '(list unset mock_foreign_result writes '
+           '(list unset unset_same mock_foreign_result writes '
+           ' (mock-same log_a saved_a) (mock-same log_b saved_b) '
+           ' (mock-same log_bs saved_bs) (mock-same log_st saved_st) '
+           ' log_enable_a log_enable_b log_state_a log_state_b '
            ' (mock-slot log_a 72) (mock-eeprom-read 72) '
            ' (log_flush_once nil) '
            " (progn (setvar 'mock_now 80000) (log_initialise log_b 1)))",
-           '((nil nil nil nil) (nil nil nil nil nil nil nil nil) '
-           '64 9u32 0u32 t t)')
+           '(((nil t t) (nil t t) (nil t t) (nil t t)) t '
+           '((nil t t) (nil t t) (nil t t) (nil t t) '
+           '(nil t t) (nil t t) (nil t t) (nil t t)) '
+           '64 t t t t 1 0 ok empty 9u32 0u32 t t)')
     expect('160-word sampler stack commits both blocks in spawned context',
            '(log_initialise log_a 1) (log_initialise log_b 1) '
            '(mock-set log_a 72 4) (mock-set log_b 133 32768) '
@@ -468,10 +509,12 @@ def check_concurrent(repl):
                   ' (bufget-u8 trace 131) (bufget-u8 trace 132) '
                   ' (bufget-u8 trace 133) (bufget-u8 trace 134) '
                   ' (bufget-u8 trace 135) (bufget-u8 trace 136) '
-                  ' (bufget-u8 trace 137) (bufget-u8 trace 138))')
+                  ' (bufget-u8 trace 137) (bufget-u8 trace 138) '
+                  ' (log_boot_block 64 63 1112820807) '
+                  ' (log_boot_block 128 64 1112820808))')
         result = run(repl, script)
         assert result == ('(130 139 3 1 12u32 32768u32 0 0 '
-                          '64 64 72 126 65 64 128 133 129 128)'), (barrier, result)
+                          '64 64 72 126 65 64 128 133 129 128 ok ok)'), (barrier, result)
     # Caller reaches its finite wait limit while the reserved store is held.
     # Releasing that store cannot initiate a second store or a stale retry.
     script = (setup + "(setvar 'mock_block_write (+ writes 1)) " + writer +
@@ -483,9 +526,11 @@ def check_concurrent(repl):
               '(list before writes revoked log_shutdown_state '
               ' mock_writer_result (mock-eeprom-read 64) '
               ' (mock-eeprom-read 72) (mock-eeprom-read 128) '
-              ' log_writer_active log_store_entered)')
+              ' log_writer_active log_store_entered '
+              ' (log_boot_block 64 63 1112820807) '
+              ' (log_boot_block 128 64 1112820808))')
     result = run(repl, script)
-    assert result == '(130 130 3 3 nil 3u32 0u32 2u32 0 0)', result
+    assert result == '(130 130 3 3 nil 3u32 0u32 2u32 0 0 in_progress ok)', result
     # A read paused BEFORE store reservation cannot create an in-flight
     # exception: cancellation must suppress even its first store.
     script = (setup + "(setvar 'mock_block_read_slot 64) "
@@ -497,13 +542,15 @@ def check_concurrent(repl):
               "(loopwhile (= mock_done 0) (sleep 0.001)) "
               '(list before writes log_shutdown_state '
               ' log_writer_active log_store_entered '
-              ' (mock-eeprom-read 64))')
+              ' (mock-eeprom-read 64) '
+              ' (log_boot_block 64 63 1112820807))')
     result = run(repl, script)
-    assert result == '(129 129 3 0 0 2u32)', result
+    assert result == '(129 129 3 0 0 2u32 ok)', result
     # Revoke a claimed flush at each transaction phase. A store already
     # reserved at the barrier may finish; no further header or data store may
     # start after revocation, including a stale service iteration.
-    for offset, slot in ((1, 64), (2, 72), (3, 65), (4, 64)):
+    for offset, slot in ((1, 64), (2, 72), (3, 65), (4, 64),
+                         (5, 128), (6, 133), (7, 129), (8, 128)):
         for barrier, phase in (('mock_block_write', 1),
                                ('mock_block_yield', 2),
                                ('mock_block_read', 3)):
@@ -524,23 +571,47 @@ def check_concurrent(repl):
                       "(loopwhile (= mock_done 0) (sleep 0.001)) "
                       '(list before writes revoked log_shutdown_state '
                       ' log_writer_active log_store_entered '
-                      ' (mock-eeprom-read 128))')
+                      ' (mock-eeprom-read 67) (mock-eeprom-read 131) '
+                      ' (mock-eeprom-read 64) (mock-eeprom-read 128) '
+                      ' (log_boot_block 64 63 1112820807) '
+                      ' (log_boot_block 128 64 1112820808) '
+                      ' (progn (log_boot) (list log_state_a log_state_b '
+                      ' log_enable_a log_enable_b)))')
             result = run(repl, script)
-            expected = f'({129 + offset} {129 + offset} 3 3 0 0 2u32)'
+            a_seq = '3u32' if offset < 4 else '4u32'
+            b_seq = '2u32' if offset < 5 else '3u32' if offset < 8 else '4u32'
+            a_class = 'in_progress' if offset < 4 else 'ok'
+            b_class = 'in_progress' if 5 <= offset < 8 else 'ok'
+            a_enabled = '0' if offset < 4 else '1u32'
+            b_enabled = '0' if 5 <= offset < 8 else '1u32'
+            expected = (f'({129 + offset} {129 + offset} 3 3 0 0 '
+                        f'257u32 273u32 {a_seq} {b_seq} {a_class} {b_class} '
+                        f'({a_class} {b_class} {a_enabled} {b_enabled}))')
             assert result == expected, (offset, barrier, result, expected)
-    # No dirty image and a failed safety gate still post and revoke intent;
-    # neither condition may leave a stale claim for the sampler.
-    for setup_case in ('(log_initialise log_a 1)',
-                       '(log_initialise log_a 1) (mock-set log_a 72 12) '
-                       "(setvar 'mock_pressed 1)"):
-        result = run(repl, setup + setup_case +
-                     '(define before writes) (log_shutdown_flush) '
-                     '(log_service_once) '
-                     '(list before writes log_shutdown_state log_shutdown_caller '
-                     ' log_writer_active log_store_entered)')
+    # Distinct live caller and already-idle sampler contexts. First case has
+    # genuinely clean A and B, unlike the dirty common setup above.
+    for image, dirty, gate in (('', 'nil', 'nil'),
+                               ("(mock-set log_a 72 12) (setvar 'mock_pressed 1) ",
+                                't', 'nil')):
+        script = ('(mock-setup) (log_initialise log_a 1) '
+                  '(log_initialise log_b 1) ' + image +
+                  '(define initial writes) '
+                  '(spawn 180 (lambda () { '
+                  "(setvar 'log_owner (self)) (setvar 'mock_phase 5) "
+                  '(loopwhile (!= log_shutdown_state 3) (sleep 0.001)) '
+                  "(log_service_once) (setvar 'mock_done 1) })) "
+                  '(mock-await 5) (define was_dirty (log_dirty)) '
+                  '(define eligible (log_gate t)) ' + caller +
+                  "(loopwhile (= mock_caller_done 0) (sleep 0.001)) "
+                  "(loopwhile (= mock_done 0) (sleep 0.001)) "
+                  '(list was_dirty eligible initial writes '
+                  ' log_shutdown_state log_shutdown_caller '
+                  ' log_writer_active log_store_entered)')
+        result = run(repl, script)
+        assert result.startswith(f'({dirty} {gate} '), (image, result)
         before, after, state, caller_active, active, entered = ints(result)
         assert (before == after and (state, caller_active, active, entered) ==
-                (3, 0, 0, 0)), (setup_case, result)
+                (3, 0, 0, 0)), (image, result)
     # Only a new observed active sample, after both contexts quiesce, re-arms.
     result = run(repl, setup + '(log_shutdown_flush) '
                  '(define revoked (log_flush_once nil)) '
@@ -587,11 +658,14 @@ def check_concurrent(repl):
                   "(loopwhile (= mock_done 0) (sleep 0.001)) "
                   '(list before writes (mock-eeprom-read 64) '
                   ' (mock-eeprom-read 128) (mock-eeprom-read 133) '
-                  ' log_flush_count log_shutdown_state)')
+                  ' log_flush_count log_shutdown_state '
+                  ' (log_boot_block 64 63 1112820807) '
+                  ' (log_boot_block 128 64 1112820808))')
         result = run(repl, script)
         expected = (f'({129 + offset} {129 + offset} 4u32 '
                     '3u32 '
-                    f'{"0u32" if offset == 5 else "32768u32"} 0 3)')
+                    f'{"0u32" if offset == 5 else "32768u32"} '
+                    '0 3 ok in_progress)')
         assert result == expected, (offset, result, expected)
     # Header operation already entered: intent interrupts before its next
     # store. The one separately claimed attempt may still commit dirty B.
@@ -609,9 +683,11 @@ def check_concurrent(repl):
               '(list before writes mock_writer_result '
               ' (mock-eeprom-read 64) (mock-eeprom-read 67) '
               ' (mock-eeprom-read 133) log_shutdown_state '
-              ' log_writer_active log_store_entered)')
+              ' log_writer_active log_store_entered '
+              ' (log_boot_block 64 63 1112820807) '
+              ' (log_boot_block 128 64 1112820808))')
     result = run(repl, script)
-    assert result == '(130 134 nil 3u32 257u32 32768u32 3 0 0)', result
+    assert result == '(130 134 nil 3u32 257u32 32768u32 3 0 0 in_progress ok)', result
     # No sampler dequeue until timeout: pending request is revoked, and a
     # later owner iteration cannot consume it as a shutdown or ordinary flush.
     script = (setup + caller +
@@ -667,6 +743,7 @@ def check_concurrent(repl):
               wait_done +
               '(list writes log_shutdown_state log_writer_active '
               ' log_store_entered (mock-eeprom-read 64) '
-              ' (mock-eeprom-read 72) (mock-eeprom-read 128))')
+              ' (mock-eeprom-read 72) (mock-eeprom-read 128) '
+              ' (log_boot_block 64 63 1112820807))')
     result = run(repl, script)
-    assert result == '(130 3 0 0 3u32 0u32 2u32)', result
+    assert result == '(130 3 0 0 3u32 0u32 2u32 in_progress)', result
