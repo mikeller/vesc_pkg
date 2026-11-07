@@ -68,7 +68,7 @@ MOCKS = '''
 '''
 
 
-def run(repl, script, replacements=(), extra=''):
+def source(replacements=(), extra='', production_sample=False):
     # The writer harness replaces hardware primitives in the production source.
     app = (ROOT / 'blacktip_dpv.lisp').read_text()
     receiver = app[app.index('(defun receive_data (data)'):app.index('; Setup functions')]
@@ -82,14 +82,51 @@ def run(repl, script, replacements=(), extra=''):
     text = text.replace("(conf-get 'l-temp-motor-start)", '(mock-conf-get)')
     text = text.replace('(defun mock-sleep (s) {',
                         "(defun mock-sleep (s) { (setvar 'pace_seen s)")
+    if production_sample:
+        constants = app[app.index('; Performance log block A.'):
+                        app.index('; Lightweight macro')]
+        sample = app[app.index('(defun log_b_sag ('):
+                     app.index('; Hook in safe_start_abort_with_reason')]
+        for name in ('rpm', 'rpm-set', 'current-in', 'ah', 'wh', 'fault',
+                     'temp-fet', 'temp-mot', 'current', 'vin', 'duty'):
+            sample = sample.replace('(get-' + name + ')', '(mock-get-' + name + ')')
+        sample = sample.replace('(systime)', '(mock-systime)')
+        sample = sample.replace('(secs-since ', '(mock-secs-since ')
+        sample = sample.replace('(get-battery-imbalance-voltage)',
+                                '(mock-get-battery-imbalance-voltage)')
+        sample = sample.replace('(get-battery-imbalance-warning)',
+                                '(mock-get-battery-imbalance-warning)')
+        text = constants + text
+        extra += '''
+(define soft_start_active 0) (define safe_start_status 'idle)
+(define SCOOTER_BLACKTIP 0) (define BATTERY_IMBALANCE_WARN_NONE 0)
+(define DUTY_AT_REST_THRESHOLD 0.02)
+(define battery_imbalance_latched 0) (define balance_smoothing_held 1)
+(define lower_voltage_smooth 0.0)
+(defun mock-get-rpm () mock_rpm_value)
+(defun mock-get-rpm-set () 0.0)
+(defun mock-get-current-in () 0.0)
+(defun mock-get-ah () 0.0)
+(defun mock-get-wh () 0.0)
+(defun mock-get-fault () 0.0)
+(defun mock-get-temp-fet () 35.0)
+(defun mock-get-temp-mot () 30.0)
+(defun mock-get-current () 0.0)
+(defun mock-get-vin () 35.0)
+(defun mock-get-duty () mock_duty_value)
+''' + sample
     for old, new in replacements:
         assert old in text, old
         text = text.replace(old, new)
-    text += MOCKS + extra + receiver + script
+    return text + MOCKS + extra + receiver
+
+
+def run(repl, script, replacements=(), extra='', production_sample=False, heap=2753):
+    text = source(replacements, extra, production_sample) + script
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / 'protocol.lisp'
         path.write_text(text)
-        result = subprocess.run([repl, '-H', '2753', '-M', '262144', '-C', '262144',
+        result = subprocess.run([repl, '-H', str(heap), '-M', '262144', '-C', '262144',
                                  '--bldc_stubs', '--terminate', '-s', str(path)],
                                 capture_output=True, text=True, timeout=60)
     lines = [line[2:] for line in result.stdout.splitlines() if line.startswith('> ')]
@@ -103,6 +140,53 @@ def check(repl):
     def expect(name, script, expected):
         value = run(repl, script)
         assert value == expected, (name, value, expected)
+
+    # This uses the production log_sample and collector helpers, not the
+    # counting sampler stub used by the other protocol isolation tests.
+    simultaneous = run(repl, '''
+(mock-setup) (log_initialise log_a 1) (log_initialise log_b 1)
+(setvar 'log_owner -1) (setvar 'mock_concurrent 1) (log_start)
+(define before_writes writes)
+(define request (bufcreate 4))
+(bufset-u8 request 0 161) (bufset-u8 request 1 0)
+(bufset-u8 request 2 1) (bufset-u8 request 3 250)
+(receive_data request)
+(define first_frame (mock-await-frames 1))
+(setvar 'speed 5) (setvar 'mock_rpm_value 3600.0)
+(setvar 'mock_duty_value 0.3) (setvar 'mock_now (+ mock_now 250))
+(send log_owner 'log-wake) (sleep 0.05)
+(define live_sample (mock-slot log_a 72))
+(setvar 'speed SPEED_OFF) (setvar 'mock_rpm_value 0.0)
+(setvar 'mock_duty_value 0.0) (setvar 'mock_now (+ mock_now 250))
+(send log_owner 'log-wake) (sleep 0.05)
+(mock-request 163 1 0)
+(define tries 0)
+(loopwhile (and (= log_write_busy 1) (< tries 400)) {
+    (sleep 0.001) (setq tries (+ tries 1))
+})
+(define write_finished (= log_write_busy 0))
+(define concurrent_read_busy log_read_busy)
+(setq tries 0)
+(loopwhile (and (< frame_count 12) (< tries 400)) {
+    (sleep 0.01) (setq tries (+ tries 1))
+})
+(define all_frames (= frame_count 12))
+(setq tries 0)
+(loopwhile (and (= log_read_busy 1) (< tries 400)) {
+    (sleep 0.001) (setq tries (+ tries 1))
+})
+(gc)
+(list first_frame before_writes writes live_sample
+      (bufget-u32 frames (+ (* 32 2) 14)) (bufget-u32 log_st 0)
+      log_enable_b write_finished concurrent_read_busy all_frames
+      log_read_busy frame_count (mem-num-free) (mem-longest-free))
+''', production_sample=True, heap=8000)
+    values = simultaneous.strip('()').split()
+    assert len(values) == 14 and values[:12] == [
+        't', '129', '137', '2u32', '0u32', '10500u32',
+        '0', 't', '1', 't', '0', '12'], simultaneous
+    assert int(values[12]) > 0 and int(values[13]) > 0, simultaneous
+    print('native production sampler/read/write checkpoint:', simultaneous)
 
     expect('empty first enable commits one owner block',
            "(mock-setup) (setvar 'log_a nil) (setvar 'log_state_a 'empty) "
