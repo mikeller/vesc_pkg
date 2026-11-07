@@ -19,6 +19,7 @@ from perf_log_native import run as run_log_native, integer_values as log_native_
 from perf_log_boot import classify as boot_classify, crc as boot_crc, make_image as boot_image
 from perf_log_boot import references as boot_references, native as run_boot_native
 from perf_log_boot import firmware_crc_vectors
+from perf_log_writer import check as check_writer_native
 
 # Test counters
 test_passes = 0
@@ -372,8 +373,9 @@ def test_performance_log_b():
     source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
     assert_eq(bool(re.search(r"\(conf-get\s+'l-(?:temp-fet-(?:start|end)|in-current-max)", source)),
               False, 'no unsupported FET or transient current reference reads')
-    assert_eq('eeprom-store-' in source[source.index('(defun log_blk_new'):source.index('; Init-only peripheral setup.')],
-              False, 'block B remains RAM-only')
+    collector = source[source.index('(defun log_b_set_tag'):source.index('(defun log_b_ring_begin')]
+    assert_eq('eeprom-store-' in collector, False,
+              'block B tag change remains RAM-only until the gated writer runs')
 
 
 def log_update(image, pending, slot, half, operation, value, quiet=False):
@@ -480,7 +482,10 @@ def test_performance_log_collector():
               False, 'sampling path contains no actuator/inactivity-reset call')
     assert_eq(bool(re.search(r'\((?:min|max)\s', collector)), False,
               'collector does not call unsupported min/max')
-    assert_eq('eeprom-store-' in collector, False, 'collector performs no NV writes')
+    writer = collector[collector.index('(defun log_rest_ok'):collector.index('(defun log_start')]
+    assert_eq('eeprom-store-i' in writer, True, 'only the dedicated writer persists log data')
+    assert_eq('eeprom-store-' in collector[:collector.index('(defun log_rest_ok')], False,
+              'aggregation and boot classification never persist data')
 
 
 def test_performance_log_native():
@@ -2131,6 +2136,62 @@ def test_performance_log_boot():
                       f'native stored motor {stored_m}, flags {flags}, fresh {fresh_m}/{fresh_bit}')
 
 
+def test_performance_log_writer():
+    print('\n=== Testing gated single-writer flush ===')
+    source = LISP_SOURCE.read_text()
+
+    def gate(state, five_click=False):
+        return (state['enabled_dirty'] and state['speed'] == SPEED_OFF and
+                state['pressed'] == 0 and state['tune'] == 0 and
+                state['rpm'] is not None and abs(state['rpm']) < 25 and
+                state['duty'] is not None and abs(state['duty']) < .02 and
+                (five_click or (state['settled'] >= 5 and state['since_flush'] >= 60)))
+
+    safe = dict(enabled_dirty=True, speed=SPEED_OFF, pressed=0, tune=0,
+                rpm=0.0, duty=0.0, settled=5, since_flush=60)
+    assert_eq(gate(safe), True, 'periodic gate accepts settled dirty image')
+    for key, value in (('enabled_dirty', False), ('speed', 5), ('pressed', 1),
+                       ('tune', 1), ('rpm', 25), ('rpm', None),
+                       ('duty', .02), ('duty', None), ('settled', 4.99),
+                       ('since_flush', 59.99)):
+        assert_eq(gate(dict(safe, **{key: value})), False,
+                  f'periodic gate refuses {key}={value}')
+    for key, value in (('settled', 0), ('since_flush', 0)):
+        assert_eq(gate(dict(safe, **{key: value}), True), True,
+                  f'five-click waives only {key}')
+    for key, value in (('enabled_dirty', False), ('pressed', 1), ('speed', 5),
+                       ('tune', 1), ('rpm', 25), ('duty', .02)):
+        assert_eq(gate(dict(safe, **{key: value}), True), False,
+                  f'five-click retains {key} guard')
+    # Once the only dirty segment has been flushed, even hours of inactivity
+    # cannot produce another store or reset the firmware inactivity clock.
+    assert_eq([gate(dict(safe, enabled_dirty=False, settled=hour * 3600,
+                          since_flush=hour * 3600)) for hour in range(1, 9)],
+              [False] * 8, 'multi-hour idle remains write-free')
+    hook = source[source.index('(defun request_five_click_shutdown'):source.index('; Settings initialization')]
+    assert_eq(hook.count('(trap (log_shutdown_flush))'), 1,
+              'one trap-wrapped five-click flush request')
+    assert_eq(hook.index('(foc-beep 325') < hook.index('(trap (log_shutdown_flush))') <
+              hook.index('(shutdown true)'), True,
+              'confirmation and shutdown order unchanged around flush')
+    writer = source[source.index('(defun log_rest_ok'):source.index('(defun log_start ()')]
+    assert_eq(bool(re.search(r'\(eeprom-store-i\s+slot\s+val\)', writer)), True,
+              'only checked generic slot writer stores the log')
+    assert_eq('log_shutdown_request 0' in writer and '(looprange i 0 100' in writer,
+              True, 'queued five-click request is bounded and cancelled')
+    assert_eq('shutdown-hold' in writer or 'event-shutdown' in writer, False,
+              'no shutdown hold or shutdown event handler in writer')
+    repl = os.environ.get('LBM_REPL', '')
+    if not repl or not os.access(repl, os.X_OK):
+        print('SKIPPED: set LBM_REPL to release_7_00 native REPL for writer failure vectors')
+    else:
+        try:
+            check_writer_native(repl)
+            assert_eq(True, True, 'native writer failure and reboot vectors')
+        except Exception as exc:
+            assert_eq(str(exc), '', 'native writer failure and reboot vectors')
+
+
 def run_all_tests():
     """Run all test suites"""
     print("\n╔══════════════════════════════════════════╗")
@@ -2163,6 +2224,7 @@ def run_all_tests():
     test_performance_log_b()
     test_performance_log_ring()
     test_performance_log_boot()
+    test_performance_log_writer()
     test_performance_log_native()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()

@@ -89,7 +89,33 @@ def source_with_mocks():
     (mock-put 9 35.1) (mock-put 10 0.96)
 })
 '''
-    return '(define event-enable (lambda (x) t))\n' + source + mocks
+    # Load only the production collector and its direct dependencies. Loading
+    # the entire application in the native REPL exceeds its emulated flash
+    # capacity, although VESC Tool packages it within the device limit.
+    constants = source[source.index('; Performance log block A.'):source.index('; Lightweight macro')]
+    helpers = source[source.index('(defun clamp ('):source.index('(defun speed_percentage_at')]
+    imbalance = source[source.index('(defun imbalance_detection_enabled'):source.index('(defun update_lower_voltage_smooth')]
+    imbalance += source[source.index('(defun get_battery_imbalance_voltage'):source.index('(defun update_imbalance_latch')]
+    collector = source[source.index('(defun log_blk_new'):source.index('; Init-only peripheral setup.')]
+    # The writer has its own isolated native harness and cannot write through
+    # the collector harness's EEPROM stubs.
+    collector = collector[:collector.index('(defun log_rest_ok')] + collector[collector.index('(defun log_start'):]
+    globals_ = '''(define SPEED_OFF 99) (define SCOOTER_BLACKTIP 0) (define SCOOTER_CUDAX 1)
+(define MAX_CURRENT_BLACKTIP 22.8) (define MAX_CURRENT_CUDAX 46)
+(define DUTY_AT_REST_THRESHOLD 0.02)
+(define BATTERY_IMBALANCE_WARN_NONE 0) (define BATTERY_IMBALANCE_WARN_PACK_1 1)
+(define BATTERY_IMBALANCE_WARN_PACK_2 2) (define SAFE_START_MAX_RETRIES 3)
+(define speed SPEED_OFF) (define scooter_type 0) (define soft_start_active 0)
+(define safe_start_failures 0) (define safe_start_status 'idle)
+(define battery_imbalance_threshold_centi 0)
+(define balance_smoothing_held 0) (define lower_voltage_smooth 0.0)
+(define total_voltage_smooth 0.0) (define battery_imbalance_latched 0)
+(define log_enable_a 0) (define log_enable_b 0) (define log_state_a 'empty)
+(define log_state_b 'empty) (define log_a nil) (define log_b nil)
+(define log_bs nil) (define log_fet_edges nil) (define log_st nil)
+'''
+    return '@const-start\n' + constants + '\n' + helpers + imbalance + collector + \
+        '@const-end\n' + globals_ + mocks
 
 
 def run(repl, scenario, *, heap=2753):

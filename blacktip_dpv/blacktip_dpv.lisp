@@ -207,6 +207,9 @@
 (define LOG_VREF_IDLE_S 2.0)
 (define LOG_REST_ERPM_MAX 25.0)
 (define LOG_REST_DUTY_MAX 0.02)
+(define LOG_SETTLE_S 5.0)
+(define LOG_MIN_FLUSH_INTERVAL_S 60.0)
+(define LOG_STORE_YIELD_MS 1)
 (define LOG_FET_REF 850)
 (define LOG_SAG_BIAS 1073741824u32)
 (define LOG_B_INIT '((130 1112820808) (131 273) (135 1073741824) (137 1073741824)
@@ -337,6 +340,17 @@
 (define log_bs nil)
 (define log_fet_edges nil)
 (define log_st nil)
+(define log_rest_since 0)
+(define log_last_flush 0)
+(define log_flush_seen 0)
+(define log_flush_stores 0)
+(define log_flush_count 0)
+(define log_flush_aborts 0)
+(define log_flush_largest 0)
+; The shutdown thread only posts a request. EEPROM writes belong to the sampler.
+(define log_shutdown_request 0)
+(define log_shutdown_active 0)
+(define log_shutdown_cancelled 0)
 
 ; Display LUT byte array. import MUST be a top-level form (not inside a flashed
 ; const-block function), so the binding survives onto the heap. VESC Tool embeds
@@ -717,6 +731,9 @@
         (sleep SHUTDOWN_TONE_GAP)
         (foc-beep 325 SHUTDOWN_TONE_DURATION beeps_vol)
         (sleep SHUTDOWN_TONE_GAP)
+        ; One bounded request, serviced by the sole log writer. A failed or
+        ; unfinished write must never prevent the hardware shutdown.
+        (trap (log_shutdown_flush))
         (debug_log "Five-click shutdown: requesting hardware shutdown")
         ; A successful shutdown never returns. nil means unsupported, failed,
         ; or held input and is not retried here.
@@ -2504,6 +2521,234 @@
     (if (< n 2147483647) (bufset-u32 log_st o (+ n 1)))
 })
 
+; Duration across an EEPROM store cannot be measured with systime: firmware
+; masks ticks while flash is locked. Keep counts instead; slot 126 A stays 0.
+(defun log_rest_ok (rpm duty pressed tune sp)
+    (and (= sp SPEED_OFF) (= pressed 0) (= tune 0)
+         (number? rpm) (= rpm rpm) (< (abs rpm) LOG_REST_ERPM_MAX)
+         (number? duty) (= duty duty) (< (abs duty) LOG_REST_DUTY_MAX)))
+
+(defun log_at_rest ()
+    (log_rest_ok (log_get (trap (get-rpm))) (log_get (trap (get-duty)))
+                 (log_get (trap (gpio-read 'pin-ppm))) startup_tune_active speed))
+
+(defun log_dirty ()
+    (or (and (= log_enable_a 1) (eq log_state_a 'ok) log_a
+             (= (bufget-u32 log_a 4) 1))
+        (and (= log_enable_b 1) (eq log_state_b 'ok) log_b
+             (= (bufget-u32 log_b 4) 1))))
+
+; The first flush has no interval restriction. secs-since is used only between
+; stores, never as a measure of the time spent inside a store.
+(defun log_safe_gate (shutdown)
+    (and (log_at_rest)
+         (or shutdown (and (!= log_rest_since 0)
+             (>= (secs-since log_rest_since) LOG_SETTLE_S)
+             (or (= log_flush_seen 0)
+                 (>= (secs-since log_last_flush) LOG_MIN_FLUSH_INTERVAL_S))))))
+
+(defun log_gate (shutdown) (and (log_dirty) (log_safe_gate shutdown)))
+
+(defun log_rest_tick ()
+    (if (log_at_rest)
+        (if (= log_rest_since 0) (setvar 'log_rest_since (systime)))
+        {
+            (setvar 'log_rest_since 0)
+            (setvar 'log_shutdown_cancelled 0)
+        }))
+
+; Called only by the sampler. Check directly before every store, including
+; the two sequence writes; yield after each actual write to see trigger edges.
+(defun log_write_slot (slot val)
+{
+    (if (or (not (or (and (>= slot LOG_A_BASE) (< slot (+ LOG_A_BASE LOG_A_SLOTS)))
+                     (and (>= slot LOG_B_BASE) (< slot (+ LOG_B_BASE LOG_B_SLOTS)))))
+            (and (= log_shutdown_active 1) (!= log_shutdown_request 2))
+            (!= speed SPEED_OFF)
+            (not (eq (log_get (trap (gpio-read 'pin-ppm))) 0))) nil {
+        (var before (trap (eeprom-read-i slot)))
+        (if (not (eq (ix before 0) 'exit-ok)) nil
+            (if (and (number? (ix before 1)) (= (ix before 1) val)) t {
+                (var result (trap (eeprom-store-i slot val)))
+                (if (not (and (eq (ix result 0) 'exit-ok) (eq (ix result 1) t))) nil {
+                    (sleep (/ LOG_STORE_YIELD_MS 1000.0))
+                    (var after (trap (eeprom-read-i slot)))
+                    (var verified (and (eq (ix after 0) 'exit-ok)
+                                       (number? (ix after 1)) (= (ix after 1) val)))
+                    (if verified (setvar 'log_flush_stores (+ log_flush_stores 1)))
+                    verified
+                })
+            }))
+    })
+})
+
+(defun log_crc_image (b)
+{
+    (var base (bufget-u32 b 0))
+    (var n (shr (- (buflen b) 8) 4))
+    (var v (bufcreate 4))
+    (var crc 0u32)
+    (looprange i 2 n {
+        (bufset-u32 v 0 (bufget-u32 b (+ 8 (* 4 i))))
+        (setq crc (crc32 v crc))
+    })
+    (bitwise-and crc 2147483647u32)
+})
+
+; mode 0: changed slots, 1: full initial image, 2: explicit clear,
+; 3: set-enabled. Modes 1..3 are entry points for the future sampler mailbox,
+; not for event handlers or other writer threads.
+(defun log_write_block (b mode enabled)
+{
+    (var base (bufget-u32 b 0))
+    (var n (shr (- (buflen b) 8) 4))
+    (var state (if (= base LOG_A_BASE) log_state_a log_state_b))
+    (var allowed (if (= mode 0) (eq state 'ok)
+        (if (= mode 1) (eq state 'empty)
+            (if (= mode 2) (or (eq state 'ok) (eq state 'empty) (eq state 'foreign)
+                                (eq state 'in_progress) (eq state 'crc_mismatch))
+                (eq state 'ok)))))
+    (if (or (not (or (and (= base LOG_A_BASE) (= n LOG_A_SLOTS))
+                     (and (= base LOG_B_BASE) (= n LOG_B_SLOTS))))
+            (not allowed) (not (or (= enabled 0) (= enabled 1)))
+            (not (log_safe_gate (= log_shutdown_active 1)))
+            (and (= mode 0) (!= (bufget-u32 b 4) 1))) nil {
+        (if (= mode 2) {
+            ; Preserve the flag of a valid stored block; an unverified block
+            ; was not enabled at boot and needs explicit re-enabling later.
+            (setq enabled (if (eq state 'ok) (bitwise-and (bufget-u32 b 20) 1) 0))
+            (looprange i 2 n (bufset-u32 b (+ 8 (* 4 i)) 0))
+            (looprange i 0 (* 2 n)
+                (bufset-f32 b (+ 8 (* 8 n) (* 4 i)) 0))
+            (log_apply b (if (= base LOG_A_BASE) LOG_A_INIT LOG_B_INIT))
+            (if (= base LOG_B_BASE) {
+                (if (eq log_bs nil) (setvar 'log_bs (bufcreate 20)))
+                (bufclear log_bs)
+                (log_b_references b)
+            } {
+                (if log_st {
+                    (bufset-f32 log_st 8 0)
+                    (looprange i 0 4
+                        (bufset-u32 log_st (+ 24 (* 4 i))
+                            (bufget-u32 log_st (+ 92 (* 4 i)))))
+                })
+            })
+        })
+        (if (!= mode 0) {
+            (var fo 20)
+            (bufset-u32 b fo (bitwise-or
+                (bitwise-and (bufget-u32 b fo) (bitwise-not 1)) enabled))
+        })
+        (var old (eeprom-read-i base))
+        (var odd (if (and (number? old) (>= old 0) (<= old 2147483647))
+            (bitwise-or (bitwise-and (+ old 1) 2147483647) 1) 1))
+        (var even (bitwise-and (+ odd 1) 2147483647))
+        (var ok (log_write_slot base odd))
+        (if ok {
+            ; Flag is the final covered slot: init/clear may not expose an
+            ; enabled image until all other fields have been verified.
+            (looprange i 2 n {
+                (if (and ok (!= i 3))
+                    (setq ok (log_write_slot (+ base i)
+                        (bufget-u32 b (+ 8 (* 4 i))))))
+            })
+            (if ok (setq ok (log_write_slot (+ base 3) (bufget-u32 b 20))))
+            (if ok (setq ok (log_write_slot (+ base 1) (log_crc_image b))))
+            (if ok (setq ok (log_write_slot base even)))
+        })
+        (if ok {
+            (bufset-u32 b 8 even)
+            (bufset-u32 b 12 (log_crc_image b))
+            (looprange i 0 n
+                (bufset-u32 b (+ 8 (* 4 n) (* 4 i)) (bufget-u32 b (+ 8 (* 4 i)))))
+            (bufset-u32 b 4 0)
+            (if (= base LOG_A_BASE) {
+                (setvar 'log_state_a 'ok)
+                (setvar 'log_enable_a enabled)
+            } {
+                (setvar 'log_state_b 'ok)
+                (setvar 'log_enable_b enabled)
+            })
+        } {
+            (bufset-u32 b 4 1)
+            (if (and (!= mode 0) (eq state 'ok)) {
+                (if (= base LOG_A_BASE)
+                    (setvar 'log_state_a 'in_progress)
+                    (setvar 'log_state_b 'in_progress))
+            })
+            (if (= mode 0) {
+                (setvar 'log_flush_aborts (+ log_flush_aborts 1))
+                (if (and log_a (= log_enable_a 1) (eq log_state_a 'ok))
+                    (log_upd log_a 8 253 1))
+            })
+        })
+        ok
+    })
+})
+
+(defun log_initialise (b enabled) (log_write_block b 1 enabled))
+(defun log_clear (b) (log_write_block b 2 0))
+(defun log_set_enabled (b enabled) (log_write_block b 3 enabled))
+
+(defun log_flush_once (shutdown)
+{
+    (if (or (and (not shutdown) (= log_shutdown_cancelled 1))
+            (not (log_gate shutdown))) nil {
+        (setvar 'log_flush_stores 0)
+        (var ok t)
+        (var completed nil)
+        (var old_aborts log_flush_aborts)
+        (if shutdown (setvar 'log_shutdown_active 1))
+        ; Slot 126 A cannot hold a reliable duration from systime. Clear any
+        ; advisory value inherited from an older image on the next real flush.
+        (if (and (= log_enable_a 1) (eq log_state_a 'ok) log_a)
+            (log_upd log_a 10 252 0))
+        (if (and (= log_enable_a 1) (eq log_state_a 'ok) log_a
+                 (= (bufget-u32 log_a 4) 1)) {
+            (var result (trap (log_write_block log_a 0 1)))
+            (setq ok (and (eq (ix result 0) 'exit-ok) (eq (ix result 1) t)))
+            (if ok (setq completed t))
+        })
+        (if (and ok (= log_enable_b 1) (eq log_state_b 'ok) log_b
+                 (= (bufget-u32 log_b 4) 1))
+            {
+                (var result (trap (log_write_block log_b 0 1)))
+                (setq ok (and (eq (ix result 0) 'exit-ok) (eq (ix result 1) t)))
+                (if ok (setq completed t))
+            })
+        (if (> log_flush_stores log_flush_largest)
+            (setvar 'log_flush_largest log_flush_stores))
+        ; A gate failure before B's odd sequence is still an aborted flush;
+        ; only the later block stays dirty. Count it once, not once per block.
+        (if (and (not ok) (= log_flush_aborts old_aborts)) {
+            (setvar 'log_flush_aborts (+ log_flush_aborts 1))
+            (if (and log_a (= log_enable_a 1) (eq log_state_a 'ok))
+                (log_upd log_a 8 253 1))
+        })
+        (setvar 'log_shutdown_active 0)
+        (if completed {
+            (setvar 'log_last_flush (systime))
+            (setvar 'log_flush_seen 1)
+        })
+        (if ok (setvar 'log_flush_count (+ log_flush_count 1)))
+        ok
+    })
+})
+
+(defun log_shutdown_flush ()
+{
+    (if (and log_st (log_gate t)) {
+        (setvar 'log_shutdown_request 1)
+        ; Max 100 scheduled waits. A store in progress can extend a wait by
+        ; its own firmware-bounded release/flash operation, never by a retry.
+        (looprange i 0 100 {
+            (if (!= log_shutdown_request 0) (sleep 0.01))
+        })
+        (if (!= log_shutdown_request 0) (setvar 'log_shutdown_cancelled 1))
+        (setvar 'log_shutdown_request 0)
+    })
+})
+
 (defun log_start ()
 {
     (if (and (= log_enable_a 1) (eq log_a nil)) {
@@ -2523,6 +2768,16 @@
     (loopwhile-thd THREAD_STACK_LOG t {
         (sleep LOG_SAMPLE_PERIOD)
         (trap (log_sample))
+        (log_rest_tick)
+        (if (= log_shutdown_request 1) {
+            (setvar 'log_shutdown_request 2)
+            (trap (log_flush_once t))
+            (setvar 'log_shutdown_request 0)
+        } {
+            ; A cancelled request must not silently become a periodic retry
+            ; in this same iteration.
+            (trap (log_flush_once nil))
+        })
     })
 })
 
