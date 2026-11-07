@@ -5,6 +5,7 @@ Tests pure functions to catch regressions before flashing hardware
 """
 
 import csv
+import hashlib
 import importlib.util
 import os
 import re
@@ -20,6 +21,7 @@ from perf_log_boot import classify as boot_classify, crc as boot_crc, make_image
 from perf_log_boot import references as boot_references, native as run_boot_native
 from perf_log_boot import firmware_crc_vectors
 from perf_log_writer import check as check_writer_native
+from perf_log_protocol import check as check_protocol_native
 
 # Test counters
 test_passes = 0
@@ -874,6 +876,13 @@ def test_motor_speed_command_centralisation():
     """Normal selector commands must retain one RPM-controlled path."""
     print("\n=== Testing motor speed command centralisation ===")
     source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
+
+    motor_sites = re.findall(
+        r'\((?:set-rpm|set-duty|set-current|set-brake|conf-set|conf-store|'
+        r'foc-beep|foc-play-tone)\b[^\n]*', source)
+    assert_eq(hashlib.sha256('\n'.join(motor_sites).encode()).hexdigest(),
+              '8305d2b0745ff14f084a72a7eb571e7000d44cf6a1c3a4d1c57f2f840d3c6eec',
+              'motor/config/beeper command sites match the pre-protocol source')
 
     assert_eq('(defun set_motor_speed (speed_index divisor)' in source, True,
               "motor speed: common command helper exists")
@@ -2188,6 +2197,11 @@ def test_performance_log_writer():
         try:
             check_writer_native(repl)
             assert_eq(True, True, 'native writer failure and reboot vectors')
+            try:
+                check_protocol_native(repl)
+                assert_eq(True, True, 'native protocol admission, states and chunks')
+            except Exception as exc:
+                assert_eq(str(exc), '', 'native protocol admission, states and chunks')
         except Exception as exc:
             assert_eq(str(exc), '', 'native writer failure and reboot vectors')
 

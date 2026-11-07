@@ -197,6 +197,7 @@
 ; +4 quiet, +8 P15; need = predicate bits; fid = 2*slot+half+mul*speed; sig = signal.
 (define THREAD_STACK_LOG 160)
 (define LOG_SAMPLE_PERIOD 0.2)
+(define LOG_PROTOCOL_DESCRIPTORS '((161 3 4) (162 3 3) (163 3 3) (164 3 3)))
 (define LOG_DT_MAX 0.5)
 (define LOG_DUTY_SATURATED 0.95)
 (define LOG_LIMIT_FRACTION 0.95)
@@ -355,6 +356,14 @@
 (define log_writer_active 0)
 (define log_shutdown_active 0)
 (define log_store_entered 0)
+(define log_write_request nil)
+(define log_write_busy 0)
+(define log_read_request nil)
+(define log_read_busy 0)
+(define log_explicit_active 0)
+(define log_skip_a 0)
+(define log_skip_b 0)
+(define LOG_CHUNK_PACE_MS 10)
 
 ; Display LUT byte array. import MUST be a top-level form (not inside a flashed
 ; const-block function), so the binding survives onto the heap. VESC Tool embeds
@@ -921,9 +930,12 @@
 
 (defun receive_data (data)
 {
+    (if (= (buflen data) 0) nil
     (if (= (bufget-u8 data 0) HANDSHAKE_CODE) {
         ; Handshake to trigger data send if not yet received.
         (send_current_settings)
+    } (if (and (>= (bufget-u8 data 0) 161) (<= (bufget-u8 data 0) 164)) {
+        (log_admit data)
     } {
         ; For non-handshake messages, validate buffer size
         (if (< (buflen data) EEPROM_SETTINGS_COUNT) {
@@ -935,7 +947,7 @@
             (update_settings_from_eeprom) ; updates actual settings in lisp
             (debug_log "Settings updated")
         })
-    })
+    })))
 })
 
 ; Setup functions
@@ -2270,6 +2282,13 @@
 (defun log_boot ()
 {
     (setvar 'log_owner -1)
+    (setvar 'log_write_request nil)
+    (setvar 'log_write_busy 0)
+    (setvar 'log_read_request nil)
+    (setvar 'log_read_busy 0)
+    (setvar 'log_explicit_active 0)
+    (setvar 'log_skip_a 0)
+    (setvar 'log_skip_b 0)
     (setvar 'log_shutdown_state 0)
     (setvar 'log_shutdown_caller 0)
     (setvar 'log_writer_active 0)
@@ -2455,7 +2474,7 @@
 ; One sample. Each getter is independently trapped; no per-iteration arrays/lists.
 (defun log_sample ()
 {
-    (var b (if (= log_enable_a 1) log_a nil))
+    (var b (if (and (= log_enable_a 1) (= log_skip_a 0)) log_a nil))
     (var st log_st)
     (var sp (to-i speed))
     (var dt (clamp (secs-since (bufget-u32 st 0)) 0 LOG_DT_MAX))
@@ -2508,7 +2527,10 @@
            (if (and steady (number? iin) (>= iin (* LOG_LIMIT_FRACTION (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)))) 4 0)
            (if (and steady (number? duty)) (shl 64 (log_bin (abs duty) LOG_DUTY_EDGES)) 0))
         sp LOG_A_RULES))
-    (if (= log_enable_b 1) (log_b_sample sp dt rpm iin fet mot vin duty))
+    (if (and (= log_enable_b 1) (= log_skip_b 0))
+        (log_b_sample sp dt rpm iin fet mot vin duty))
+    (setvar 'log_skip_a 0)
+    (setvar 'log_skip_b 0)
 })
 
 ; Hook in safe_start_abort_with_reason: counts only, no control flow.
@@ -2552,7 +2574,7 @@
 ; stores, never as a measure of the time spent inside a store.
 (defun log_safe_gate (shutdown)
     (and (log_at_rest)
-         (or shutdown (and (!= log_rest_since 0)
+         (or shutdown (= log_explicit_active 1) (and (!= log_rest_since 0)
              (>= (secs-since log_rest_since) LOG_SETTLE_S)
              (or (= log_flush_seen 0)
                  (>= (secs-since log_last_flush) LOG_MIN_FLUSH_INTERVAL_S))))))
@@ -2709,10 +2731,14 @@
             })
         } {
             (bufset-u32 b 4 1)
-            (if (and (!= mode 0) (eq state 'ok)) {
-                (if (= base LOG_A_BASE)
+            (if (!= mode 0) {
+                (if (= base LOG_A_BASE) {
                     (setvar 'log_state_a 'in_progress)
-                    (setvar 'log_state_b 'in_progress))
+                    (setvar 'log_enable_a 0)
+                } {
+                    (setvar 'log_state_b 'in_progress)
+                    (setvar 'log_enable_b 0)
+                })
             })
             (if (= mode 0) {
                 (setvar 'log_flush_aborts (+ log_flush_aborts 1))
@@ -2735,9 +2761,13 @@
         (if (eq (ix result 0) 'exit-ok) (ix result 1) {
             (bufset-u32 b 4 1)
             (if (!= mode 0) {
-                (if (= (bufget-u32 b 0) LOG_A_BASE)
+                (if (= (bufget-u32 b 0) LOG_A_BASE) {
                     (setvar 'log_state_a 'in_progress)
-                    (setvar 'log_state_b 'in_progress))
+                    (setvar 'log_enable_a 0)
+                } {
+                    (setvar 'log_state_b 'in_progress)
+                    (setvar 'log_enable_b 0)
+                })
             })
             nil
         })
@@ -2805,6 +2835,8 @@
     (var accepted (atomic (if (= log_shutdown_state 0) {
         (setvar 'log_shutdown_caller 1)
         (setvar 'log_shutdown_state 1)
+        (if log_write_request (setvar 'log_write_busy 0))
+        (setvar 'log_write_request nil)
         t
     } nil)))
     (if accepted {
@@ -2838,7 +2870,238 @@
         } (trap (log_flush_once nil)))
     }))
 
-(defun log_start ()
+; Requests are scalar lists built outside atomic. The mailbox, not the wake,
+; owns work. A failed wake releases its own reservation; a later wake can pick
+; up either mailbox, including one whose notification was already consumed.
+(defun log_admit (data)
+{
+    (var op (bufget-u8 data 0))
+    (var len (buflen data))
+    (var block (if (= op 164) 1 (if (> len 1) (bufget-u8 data 1) 255)))
+    (var value (if (> len 2) (bufget-u8 data 2) 0))
+    (var pace (if (> len 3) (bufget-u8 data 3) 0))
+    (var req (list op block value pace len (if (> len 1) (bufget-u8 data 1) 0)))
+    (var is_read (= op 161))
+    (var accepted (atomic (if (and (>= log_owner 0) (= log_shutdown_state 0)
+        (if is_read (= log_read_busy 0) (= log_write_busy 0))) {
+        (if is_read {
+            (setvar 'log_read_busy 1)
+            (setvar 'log_read_request req)
+        } {
+            (setvar 'log_write_busy 1)
+            (setvar 'log_write_request req)
+        })
+        t
+    } nil)))
+    (if accepted {
+        (var sent (trap (send log_owner 'log-wake)))
+        (if (not (and (eq (ix sent 0) 'exit-ok) (ix sent 1)))
+            (atomic (if is_read {
+                (if (eq log_read_request req) {
+                    (setvar 'log_read_request nil)
+                    (setvar 'log_read_busy 0)
+                })
+            } (if (eq log_write_request req) {
+                (setvar 'log_write_request nil)
+                (setvar 'log_write_busy 0)
+            }))))
+    })
+})
+
+(defun log_ack (op status block)
+{
+    (var b (bufcreate 4))
+    (bufset-u8 b 0 178) (bufset-u8 b 1 op)
+    (bufset-u8 b 2 status) (bufset-u8 b 3 block)
+    (send-data b)
+})
+
+; Classify the exact captured image, not the boot mirror. Missing words stay
+; FFFFFFFF; magic/layout precedence is the same as log_boot_block.
+(defun log_snapshot_state (image n magic)
+{
+    (var any 0)
+    (looprange i 0 4
+        (if (!= (bufget-u32 image (* 4 i)) 4294967295u32) (setq any 1)))
+    (if (= any 0) 0
+        (if (!= (bufget-u32 image 8) magic) 5
+            (if (!= (bitwise-and (shr (bufget-u32 image 12) 8) 255) 1) 4 {
+                (var seq (bufget-u32 image 0))
+                (var complete 1)
+                (var crc 0u32)
+                (var word (bufcreate 4))
+                (looprange i 2 n {
+                    (var v (bufget-u32 image (* 4 i)))
+                    (if (= v 4294967295u32) (setq complete 0))
+                    (bufset-u32 word 0 v)
+                    (setq crc (crc32 word crc))
+                })
+                (if (or (= seq 4294967295u32) (= (bitwise-and seq 1) 1)
+                        (= complete 0) (= (bufget-u32 image 4) 4294967295u32)
+                        (!= (bitwise-and crc 2147483647u32) (bufget-u32 image 4)))
+                    3 (if (= (bitwise-and (bufget-u32 image 12) 1) 1) 1 2))
+            })))
+})
+
+(defun log_snapshot (block part)
+{
+    (var base (if (= block 0) LOG_A_BASE LOG_B_BASE))
+    (var n (if (= block 0) LOG_A_SLOTS LOG_B_SLOTS))
+    (var image (bufcreate (* 4 n)))
+    (var state 0)
+    ; Capture stored header and classify even for a live read. The owner is
+    ; the sole mutator, so no collector update can interleave this copy.
+    (var stored (if (= part 0) image (bufcreate (* 4 n))))
+    (looprange i 0 n {
+        (var v (trap (eeprom-read-i (+ base i))))
+        (bufset-u32 stored (* 4 i)
+            (if (and (eq (ix v 0) 'exit-ok) (number? (ix v 1))
+                     (>= (ix v 1) 0) (<= (ix v 1) 2147483647))
+                (ix v 1) 4294967295u32))
+    })
+    (setq state (log_snapshot_state stored n (if (= block 0) 1112820807 1112820808)))
+    (var flag (bufget-u32 stored 12))
+    (if (and (!= flag 4294967295u32) (= (bitwise-and flag 1) 1))
+        (setq state (bitwise-or state 8)))
+    (if (= part 1) {
+        (var b (if (= block 0) log_a log_b))
+        (var enabled (if (= block 0) log_enable_a log_enable_b))
+        (var valid (if (= block 0) log_state_a log_state_b))
+        (looprange i 0 n
+            (bufset-u32 image (* 4 i)
+                (if (and (= enabled 1) (eq valid 'ok) b)
+                    (bufget-u32 b (+ 8 (* 4 i))) 4294967295u32)))
+    })
+    (list image state)
+})
+
+; The sender owns the snapshot exclusively. It is never shared back with the
+; owner, which can continue sampling while the transport yields.
+(defun log_send_snapshot (block part pace image state)
+{
+    (var n (if (= block 0) LOG_A_SLOTS LOG_B_SLOTS))
+    (var result (trap (looprange chunk 0 11 {
+        (var count (if (= chunk 10) (- n 60) 6))
+        (var frame (bufcreate (+ 6 (* 4 count))))
+        (bufset-u8 frame 0 177) (bufset-u8 frame 1 block)
+        (bufset-u8 frame 2 part) (bufset-u8 frame 3 chunk)
+        (bufset-u8 frame 4 11)
+        (bufset-u8 frame 5 (if (= chunk 0) state 0))
+        (looprange i 0 count
+            (bufset-u32 frame (+ 6 (* 4 i)) (bufget-u32 image (* 4 (+ (* chunk 6) i)))))
+        (if (eq (send-data frame) nil) (car 1))
+        (if (< chunk 10) (sleep (/ pace 1000.0)))
+    })))
+    (atomic (setvar 'log_read_busy 0))
+    result
+})
+
+(defun log_operation (req)
+{
+    (var op (ix req 0)) (var block (ix req 1))
+    (var value (ix req 2)) (var len (ix req 4))
+    (var desc (ix LOG_PROTOCOL_DESCRIPTORS (- op 161)))
+    (var bad (or (< len (ix desc 1)) (> len (ix desc 2))
+        (if (= op 161) (or (> block 1) (> value 1))
+            (if (= op 164) (> (+ (* (ix req 5) 256) value) 32767)
+                (or (> block 1) (if (= op 162) (!= value 90) (> value 1)))))))
+    (if bad (log_ack op 3 block)
+        (if (= op 161) {
+            (var snap (trap (log_snapshot block value)))
+            (if (eq (ix snap 0) 'exit-ok) {
+                (var pace (ix req 3))
+                (var ms (if (= pace 0) LOG_CHUNK_PACE_MS (if (> pace 250) 250 pace)))
+                (var sender (trap (spawn 120 log_send_snapshot block value ms
+                                    (ix (ix snap 1) 0) (ix (ix snap 1) 1))))
+                (if (not (and (eq (ix sender 0) 'exit-ok) (number? (ix sender 1))
+                              (>= (ix sender 1) 0)))
+                    (setvar 'log_read_busy 0))
+            } (setvar 'log_read_busy 0))
+        } {
+            (var status (if (not (log_at_rest)) 1
+                (if (!= log_shutdown_state 0) 2 {
+                    (var state (if (= block 0) log_state_a log_state_b))
+                    (var enabled (if (= block 0) log_enable_a log_enable_b))
+                    (var b (if (= block 0) log_a log_b))
+                    (if (if (= op 162)
+                            (not (or (eq state 'ok) (eq state 'empty)
+                                     (eq state 'foreign) (eq state 'in_progress)
+                                     (eq state 'crc_mismatch)))
+                            (if (= op 163) (not (or (eq state 'ok) (eq state 'empty)))
+                                (not (and (eq state 'ok) (= enabled 1) b))))
+                        2 {
+                            (if (and (not b) (!= op 164)) {
+                                (setq b (log_blk_new (if (= block 0) LOG_A_BASE LOG_B_BASE)
+                                            (if (= block 0) LOG_A_SLOTS LOG_B_SLOTS)))
+                                (if (= block 0) (setvar 'log_a b) (setvar 'log_b b))
+                                (if (= op 163) {
+                                    (log_apply b (if (= block 0) LOG_A_INIT LOG_B_INIT))
+                                    (if (= block 1) {
+                                        (if (not log_bs) (setvar 'log_bs (bufcreate 20)))
+                                        (log_b_references b)
+                                    })
+                                })
+                            })
+                            (setvar 'log_explicit_active 1)
+                            (var done (trap (if (= op 162) (log_clear b)
+                                (if (= op 163)
+                                    (if (eq state 'empty) (log_initialise b value)
+                                        (log_set_enabled b value))
+                                    (log_b_set_tag (+ (* (ix req 5) 256) value))))))
+                            (setvar 'log_explicit_active 0)
+                            (if (and (eq (ix done 0) 'exit-ok) (ix done 1)) {
+                                (if (and (= op 163) (= value 0)
+                                         (= log_enable_a 0) (= log_enable_b 0)) {
+                                    (setvar 'log_st nil)
+                                    (setvar 'log_skip_a 0)
+                                    (setvar 'log_skip_b 0)
+                                })
+                                (if (and (= op 163) (= value 1) (= enabled 0)) {
+                                (var other (if (= block 0) log_enable_b log_enable_a))
+                                (if (not log_st) {
+                                    (var st (bufcreate 108))
+                                    (bufset-f32 st 40 1)
+                                    (setvar 'log_st st)
+                                })
+                                (if (= other 0)
+                                    (bufset-u32 log_st 0 (systime))
+                                    (if (= block 0) (setvar 'log_skip_a 1)
+                                        (setvar 'log_skip_b 1)))
+                                })
+                                0
+                            } (if (log_at_rest) 2 1))
+                        })
+                })))
+            (log_ack op status block)
+        }))
+})
+
+(defun log_requests ()
+{
+    (var write (atomic {
+        (var r log_write_request)
+        (setvar 'log_write_request nil)
+        r
+    }))
+    (if write {
+        (if (= log_shutdown_state 0) (trap (log_operation write)))
+        (atomic (setvar 'log_write_busy 0))
+    })
+    (var read_req (atomic {
+        (var r log_read_request)
+        (setvar 'log_read_request nil)
+        r
+    }))
+    (if read_req {
+        (var result (trap (log_operation read_req)))
+        (if (or (not (eq (ix result 0) 'exit-ok))
+                (not (and (or (= (ix read_req 4) 3) (= (ix read_req 4) 4))
+                          (<= (ix read_req 1) 1) (<= (ix read_req 2) 1))))
+            (setvar 'log_read_busy 0))
+    })
+})
+
+(defun log_owner_loop ()
 {
     (if (and (= log_enable_a 1) (eq log_a nil)) {
         (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))
@@ -2850,18 +3113,47 @@
         (setvar 'log_bs (bufcreate 20))
         (log_b_references log_b)
     })
-    (var st (bufcreate 108))
-    (bufset-u32 st 0 (systime))
-    (bufset-f32 st 40 1)
-    (setvar 'log_st st)
-    (loopwhile-thd THREAD_STACK_LOG t {
-        ; Capture the actual spawned context, not its spawning caller.
-        (if (= log_owner -1) (setvar 'log_owner (self)))
-        (sleep LOG_SAMPLE_PERIOD)
-        (trap (log_sample))
-        (log_rest_tick)
-        (log_service_once)
+    (if (or (= log_enable_a 1) (= log_enable_b 1)) {
+        (var st (bufcreate 108))
+        (bufset-u32 st 0 (systime))
+        (bufset-f32 st 40 1)
+        (setvar 'log_st st)
     })
+    (setvar 'log_owner (self))
+    (var deadline (systime))
+    (loopwhile t {
+        (if (or (= log_enable_a 1) (= log_enable_b 1)) {
+            (if (not log_st) {
+                (var st (bufcreate 108))
+                (bufset-f32 st 40 1)
+                (bufset-u32 st 0 (systime))
+                (setvar 'log_st st)
+                (setq deadline (systime))
+            })
+            (var remaining (- LOG_SAMPLE_PERIOD (secs-since deadline)))
+            (var delay (if (> remaining 0) remaining 0))
+            (recv-to delay (_ nil))
+            (if (>= (secs-since deadline) LOG_SAMPLE_PERIOD) {
+                (setq deadline (systime))
+                (trap (log_sample))
+                (log_rest_tick)
+                (log_service_once)
+            })
+        } {
+            ; Remain blocked, without polling or retained sample state, while off.
+            (recv (_ nil))
+            (setq deadline (systime))
+        })
+        (log_requests)
+    })
+})
+
+(defun log_start ()
+{
+    (var owner (spawn THREAD_STACK_LOG log_owner_loop))
+    ; The event handler is not registered until readiness is published.
+    (if (and (number? owner) (>= owner 0))
+        (loopwhile (= log_owner -1) (sleep 0.001)))
 })
 
 ; Init-only peripheral setup. Lives in the init/main call path because
@@ -3045,7 +3337,6 @@
 
     (thirds_warning_startup)
 
-    (setup_event_handler)
 
     (setvar 'sw_state 0)
     (setvar 'trigger_input_ready 0)
@@ -3114,7 +3405,8 @@
 
     (start_balance_loop)
 
-    (if (or (= log_enable_a 1) (= log_enable_b 1)) (trap (log_start)))
+    (trap (log_start))
+    (setup_event_handler)
 
     (setvar 'smart_cruise SMART_CRUISE_OFF)
 

@@ -113,6 +113,7 @@ def source_with_mocks():
 (define log_enable_a 0) (define log_enable_b 0) (define log_state_a 'empty)
 (define log_state_b 'empty) (define log_a nil) (define log_b nil)
 (define log_bs nil) (define log_fet_edges nil) (define log_st nil)
+(define log_skip_a 0) (define log_skip_b 0)
 '''
     return '@const-start\n' + constants + '\n' + helpers + imbalance + collector + \
         '@const-end\n' + globals_ + mocks
