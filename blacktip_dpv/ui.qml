@@ -62,6 +62,128 @@ Item {
     property bool fiveClickShutdownHardwareSupported: false
     property bool fiveClickShutdownFirmwareSupported: false
 
+    // Phone RAM only. Never replace a complete display with a partial transfer.
+    property var logComplete: null
+    property var logRows: []
+    property int logToken: 0
+    property int logSequence: 0
+    property int logPending: 0
+    property int logRow: 0
+    property int logRetries: 0
+    property string logMessage: qsTr("Connect after the dive and download before the DPV powers off. Automatic firmware power-off can erase unsaved data.")
+    property int logPage: 0
+
+    function logFail(message) {
+        logTimeout.stop()
+        logPending = 0
+        logRows = []
+        logMessage = message + qsTr(" Previous complete results remain in phone RAM; retry explicitly.")
+    }
+
+    function logRequest(op, row) {
+        logPending = op
+        logRow = row
+        logSequence = (logSequence + 1) % 65536
+        var packet = new ArrayBuffer(op === 3 ? 10 : 9)
+        var view = new DataView(packet)
+        view.setUint8(0, 177)
+        view.setUint8(1, 1)
+        view.setUint8(2, op)
+        view.setUint16(3, logSequence)
+        view.setUint32(5, logToken)
+        if (op === 3) view.setUint8(9, row)
+        mCommands.sendCustomAppData(packet)
+        logTimeout.restart()
+    }
+
+    function logDownload() {
+        if (logPending) return
+        // Token is fresh per transaction; no local token is reused on reconnect.
+        logToken = Math.floor(Math.random() * 4294967295) + 1
+        logRows = []
+        logRetries = 0
+        logMessage = qsTr("Downloading snapshot; existing results remain visible.")
+        logRequest(2, 255)
+    }
+
+    function logReceive(view) {
+        if (view.byteLength < 12 || view.getUint8(1) !== 1 || !logPending ||
+                view.getUint8(2) !== logPending || view.getUint16(3) !== logSequence ||
+                view.getUint32(5) !== logToken ||
+                view.getUint8(10) !== (logPending === 3 ? logRow : 255)) return
+        var status = view.getUint8(9)
+        if (status !== 0) {
+            if (view.byteLength !== 12) return
+            logFail(qsTr("Device rejected snapshot request (status %1).").arg(status))
+            return
+        }
+        if (view.getUint8(11) !== 0) {
+            logFail(qsTr("Device reports logging fault; aggregates may be incomplete."))
+            return
+        }
+        if (logPending === 2) {
+            if (view.byteLength !== 20) return
+            logTimeout.stop()
+            logRetries = 0
+            logRequest(3, 0)
+            return
+        }
+        if (view.byteLength !== 44 || logRows.length !== logRow) return
+        var n = view.getUint32(12)
+        var row = [n]
+        for (var i = 0; i < 5; i++) {
+            var value = view.getFloat32(16 + i * 4)
+            if (!isFinite(value) || (n === 0 && value !== 0) ||
+                    (i !== 1 && i !== 2 && value < 0)) {
+                logFail(qsTr("Invalid aggregate in speed %1.").arg(logRow))
+                return
+            }
+            row.push(value)
+        }
+        var peak = view.getFloat32(36)
+        if (!isFinite(peak) || peak < 0 || (n === 0 && peak !== 0)) {
+            logFail(qsTr("Invalid phase current peak."))
+            return
+        }
+        row.push(peak)
+        row.push(view.getUint32(40))
+        logRows.push(row)
+        logTimeout.stop()
+        logRetries = 0
+        if (logRow < 9) {
+            logRequest(3, logRow + 1)
+        } else {
+            var rows = logRows.slice(0)
+            logComplete = { token: logToken, rows: rows,
+                            downloaded: new Date().toLocaleString(),
+                            firmware: firmwareVersion, hardware: detectedHardwareModel }
+            logRows = []
+            logPending = 0
+            logMessage = qsTr("Complete snapshot in phone RAM only. Take and check screenshots in the gallery before closing the app. CSV export is unavailable in this package build.")
+        }
+    }
+
+    Timer {
+        id: logTimeout
+        interval: 1500
+        repeat: false
+        onTriggered: {
+            if (!logPending) return
+            if (logRetries >= 2) {
+                logFail(qsTr("Download timed out."))
+            } else {
+                logRetries++
+                // Retry the same transaction and row; stale sequences are ignored.
+                logRequest(logPending, logRow)
+            }
+        }
+    }
+
+    Component.onDestruction: {
+        logTimeout.stop()
+        logPending = 0
+    }
+
     Component.onCompleted: {
         mCommands.emitEmptySetupValues()
         updateFwText()
@@ -77,7 +199,7 @@ Item {
             implicitWidth: 0
             clip: true
 
-            property int buttons: 3
+            property int buttons: 4
             property int buttonWidth: 120
 
             TabButton {
@@ -91,6 +213,10 @@ Item {
             }
             TabButton {
                 text: qsTr("Speeds")
+                width: Math.max(tabBar.buttonWidth, tabBar.width / tabBar.buttons)
+            }
+            TabButton {
+                text: qsTr("Results")
                 width: Math.max(tabBar.buttonWidth, tabBar.width / tabBar.buttons)
             }
         }
@@ -684,6 +810,92 @@ Item {
                 }
             }
         }
+
+        Page {
+            ScrollView {
+                anchors.fill: parent
+                clip: true
+                contentWidth: availableWidth
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 8
+
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: logMessage
+                    }
+                    Button {
+                        text: qsTr("Download snapshot / Refresh")
+                        enabled: !logPending
+                        onClicked: {
+                            if (logComplete) logReplaceDialog.open()
+                            else logDownload()
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
+                        text: logComplete ? qsTr("Snapshot token %1 | phone download %2 | firmware %3 | hardware %4")
+                                        .arg(logComplete.token).arg(logComplete.downloaded)
+                                        .arg(logComplete.firmware).arg(logComplete.hardware)
+                                          : qsTr("No complete snapshot downloaded")
+                    }
+                    RowLayout {
+                        visible: !!logComplete
+                        Button {
+                            text: qsTr("Previous speed")
+                            enabled: logPage > 0
+                            onClicked: logPage--
+                        }
+                        Label { text: qsTr("Speed %1 / 9").arg(logPage) }
+                        Button {
+                            text: qsTr("Next speed")
+                            enabled: logPage < 9
+                            onClicked: logPage++
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: !!logComplete
+                        wrapMode: Text.WrapAnywhere
+                        text: {
+                            if (!logComplete) return ""
+                            var row = logComplete.rows[logPage]
+                            var count = row[0]
+                            var names = [qsTr("sum |RPM| (eRPM)"), qsTr("sum input current (A)"),
+                                         qsTr("sum input power (W)"), qsTr("sum |RPM error| (eRPM)"),
+                                         qsTr("sum |duty| (fraction)")]
+                            var s = qsTr("Snapshot %1 | speed %2 / 9\nValid samples: %3 | rejected: %4\n")
+                                    .arg(logComplete.token).arg(logPage).arg(count).arg(row[7])
+                            for (var i = 0; i < 5; i++)
+                                s += names[i] + ": " + row[i + 1] +
+                                     (count ? " | mean: " + (row[i + 1] / count).toFixed(3) : " | mean: no data") + "\n"
+                            s += qsTr("Peak |phase current| (A): ") + row[6]
+                            return s
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: qsTr("Ten labelled screenshot pages are needed for a complete capture. Check all images in your phone gallery. App termination can lose these phone-RAM results. The DPV collects automatically while powered; multiple dives in one power cycle are mixed. Samples are not seconds, energy or dive history.")
+                    }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: logReplaceDialog
+        title: qsTr("Replace downloaded snapshot?")
+        standardButtons: Dialog.Yes | Dialog.No
+        modal: true
+        Label {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("The complete phone-RAM results may be unsaved. Check all ten screenshots in the gallery before refreshing; CSV export is unavailable.")
+        }
+        onAccepted: logDownload()
     }
 
     // handshake timmer to initiate first transfer of values from lisp
@@ -1133,6 +1345,11 @@ Item {
 
         function onCustomAppDataReceived (data) {
             var dv = new DataView(data)
+            if (dv.byteLength && (dv.getUint8(0) === 177 ||
+                    (dv.getUint8(0) >= 161 && dv.getUint8(0) <= 164))) {
+                if (dv.getUint8(0) === 177) logReceive(dv)
+                return
+            }
             if (dv.byteLength < 31) {
                 console.warn("Settings payload too short:", dv.byteLength)
                 return

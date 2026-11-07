@@ -193,42 +193,12 @@
 (define SHUTDOWN_TONE_GAP 0.18)
 (define SHUTDOWN_DISPLAY_SETTLE 0.3)
 
-; Performance log block A. Rule rows (op need fid mul sig): op = 0 add, 1 max, 2 min,
-; +4 quiet, +8 P15; need = predicate bits; fid = 2*slot+half+mul*speed; sig = signal.
+; Automatic volatile per-power-cycle speed aggregates. No EEPROM slots belong to this log.
 (define THREAD_STACK_LOG 160)
 (define LOG_SAMPLE_PERIOD 0.2)
-(define LOG_PROTOCOL_DESCRIPTORS '((161 3 4) (162 3 3) (163 3 3) (164 3 3)))
-(define LOG_DT_MAX 0.5)
-(define LOG_DUTY_SATURATED 0.95)
-(define LOG_LIMIT_FRACTION 0.95)
-(define LOG_A_BASE 64)
-(define LOG_A_SLOTS 63)
-(define LOG_B_BASE 128)
-(define LOG_B_SLOTS 64)
-(define LOG_VREF_IDLE_S 2.0)
-(define LOG_REST_ERPM_MAX 25.0)
-(define LOG_REST_DUTY_MAX 0.02)
-(define LOG_SETTLE_S 5.0)
-(define LOG_MIN_FLUSH_INTERVAL_S 60.0)
-(define LOG_STORE_YIELD_MS 1)
-(define LOG_FET_REF 850)
-(define LOG_SAG_BIAS 1073741824u32)
-(define LOG_B_INIT '((130 1112820808) (131 273) (135 1073741824) (137 1073741824)
-    (139 1073741824) (141 1073741824) (143 1073741824) (145 1073741824)
-    (147 1073741824) (149 1073741824) (171 32767) (176 32767)
-    (181 32767) (186 32767)))
-(define LOG_DUTY_EDGES '(0.8 0.9 0.95))
-(define LOG_ABORT_REASONS '("invalid telemetry" "timeout" "high current stall"))
-(define LOG_A_INIT '((66 1112820807) (67 257) (77 32767) (124 32767)))
-(define LOG_A_SESSION '((122 0) (123 0) (124 32767) (125 0)))
-(define LOG_A_RULES '(
-    (0 16 136 0 0) (0 32 138 0 0) (0 1 144 0 1) (4 0 146 0 5) (4 0 148 0 6)
-    (0 2 156 6 1) (0 2 158 6 3) (0 2 160 6 4) (8 4 216 1 2)
-    (0 512 226 0 1) (0 256 228 0 1) (0 128 230 0 1)
-    (0 1 244 0 1) (8 1 246 0 5) (8 1 247 0 6)
-    (9 1 150 0 7) (9 1 151 0 8) (9 1 152 0 9) (9 1 153 0 10) (9 1 154 0 11) (10 1 155 0 12)
-    (9 1 248 0 7) (10 1 249 0 12) (9 1 250 0 10) (9 1 251 0 11)
-))
+(define LOG_PREFIX 177) ; B1; A1-A4 remain reserved for obsolete clients.
+(define LOG_VERSION 1)
+(define LOG_MAX_COUNT 4294967294u32)
 
 ; Lightweight macro to conditionally evaluate debug logging expressions
 ; Only evaluates the logging expression when debug_enabled is 1
@@ -331,39 +301,17 @@
 (define battery_imbalance_latched 0)      ; latched warning (BATTERY_IMBALANCE_WARN_*); persists across motor restarts
 (define imbalance_run_flash_counter 0)    ; cycles the periodic warning flash while the motor is running
 
-; Performance log: block A buffer, sampler state, enable (nil / 0 while off)
-(define log_enable_a 0)
-(define log_enable_b 0)
-(define log_state_a 'empty)
-(define log_state_b 'empty)
-(define log_a nil)
-(define log_b nil)
-(define log_bs nil)
-(define log_fet_edges nil)
-(define log_st nil)
-(define log_rest_since 0)
-(define log_last_flush 0)
-(define log_flush_seen 0)
-(define log_flush_stores 0)
-(define log_flush_count 0)
-(define log_flush_aborts 0)
-(define log_flush_largest 0)
-; The shutdown thread only posts a request. EEPROM writes belong to the sampler.
+; Only the owner writes these two fixed-size buffers. Requests are one bounded slot.
+(define log_live nil)
+(define log_snapshot_buf nil)
+(define log_snapshot_token 0)
+(define log_snapshot_valid 0)
+(define log_fault 0)
+(define log_previous_speed SPEED_OFF)
+(define log_previous_eligible 0)
 (define log_owner -1)
-; 0 ordinary, 1 requested, 2 claimed, 3 revoked until fresh activity.
-(define log_shutdown_state 0)
-(define log_shutdown_caller 0)
-(define log_writer_active 0)
-(define log_shutdown_active 0)
-(define log_store_entered 0)
-(define log_write_request nil)
-(define log_write_busy 0)
-(define log_read_request nil)
-(define log_read_busy 0)
-(define log_explicit_active 0)
-(define log_skip_a 0)
-(define log_skip_b 0)
-(define LOG_CHUNK_PACE_MS 10)
+(define log_request nil)
+(define log_busy 0)
 
 ; Display LUT byte array. import MUST be a top-level form (not inside a flashed
 ; const-block function), so the binding survives onto the heap. VESC Tool embeds
@@ -652,7 +600,6 @@
 (defun safe_start_abort_with_reason (reason)
 {
     (safe_start_increment_failure reason)
-    (trap (log_note_abort reason))
     (if (safe_start_should_retry) {
         (sleep SAFE_START_RETRY_BACKOFF)
         (safe_start_begin safe_start_attempt_speed)
@@ -746,7 +693,6 @@
         (sleep SHUTDOWN_TONE_GAP)
         ; One bounded request, serviced by the sole log writer. A failed or
         ; unfinished write must never prevent the hardware shutdown.
-        (trap (log_shutdown_flush))
         (debug_log "Five-click shutdown: requesting hardware shutdown")
         ; A successful shutdown never returns. nil means unsupported, failed,
         ; or held input and is not retried here.
@@ -934,8 +880,10 @@
     (if (= (bufget-u8 data 0) HANDSHAKE_CODE) {
         ; Handshake to trigger data send if not yet received.
         (send_current_settings)
-    } (if (and (>= (bufget-u8 data 0) 161) (<= (bufget-u8 data 0) 164)) {
+    } (if (= (bufget-u8 data 0) LOG_PREFIX) {
         (log_admit data)
+    } (if (and (>= (bufget-u8 data 0) 161) (<= (bufget-u8 data 0) 164)) {
+        nil ; obsolete experimental logger requests are consumed, never settings
     } {
         ; For non-handshake messages, validate buffer size
         (if (< (buflen data) EEPROM_SETTINGS_COUNT) {
@@ -947,7 +895,7 @@
             (update_settings_from_eeprom) ; updates actual settings in lisp
             (debug_log "Settings updated")
         })
-    })))
+    }))))
 })
 
 ; Setup functions
@@ -2101,1093 +2049,204 @@
 ; [pending f32 2N]; fid = 2*slot+half (P15 A even, B odd). Sampler state st: u32
 ; t 0, prev run 4, session 8, fault 12, ah 16, wh 20, seen aborts 24..36, signals
 ; (f32, -1 = skip) 40.., abort counts 92..
-(defun log_blk_new (base n)
+ ; Wire format, network (big-endian) integers/floats, one request slot:
+; B1 version opcode sequence:u16 token:u32 [row:u8]. Commands 1=status,
+; 2=snapshot, 3=row. Response header B1 version opcode sequence:u16
+; token:u32 status:u8 row:u8 fault:u8 (12 bytes); snapshot adds count:u32
+; rejected:u32 (20 bytes), row adds eight 32-bit fields (44 bytes).
+; Status 0=ok, 1=invalid, 2=busy, 3=missing/mismatched snapshot.
+(defun log_reply (op seq token status row size)
 {
-    (var b (bufcreate (+ 8 (* 16 n))))
-    (bufset-u32 b 0 base)
+    (var b (bufcreate size))
+    (bufset-u8 b 0 LOG_PREFIX)
+    (bufset-u8 b 1 LOG_VERSION)
+    (bufset-u8 b 2 op)
+    (bufset-u16 b 3 seq)
+    (bufset-u32 b 5 token)
+    (bufset-u8 b 9 status)
+    (bufset-u8 b 10 row)
+    (bufset-u8 b 11 log_fault)
     b
 })
 
-(defun log_apply (b pairs)
-    (loopforeach p pairs
-        (bufset-u32 b (+ 8 (* 4 (- (ix p 0) (bufget-u32 b 0)))) (ix p 1))))
+(defun log_valid (x limit)
+    (and (number? x) (= x x) (>= x (- limit)) (<= x limit)))
 
-(defun log_bin (x edges)
-{
-    (var n 0)
-    (loopforeach e edges (if (>= x e) (setq n (+ n 1))))
-    n
-})
-
-; Saturating field update (op as in LOG_A_RULES), never wraps.
-(defun log_upd (b op fid x)
-{
-    (var r (- fid (* 2 (bufget-u32 b 0))))
-    (var o (+ 8 (* 4 (shr r 1))))
-    (var p15 (> (bitwise-and op 8) 0))
-    (var s (if p15 (* 15 (- 1 (bitwise-and r 1))) 0))
-    (var mx (if p15 32767u32 2147483647u32))
-    (var v (bufget-u32 b o))
-    (var f (bitwise-and (shr v s) mx))
-    (var n f)
-    (match (bitwise-and op 3)
-        (0 {
-            (var q (+ 8 (shr (- (buflen b) 8) 1) (* 4 r)))
-            (var a (+ x (bufget-f32 b q)))
-            ; Avoid converting the U31 ceiling through f32 (which rounds it up
-            ; to 2^31), and tolerate f32 error at a whole-unit boundary.
-            (if (>= a (- mx f)) {
-                (setq n mx)
-                (bufset-f32 b q 0)
-            } {
-                (var d (to-i (floor (+ a 0.000001))))
-                (setq n (+ f d))
-                (bufset-f32 b q (clamp (- a d) 0 1))
-            })
-        })
-        (1 (setq n (clamp (to-i x) f mx)))
-        (_ (setq n (clamp (to-i x) 0 f))))
-    (if (!= n f) {
-        (bufset-u32 b o (bitwise-or (bitwise-and v (bitwise-not (shl mx s))) (shl (to-u32 n) s)))
-        (if (= (bitwise-and op 4) 0) (bufset-u32 b 4 1))
-    })
-})
-
-(defun log_rules (b st m sp rules)
-    (loopforeach r rules {
-        (var x (bufget-f32 st (+ 40 (* 4 (ix r 4)))))
-        (if (and (>= x 0) (= (ix r 1) (bitwise-and m (ix r 1))))
-            (log_upd b (ix r 0) (+ (ix r 2) (* (ix r 3) sp)) x))
-    }))
-
-(defun log_q (x s o) (+ o (floor (+ 0.5 (* s x)))))
-
-; A failed trap, nil or non-numeric telemetry skips this signal only.
-(defun log_get (result)
-    (if (and (eq (ix result 0) 'exit-ok) (number? (ix result 1))
-             (= (ix result 1) (ix result 1))
-             (<= (abs (ix result 1)) 100000000))
-        (ix result 1) nil))
-
-; Signal k, or -1 (skip) when negative or NaN.
-(defun log_set (st k v)
-    (bufset-f32 st (+ 40 (* 4 k)) (if (and (number? v) (>= v 0)) v -1)))
-
-; The status accompanies the value: a successful read of 160 differs from fallback 160.
-; Reused when a future clear or enable operation re-references an empty block.
-(defun log_motor_reference ()
-{
-    (var t0 (log_get (trap (conf-get 'l-temp-motor-start))))
-    (if (and (number? t0) (>= t0 30.0) (<= t0 250.0))
-        (list (to-i (log_q t0 10 0)) 2)
-        (list 1600 0))
-})
-
-(defun log_b_references (b)
-{
-    (var iref (to-i (log_q (if (= scooter_type SCOOTER_CUDAX) MAX_CURRENT_CUDAX MAX_CURRENT_BLACKTIP) 10 0)))
-    (var motor (log_motor_reference))
-    (log_apply b (list (list 131 (+ 273 (ix motor 1) (if (> battery_imbalance_threshold_centi 0) 4 0)))
-                       (list 189 (+ (shl iref 15) LOG_FET_REF))
-                       (list 190 (shl (ix motor 0) 15))))
-    (setvar 'log_fet_edges (list (- LOG_FET_REF 450) (- LOG_FET_REF 300)
-                                  (- LOG_FET_REF 150) LOG_FET_REF))
-    ; log_bs[16] is the integer step in 0.1 A, derived once at start.
-    (bufset-u32 log_bs 16 (* 5 (to-i (/ (+ iref 39) 40))))
-})
-
-; Check a stored image byte-for-byte in ascending slot order. A nil or invalid
-; covered slot cannot be represented as zero: it makes the image unverified.
-(defun log_boot_block (base n magic)
-{
-    (var h (bufcreate 16))
-    (var any 0)
-    (looprange i 0 4 {
-        (var v (eeprom-read-i (+ base i)))
-        (if (not-eq v nil) (setq any 1))
-        (if (and (number? v) (>= v 0) (<= v 2147483647))
-            (bufset-u32 h (* i 4) v)
-            (bufset-u32 h (* i 4) 0))
-    })
-    (if (= any 0) 'empty
-        (if (!= (bufget-u32 h 8) magic) 'foreign
-            (if (!= (bitwise-and (shr (bufget-u32 h 12) 8) 255) 1) 'unknown_layout {
-                (var b (log_blk_new base n))
-                (var check (bufcreate 4))
-                (var crc 0u32)
-                (var complete 1)
-                (var seq_present 1)
-                (looprange i 0 n {
-                    (var v (eeprom-read-i (+ base i)))
-                    (if (and (= i 0) (eq v nil)) (setq seq_present 0))
-                    (if (or (not (number? v)) (< v 0) (> v 2147483647)) {
-                        (setq complete 0)
-                        (setq v 0)
-                    })
-                    ; Keep the unverified raw values available in the stored mirror.
-                    (bufset-u32 b (+ 8 (* 4 i) (* 4 n)) v)
-                    (if (>= i 2) {
-                        (bufset-u32 check 0 v)
-                        (setq crc (crc32 check crc))
-                    })
-                })
-                (var seq (bufget-u32 b (+ 8 (* 4 n))))
-                (var saved (bufget-u32 b (+ 12 (* 4 n))))
-                (var state (if (or (= (bitwise-and seq 1) 1) (= seq_present 0))
-                    'in_progress
-                    (if (or (= complete 0) (!= (bitwise-and crc 2147483647u32) saved))
-                        'crc_mismatch 'ok)))
-                (if (eq state 'ok) {
-                    ; Only verified images can become the live accumulator.
-                    (looprange i 0 n (bufset-u32 b (+ 8 (* 4 i))
-                        (bufget-u32 b (+ 8 (* 4 i) (* 4 n)))))
-                    (if (= base LOG_A_BASE)
-                        (setvar 'log_a b)
-                        (setvar 'log_b b))
-                })
-                state
-            })))
-})
-
-; Restore references before sampling, never replacing a non-zero stored edge.
-; The stored motor-read provenance (bit 1) belongs to the stored reference.
-(defun log_b_boot_references (b)
-{
-    (var iref (to-i (log_q (if (= scooter_type SCOOTER_CUDAX)
-        MAX_CURRENT_CUDAX MAX_CURRENT_BLACKTIP) 10 0)))
-    (var motor (log_motor_reference))
-    (var io (+ 8 (* 4 (- 189 LOG_B_BASE))))
-    (var mo (+ 8 (* 4 (- 190 LOG_B_BASE))))
-    (var fo (+ 8 (* 4 (- 131 LOG_B_BASE))))
-    (var old_i (shr (bufget-u32 b io) 15))
-    (var old_f (bitwise-and (bufget-u32 b io) 32767))
-    (var old_m (shr (bufget-u32 b mo) 15))
-    (var flags (bufget-u32 b fo))
-    (if (or (and (> old_i 0) (!= old_i iref))
-            (and (> old_m 0) (!= old_m (ix motor 0))))
-        (setq flags (bitwise-or flags 8))
-        (setq flags (bitwise-and flags (bitwise-not 8))))
-    (if (= old_m 0)
-        (setq flags (bitwise-or (bitwise-and flags (bitwise-not 2)) (ix motor 1))))
-    (bufset-u32 b fo flags)
-    (var final_i (if (> old_i 0) old_i iref))
-    (var final_f (if (> old_f 0) old_f LOG_FET_REF))
-    (bufset-u32 b io (+ (shl final_i 15) final_f))
-    (bufset-u32 b mo (shl (if (> old_m 0) old_m (ix motor 0)) 15))
-    (setvar 'log_fet_edges (list (- final_f 450) (- final_f 300)
-        (- final_f 150) final_f))
-    (bufset-u32 log_bs 16 (* 5 (to-i (/ (+ final_i 39) 40))))
-})
-
-(defun log_boot ()
-{
-    (setvar 'log_owner -1)
-    (setvar 'log_write_request nil)
-    (setvar 'log_write_busy 0)
-    (setvar 'log_read_request nil)
-    (setvar 'log_read_busy 0)
-    (setvar 'log_explicit_active 0)
-    (setvar 'log_skip_a 0)
-    (setvar 'log_skip_b 0)
-    (setvar 'log_shutdown_state 0)
-    (setvar 'log_shutdown_caller 0)
-    (setvar 'log_writer_active 0)
-    (setvar 'log_shutdown_active 0)
-    (setvar 'log_store_entered 0)
-    (setvar 'log_enable_a 0) (setvar 'log_enable_b 0)
-    (setvar 'log_a nil) (setvar 'log_b nil) (setvar 'log_bs nil)
-    (var a (trap (log_boot_block LOG_A_BASE LOG_A_SLOTS 1112820807)))
-    (setvar 'log_state_a (if (eq (ix a 0) 'exit-ok) (ix a 1) 'read_error))
-    (if (eq log_state_a 'ok)
-        (setvar 'log_enable_a (bitwise-and (bufget-u32 log_a 20) 1)))
-    (var b (trap (log_boot_block LOG_B_BASE LOG_B_SLOTS 1112820808)))
-    (setvar 'log_state_b (if (eq (ix b 0) 'exit-ok) (ix b 1) 'read_error))
-    (if (eq log_state_b 'ok) {
-        (setvar 'log_enable_b (bitwise-and (bufget-u32 log_b 20) 1))
-        (var refs (trap {
-            (setvar 'log_bs (bufcreate 20))
-            (log_b_boot_references log_b)
-        }))
-        (if (not (eq (ix refs 0) 'exit-ok)) {
-            (setvar 'log_state_b 'read_error)
-            (setvar 'log_enable_b 0)
-            (setvar 'log_b nil)
-        })
-    })
-})
-
-; Unlike the generic fractional positive-only adder, sag is signed and biased.
-(defun log_b_sag (b slot delta)
-{
-    (var o (+ 8 (* 4 (- slot LOG_B_BASE))))
-    (var old (bufget-u32 b o))
-    (var v (if (and (> delta 0) (>= delta (- 2147483647u32 old))) 2147483647u32
-               (if (and (< delta 0) (>= (- delta) old)) 0u32 (+ old delta))))
-    (if (!= old v) {
-        (bufset-u32 b o (to-u32 v))
-        (bufset-u32 b 4 1)
-    })
-})
-
-(defun log_b_last_imbalance (b centi)
-{
-    (var o (+ 8 (* 4 (- 167 LOG_B_BASE))))
-    (var v (bufget-u32 b o))
-    (var n (bitwise-or (bitwise-and v 0x3FFF8000) (to-u32 (clamp centi 0 32767))))
-    (if (!= n v) {
-        (bufset-u32 b o n)
-        (bufset-u32 b 4 1)
-    })
-})
-
-; The tag is a RAM-only choice until the protocol and flush paths are added.
-(defun log_b_set_tag (tag)
-{
-    (if (and (= log_enable_b 1) log_b log_bs (number? tag) (= tag tag) (>= tag 0)
-             (<= tag 32767) (= tag (floor tag))) {
-        (var b log_b)
-        (var v (shl (to-i tag) 15))
-        (var o (+ 8 (* 4 (- 133 LOG_B_BASE))))
-        (if (!= (bufget-u32 b o) v) {
-            (bufset-u32 b o v)
-            (bufset-u32 b 4 1)
-        })
-        (if (= (bufget-u32 log_bs 12) 1) {
-            (var seq (bufget-u32 b (+ 8 (* 4 (- 132 LOG_B_BASE)))))
-            (var ro (+ 8 (* 4 (- (+ (log_b_ring_slot seq) 4) LOG_B_BASE))))
-            (var rv (bitwise-or v (bitwise-and (bufget-u32 b ro) 32767)))
-            (if (!= rv (bufget-u32 b ro)) {
-                (bufset-u32 b ro rv)
-                (bufset-u32 b 4 1)
-            })
-        })
-        t
-    } nil)
-})
-
-(defun log_b_ring_slot (seq) (+ 169 (* 5 (mod (- seq 1) 4))))
-
-(defun log_b_ring_begin (b bs)
-{
-    (var seq_o (+ 8 (* 4 (- 132 LOG_B_BASE))))
-    (var seq (bufget-u32 b seq_o))
-    (if (< seq 2147483647) (setq seq (+ seq 1)))
-    (bufset-u32 b seq_o seq)
-    (bufset-u32 b 4 1)
-    (var base (log_b_ring_slot seq))
-    (looprange k 0 5 {
-        (var slot (+ base k))
-        (bufset-u32 b (+ 8 (* 4 (- slot LOG_B_BASE))) (if (= k 2) 32767 0))
-        (looprange h 0 2
-            (bufset-f32 b (+ 8 (shr (- (buflen b) 8) 1)
-                            (* 4 (- (+ (* 2 slot) h) (* 2 LOG_B_BASE)))) 0))
-    })
-    (bufset-u32 b (+ 8 (* 4 (- (+ base 4) LOG_B_BASE)))
-        (bitwise-or (bufget-u32 b (+ 8 (* 4 (- 133 LOG_B_BASE))))
-                    (to-u32 (clamp (bufget-u32 bs 4) 0 32767))))
-})
-
-; Signals are already quantised by log_sample; negative deltas are skipped.
-(defun log_b_ring_sample (b dt fet vin iin rpm)
-{
-    (var base (log_b_ring_slot (bufget-u32 b (+ 8 (* 4 (- 132 LOG_B_BASE))))))
-    (var st log_st)
-    (log_upd b 0 (* 2 base) dt)
-    (looprange k 0 2 {
-        (var x (bufget-f32 st (+ 40 (* 4 (+ 5 k)))))
-        (if (>= x 0) (log_upd b 8 (+ (* 2 (+ base 1)) k) x))
-    })
-    (if (number? fet) (log_upd b 9 (* 2 (+ base 2)) (log_q fet 10 1000)))
-    (if (and (number? vin) (>= vin 0))
-        (log_upd b 10 (+ (* 2 (+ base 2)) 1) (log_q vin 10 0)))
-    (if (number? iin) (log_upd b 9 (* 2 (+ base 3)) (log_q (abs iin) 10 0)))
-    (if (number? rpm) (log_upd b 9 (+ (* 2 (+ base 3)) 1) (abs rpm)))
-})
-
-; Called only for an enabled block. bs: idle timestamp, vref10, previous latch,
-; session-seen, current step. No new arrays or lists are made per sample.
-(defun log_b_sample (sp dt rpm iin fet mot vin duty)
-{
-    (var b log_b)
-    (var bs log_bs)
-    (var run (!= sp SPEED_OFF))
-    (var steady (and run (= soft_start_active 0)))
-    (var v10 (if (and (number? vin) (>= vin 0)) (to-i (log_q vin 10 0)) nil))
-    (var ref (bufget-u32 bs 4))
-    (if (and (= ref 0) (number? v10)) {
-        (bufset-u32 bs 4 (to-u32 v10))
-        (setq ref v10)
-    })
-    (if (and (= sp SPEED_OFF) (number? rpm) (number? duty)
-             (< (abs rpm) LOG_REST_ERPM_MAX) (< (abs duty) LOG_REST_DUTY_MAX)) {
-        (if (= (bufget-u32 bs 0) 0) (bufset-u32 bs 0 (+ 1 (systime))))
-        (if (and (number? v10) (>= (secs-since (- (bufget-u32 bs 0) 1)) LOG_VREF_IDLE_S))
-            (bufset-u32 bs 4 (to-u32 v10)))
-    } (bufset-u32 bs 0 0))
-    (if (and run (= (bufget-u32 bs 12) 0)) {
-        (bufset-u32 bs 12 1)
-        (log_b_ring_begin b bs)
-    })
-    (if run (log_b_ring_sample b dt fet vin iin rpm))
-    (if (and steady (not (eq safe_start_status 'running))
-             (number? duty) (>= (abs duty) DUTY_AT_REST_THRESHOLD)
-             (number? iin) (number? v10) (> (bufget-u32 bs 4) 0)) {
-        (var bin (clamp (to-i (/ (log_q (abs iin) 10 0) (bufget-u32 bs 16))) 0 7))
-        (log_upd b 0 (* 2 (+ 134 (* 2 bin))) 1)
-        (log_b_sag b (+ 135 (* 2 bin)) (- (bufget-u32 bs 4) v10))
-    })
-    (if (and steady (number? duty)) {
-        (var d (abs duty))
-        (if (>= d LOG_DUTY_SATURATED)
-            (if (and (>= sp 0) (< sp 10))
-                (log_upd b 8 (+ 300 sp) dt))
-            (if (< d 0.8) (log_upd b 0 (* 2 (+ 155 (log_bin d '(0.2 0.4 0.6)))) 1)))
-    })
-    (if run {
-        (if (number? fet) {
-            (var bin (log_bin (log_q fet 10 0) log_fet_edges))
-            (log_upd b 0 (* 2 (+ 159 bin)) 1)
-            (if (= bin 4) (log_upd b 0 328 1))
-        })
-        (if (and (number? mot) (>= (log_q mot 10 0) (shr (bufget-u32 b (+ 8 (* 4 (- 190 LOG_B_BASE)))) 15)))
-            (log_upd b 0 330 1))
-    })
-    (if (> battery_imbalance_threshold_centi 0) {
-        (var latch battery_imbalance_latched)
-        (if (and (!= latch BATTERY_IMBALANCE_WARN_NONE) (!= latch (bufget-u32 bs 8)))
-            (log_upd b 0 332 1))
-        (bufset-u32 bs 8 latch)
-        (if (and (= balance_smoothing_held 0) (> lower_voltage_smooth 0.1)) {
-            (var imbalance (log_get (trap (get_battery_imbalance_voltage))))
-            (if (number? imbalance) {
-                (var centi (log_q (abs imbalance) 100 0))
-                (log_upd b 9 334 centi)
-                (log_b_last_imbalance b centi)
-                (var warning (log_get (trap (get_battery_imbalance_warning))))
-                (if (and (number? warning) (!= warning BATTERY_IMBALANCE_WARN_NONE))
-                    (log_upd b 0 336 1))
-            })
-        })
-    } (bufset-u32 bs 8 0))
-})
-
-; One sample. Each getter is independently trapped; no per-iteration arrays/lists.
+; The controller's own speed targets are capped at 4100/7100 eRPM and
+; configured current at 22.8/46 A. Readback may overshoot: these generous
+; sanity bounds reject disconnected/trapped telemetry, not clamp measurements.
+; Voltage 0..120 V and duty <=1 reflect the supported VESC supply/duty range.
 (defun log_sample ()
 {
-    (var b (if (and (= log_enable_a 1) (= log_skip_a 0)) log_a nil))
-    (var st log_st)
     (var sp (to-i speed))
-    (var dt (clamp (secs-since (bufget-u32 st 0)) 0 LOG_DT_MAX))
-    (bufset-u32 st 0 (systime))
-    (var run (and (>= sp 0) (< sp 10)))
-    (var steady (and run (= soft_start_active 0)))
-    (var rpm (log_get (trap (get-rpm))))
-    (var rpm_set (log_get (trap (get-rpm-set))))
-    (var iin (log_get (trap (get-current-in))))
-    (var ah (log_get (trap (get-ah))))
-    (var wh (log_get (trap (get-wh))))
-    (var fc (log_get (trap (get-fault))))
-    (var fet (log_get (trap (get-temp-fet))))
-    (var mot (log_get (trap (get-temp-mot))))
-    (var cur (log_get (trap (get-current))))
-    (var vin (log_get (trap (get-vin))))
-    (var duty (log_get (trap (get-duty))))
-    (var start (and run (= 0 (bufget-f32 st 4))))
-    (var ns (and start (= 0 (bufget-f32 st 8))))
-    (log_set st 1 (* dt 10))
-    (log_set st 2 dt)
-    (log_set st 3 (if (number? iin) (* (clamp iin 0 1000) dt 100) nil))
-    (log_set st 4 (if (and (number? rpm) (number? rpm_set))
-        (* (clamp (- (abs rpm_set) (abs rpm)) 0 100000) dt) nil))
-    (log_set st 5 (if (and run (number? ah)) (* 1000 (- ah (bufget-f32 st 16))) nil))
-    (log_set st 6 (if (and run (number? wh)) (* 10 (- wh (bufget-f32 st 20))) nil))
-    (log_set st 7 (if (number? fet) (log_q fet 10 1000) nil))
-    (log_set st 8 (if (number? mot) (log_q mot 10 1000) nil))
-    (log_set st 9 (if (number? cur) (log_q (abs cur) 10 0) nil))
-    (log_set st 10 (if (number? iin) (log_q (abs iin) 10 0) nil))
-    (log_set st 11 (if (number? rpm) (log_q (abs rpm) 1 0) nil))
-    (log_set st 12 (if (number? vin) (log_q vin 100 0) nil))
-    (if (and run (number? ah)) (bufset-f32 st 16 ah))
-    (if (and run (number? wh)) (bufset-f32 st 20 wh))
-    (if (and b run (number? fc) (> fc 0) (!= fc (bufget-f32 st 12)))
-        (log_upd b 8 (+ 231 (to-i (clamp fc 0 11))) 1))
-    (if (number? fc) (bufset-f32 st 12 fc))
-    (if b (looprange k 0 4 {
-        (var c (bufget-u32 st (+ 92 (* 4 k))))
-        (log_upd b 8 (+ 140 k) (- c (bufget-u32 st (+ 24 (* 4 k)))))
-        (bufset-u32 st (+ 24 (* 4 k)) c)
-    }))
-    (if (and b ns) {
-        (bufset-f32 st 8 1)
-        (log_apply b LOG_A_SESSION)
-    })
-    (bufset-f32 st 4 (if run 1 0))
-    (if b (log_rules b st
-        (+ (if run 1 0) (if steady 2 0) (if ns 16 0) (if start 32 0)
-           (if (and steady (number? iin) (>= iin (* LOG_LIMIT_FRACTION (if (= scooter_type SCOOTER_BLACKTIP) MAX_CURRENT_BLACKTIP MAX_CURRENT_CUDAX)))) 4 0)
-           (if (and steady (number? duty)) (shl 64 (log_bin (abs duty) LOG_DUTY_EDGES)) 0))
-        sp LOG_A_RULES))
-    (if (and (= log_enable_b 1) (= log_skip_b 0))
-        (log_b_sample sp dt rpm iin fet mot vin duty))
-    (setvar 'log_skip_a 0)
-    (setvar 'log_skip_b 0)
-})
-
-; Hook in safe_start_abort_with_reason: counts only, no control flow.
-(defun log_note_abort (reason)
-{
-    (if (and (= log_enable_a 1) log_a log_st) {
-        (var k 0)
-        (loopforeach r LOG_ABORT_REASONS {
-            (if (= (str-cmp r reason) 0) (log_inc k))
-            (setq k (+ k 1))
-        })
-        (if (>= safe_start_failures SAFE_START_MAX_RETRIES) (log_inc 3))
-    })
-})
-
-(defun log_inc (k)
-{
-    (var o (+ 92 (* 4 k)))
-    (var n (bufget-u32 log_st o))
-    (if (< n 2147483647) (bufset-u32 log_st o (+ n 1)))
-})
-
-; Duration across an EEPROM store cannot be measured with systime: firmware
-; masks ticks while flash is locked. Keep counts instead; slot 126 A stays 0.
-(defun log_rest_ok (rpm duty pressed tune sp)
-    (and (= sp SPEED_OFF) (= pressed 0) (= tune 0)
-         (number? rpm) (= rpm rpm) (< (abs rpm) LOG_REST_ERPM_MAX)
-         (number? duty) (= duty duty) (< (abs duty) LOG_REST_DUTY_MAX)))
-
-(defun log_at_rest ()
-    (log_rest_ok (log_get (trap (get-rpm))) (log_get (trap (get-duty)))
-                 (log_get (trap (gpio-read 'pin-ppm))) startup_tune_active speed))
-
-(defun log_dirty ()
-    (or (and (= log_enable_a 1) (eq log_state_a 'ok) log_a
-             (= (bufget-u32 log_a 4) 1))
-        (and (= log_enable_b 1) (eq log_state_b 'ok) log_b
-             (= (bufget-u32 log_b 4) 1))))
-
-; The first flush has no interval restriction. secs-since is used only between
-; stores, never as a measure of the time spent inside a store.
-(defun log_safe_gate (shutdown)
-    (and (log_at_rest)
-         (or shutdown (= log_explicit_active 1) (and (!= log_rest_since 0)
-             (>= (secs-since log_rest_since) LOG_SETTLE_S)
-             (or (= log_flush_seen 0)
-                 (>= (secs-since log_last_flush) LOG_MIN_FLUSH_INTERVAL_S))))))
-
-(defun log_gate (shutdown) (and (log_dirty) (log_safe_gate shutdown)))
-
-(defun log_writer_owned ()
-    (and (>= log_owner 0) (= (self) log_owner)))
-
-(defun log_writer_permitted (shutdown)
-    (and (log_writer_owned)
-         (= log_shutdown_state (if shutdown 2 0))))
-
-(defun log_rest_tick ()
-    (if (not (log_writer_owned)) nil
-    (if (log_at_rest)
-        (if (= log_rest_since 0) (setvar 'log_rest_since (systime)))
-        {
-            (setvar 'log_rest_since 0)
-            ; Revocation survives the hook and any already-entered store.
-            ; Only activity observed after quiescence re-arms ordinary writes.
-            (atomic (if (and (= log_shutdown_state 3) (= log_shutdown_caller 0)
-                             (= log_writer_active 0) (= log_shutdown_active 0)
-                             (= log_store_entered 0))
-                        (setvar 'log_shutdown_state 0)))
-        })))
-
-; Called only by the sampler. Check directly before every store, including
-; the two sequence writes; yield after each actual write to see trigger edges.
-(defun log_write_slot (slot val)
-{
-    (if (or (not (log_writer_permitted (= log_shutdown_active 1)))
-            (not (or (and (>= slot LOG_A_BASE) (< slot (+ LOG_A_BASE LOG_A_SLOTS)))
-                     (and (>= slot LOG_B_BASE) (< slot (+ LOG_B_BASE LOG_B_SLOTS)))))
-            (!= speed SPEED_OFF)
-            (not (eq (log_get (trap (gpio-read 'pin-ppm))) 0))) nil {
-        (var before (trap (eeprom-read-i slot)))
-        (if (not (eq (ix before 0) 'exit-ok)) nil
-            (if (and (number? (ix before 1)) (= (ix before 1) val)) t {
-                ; Reserve one in-flight store without yielding. Revocation
-                ; after this point can leave THIS store/readback, never another.
-                (var safe (log_at_rest))
-                (var entered (if safe (atomic
-                    (if (and (log_writer_permitted (= log_shutdown_active 1))
-                             (= speed SPEED_OFF)) {
-                        (setvar 'log_store_entered 1)
-                        t
-                    } nil)) nil))
-                (var result (if entered (trap (eeprom-store-i slot val)) nil))
-                (if (not (and entered (eq (ix result 0) 'exit-ok)
-                              (eq (ix result 1) t))) {
-                    (setvar 'log_store_entered 0)
-                    nil
-                } {
-                    (sleep (/ LOG_STORE_YIELD_MS 1000.0))
-                    (var after (trap (eeprom-read-i slot)))
-                    (setvar 'log_store_entered 0)
-                    (var verified (and (eq (ix after 0) 'exit-ok)
-                                       (number? (ix after 1)) (= (ix after 1) val)))
-                    (if verified (setvar 'log_flush_stores (+ log_flush_stores 1)))
-                    verified
-                })
-            }))
-    })
-})
-
-(defun log_crc_image (b)
-{
-    (var base (bufget-u32 b 0))
-    (var n (shr (- (buflen b) 8) 4))
-    (var v (bufcreate 4))
-    (var crc 0u32)
-    (looprange i 2 n {
-        (bufset-u32 v 0 (bufget-u32 b (+ 8 (* 4 i))))
-        (setq crc (crc32 v crc))
-    })
-    (bitwise-and crc 2147483647u32)
-})
-
-; mode 0: changed slots, 1: full initial image, 2: explicit clear,
-; 3: set-enabled. Modes 1..3 are entry points for the owner mailbox,
-; not for event handlers or other writer threads.
-(defun log_write_block_inner (b mode enabled)
-{
-    (var base (bufget-u32 b 0))
-    (var n (shr (- (buflen b) 8) 4))
-    (var state (if (= base LOG_A_BASE) log_state_a log_state_b))
-    (var allowed (if (= mode 0) (eq state 'ok)
-        (if (= mode 1) (eq state 'empty)
-            (if (= mode 2) (or (eq state 'ok) (eq state 'empty) (eq state 'foreign)
-                                (eq state 'in_progress) (eq state 'crc_mismatch))
-                (eq state 'ok)))))
-    (if (or (not (log_writer_permitted (= log_shutdown_active 1)))
-            (not (or (and (= base LOG_A_BASE) (= n LOG_A_SLOTS))
-                     (and (= base LOG_B_BASE) (= n LOG_B_SLOTS))))
-            (not allowed) (not (or (= enabled 0) (= enabled 1)))
-            (not (log_safe_gate (= log_shutdown_active 1)))
-            (and (= mode 0) (!= (bufget-u32 b 4) 1))) nil {
-        (if (= mode 2) {
-            ; Preserve the flag of a valid stored block; an unverified block
-            ; was not enabled at boot and needs explicit re-enabling later.
-            (setq enabled (if (eq state 'ok) (bitwise-and (bufget-u32 b 20) 1) 0))
-            (looprange i 2 n (bufset-u32 b (+ 8 (* 4 i)) 0))
-            (looprange i 0 (* 2 n)
-                (bufset-f32 b (+ 8 (* 8 n) (* 4 i)) 0))
-            (log_apply b (if (= base LOG_A_BASE) LOG_A_INIT LOG_B_INIT))
-            (if (= base LOG_B_BASE) {
-                (if (eq log_bs nil) (setvar 'log_bs (bufcreate 20)))
-                (bufclear log_bs)
-                (log_b_references b)
-            } {
-                (if log_st {
-                    (bufset-f32 log_st 8 0)
-                    (looprange i 0 4
-                        (bufset-u32 log_st (+ 24 (* 4 i))
-                            (bufget-u32 log_st (+ 92 (* 4 i)))))
-                })
-            })
-        })
-        (if (!= mode 0) {
-            (var fo 20)
-            (bufset-u32 b fo (bitwise-or
-                (bitwise-and (bufget-u32 b fo) (bitwise-not 1)) enabled))
-        })
-        (var old (eeprom-read-i base))
-        (var odd (if (and (number? old) (>= old 0) (<= old 2147483647))
-            (bitwise-or (bitwise-and (+ old 1) 2147483647) 1) 1))
-        (var even (bitwise-and (+ odd 1) 2147483647))
-        (var ok (log_write_slot base odd))
+    (var ready (and (>= sp 0) (< sp 10) (= soft_start_active 0)
+                    (not (eq safe_start_status 'running))))
+    (var eligible (and ready (= log_previous_eligible 1)
+                       (= sp log_previous_speed)))
+    (setvar 'log_previous_speed sp)
+    (setvar 'log_previous_eligible (if ready 1 0))
+    (if (and eligible (= log_fault 0)) {
+        (var rpm (trap (get-rpm)))
+        (var target (trap (get-rpm-set)))
+        (var current (trap (get-current-in)))
+        (var phase (trap (get-current)))
+        (var voltage (trap (get-vin)))
+        (var duty (trap (get-duty)))
+        (var ok (and (eq (ix rpm 0) 'exit-ok)
+                     (eq (ix target 0) 'exit-ok)
+                     (eq (ix current 0) 'exit-ok)
+                     (eq (ix phase 0) 'exit-ok)
+                     (eq (ix voltage 0) 'exit-ok)
+                     (eq (ix duty 0) 'exit-ok)))
         (if ok {
-            ; Flag is the final covered slot: init/clear may not expose an
-            ; enabled image until all other fields have been verified.
-            (looprange i 2 n {
-                (if (and ok (!= i 3))
-                    (setq ok (log_write_slot (+ base i)
-                        (bufget-u32 b (+ 8 (* 4 i))))))
-            })
-            (if ok (setq ok (log_write_slot (+ base 3) (bufget-u32 b 20))))
-            (if ok (setq ok (log_write_slot (+ base 1) (log_crc_image b))))
-            (if ok (setq ok (log_write_slot base even)))
+            (setq rpm (ix rpm 1)) (setq target (ix target 1))
+            (setq current (ix current 1)) (setq phase (ix phase 1))
+            (setq voltage (ix voltage 1)) (setq duty (ix duty 1))
+            (setq ok (and (log_valid rpm 20000) (log_valid target 20000)
+                          (log_valid current 200) (log_valid phase 400)
+                          (log_valid voltage 120) (>= voltage 0)
+                          (log_valid duty 1)))
         })
-        (if ok {
-            (bufset-u32 b 8 even)
-            (bufset-u32 b 12 (log_crc_image b))
-            (looprange i 0 n
-                (bufset-u32 b (+ 8 (* 4 n) (* 4 i)) (bufget-u32 b (+ 8 (* 4 i)))))
-            (bufset-u32 b 4 0)
-            (if (= base LOG_A_BASE) {
-                (setvar 'log_state_a 'ok)
-                (setvar 'log_enable_a enabled)
-            } {
-                (setvar 'log_state_b 'ok)
-                (setvar 'log_enable_b enabled)
-            })
+        (var off (* 32 sp))
+        (if (not ok) {
+            (var rejected (bufget-u32 log_live (+ off 28)))
+            (if (>= rejected LOG_MAX_COUNT) (setvar 'log_fault 1)
+                (bufset-u32 log_live (+ off 28) (+ rejected 1)))
         } {
-            (bufset-u32 b 4 1)
-            (if (!= mode 0) {
-                (if (= base LOG_A_BASE) {
-                    (setvar 'log_state_a 'in_progress)
-                    (setvar 'log_enable_a 0)
-                } {
-                    (setvar 'log_state_b 'in_progress)
-                    (setvar 'log_enable_b 0)
-                })
-            })
-            (if (= mode 0) {
-                (setvar 'log_flush_aborts (+ log_flush_aborts 1))
-                (if (and log_a (= log_enable_a 1) (eq log_state_a 'ok))
-                    (log_upd log_a 8 253 1))
-            })
+            (var count (bufget-u32 log_live off))
+            (var rpm_sum (+ (bufget-f32 log_live (+ off 4)) (abs rpm)))
+            (var current_sum (+ (bufget-f32 log_live (+ off 8)) current))
+            (var power_sum (+ (bufget-f32 log_live (+ off 12)) (* voltage current)))
+            (var error_sum (+ (bufget-f32 log_live (+ off 16)) (abs (- target rpm))))
+            (var duty_sum (+ (bufget-f32 log_live (+ off 20)) (abs duty)))
+            (setq ok (< count LOG_MAX_COUNT))
+            (setq ok (and ok (log_valid rpm_sum 3.0e38)
+                           (log_valid current_sum 3.0e38)
+                           (log_valid power_sum 3.0e38)
+                           (log_valid error_sum 3.0e38)
+                           (log_valid duty_sum 3.0e38)))
+            (if ok {
+                (bufset-u32 log_live off (+ count 1))
+                (bufset-f32 log_live (+ off 4) rpm_sum)
+                (bufset-f32 log_live (+ off 8) current_sum)
+                (bufset-f32 log_live (+ off 12) power_sum)
+                (bufset-f32 log_live (+ off 16) error_sum)
+                (bufset-f32 log_live (+ off 20) duty_sum)
+                (if (> (abs phase) (bufget-f32 log_live (+ off 24)))
+                    (bufset-f32 log_live (+ off 24) (abs phase)))
+            } (setvar 'log_fault 1))
         })
-        ok
     })
 })
 
-; The direct entry point is also sampler-only. Trap all header/CRC failures so
-; no exception can leave active ownership published or silently clean an image.
-(defun log_write_block (b mode enabled)
-    (if (not (log_writer_permitted (= log_shutdown_active 1))) nil {
-        (setvar 'log_writer_active 1)
-        (var result (trap (log_write_block_inner b mode enabled)))
-        (setvar 'log_writer_active 0)
-        (setvar 'log_store_entered 0)
-        (if (eq (ix result 0) 'exit-ok) (ix result 1) {
-            (bufset-u32 b 4 1)
-            (if (!= mode 0) {
-                (if (= (bufget-u32 b 0) LOG_A_BASE) {
-                    (setvar 'log_state_a 'in_progress)
-                    (setvar 'log_enable_a 0)
-                } {
-                    (setvar 'log_state_b 'in_progress)
-                    (setvar 'log_enable_b 0)
-                })
-            })
-            nil
-        })
-    }))
-
-(defun log_initialise (b enabled) (log_write_block b 1 enabled))
-(defun log_clear (b) (log_write_block b 2 0))
-(defun log_set_enabled (b enabled) (log_write_block b 3 enabled))
-
-(defun log_flush_once_inner (shutdown)
-{
-    (if (or (not (log_writer_permitted shutdown))
-            (not (log_gate shutdown))) nil {
-        (setvar 'log_flush_stores 0)
-        (var ok t)
-        (var completed nil)
-        (var old_aborts log_flush_aborts)
-        ; Slot 126 A cannot hold a reliable duration from systime. Clear any
-        ; advisory value inherited from an older image on the next real flush.
-        (if (and (= log_enable_a 1) (eq log_state_a 'ok) log_a)
-            (log_upd log_a 10 252 0))
-        (if (and (= log_enable_a 1) (eq log_state_a 'ok) log_a
-                 (= (bufget-u32 log_a 4) 1)) {
-            (var result (trap (log_write_block log_a 0 1)))
-            (setq ok (and (eq (ix result 0) 'exit-ok) (eq (ix result 1) t)))
-            (if ok (setq completed t))
-        })
-        (if (and ok (= log_enable_b 1) (eq log_state_b 'ok) log_b
-                 (= (bufget-u32 log_b 4) 1))
-            {
-                (var result (trap (log_write_block log_b 0 1)))
-                (setq ok (and (eq (ix result 0) 'exit-ok) (eq (ix result 1) t)))
-                (if ok (setq completed t))
-            })
-        (if (> log_flush_stores log_flush_largest)
-            (setvar 'log_flush_largest log_flush_stores))
-        ; A gate failure before B's odd sequence is still an aborted flush;
-        ; only the later block stays dirty. Count it once, not once per block.
-        (if (and (not ok) (= log_flush_aborts old_aborts)) {
-            (setvar 'log_flush_aborts (+ log_flush_aborts 1))
-            (if (and log_a (= log_enable_a 1) (eq log_state_a 'ok))
-                (log_upd log_a 8 253 1))
-        })
-        (if completed {
-            (setvar 'log_last_flush (systime))
-            (setvar 'log_flush_seen 1)
-        })
-        (if ok (setvar 'log_flush_count (+ log_flush_count 1)))
-        ok
-    })
-})
-
-(defun log_flush_once (shutdown)
-    (if (not (log_writer_permitted shutdown)) nil {
-        (if shutdown (setvar 'log_shutdown_active 1))
-        (var result (trap (log_flush_once_inner shutdown)))
-        (if shutdown (setvar 'log_shutdown_active 0))
-        (if (eq (ix result 0) 'exit-ok) (ix result 1) nil)
-    }))
-
-(defun log_shutdown_flush ()
-{
-    ; Publish intent even if the image is clean or the rest gate fails. Do not
-    ; allow a second request to reuse a generation while the old store runs.
-    (var accepted (atomic (if (= log_shutdown_state 0) {
-        (setvar 'log_shutdown_caller 1)
-        (setvar 'log_shutdown_state 1)
-        (if log_write_request (setvar 'log_write_busy 0))
-        (setvar 'log_write_request nil)
-        t
-    } nil)))
-    (if accepted {
-        (var eligible (trap (and log_st (>= log_owner 0) (log_gate t))))
-        ; Finite scheduled waits, not a wall-clock deadline. Trap a failing
-        ; sleep so revocation always executes before the shutdown call.
-        (if (and (eq (ix eligible 0) 'exit-ok) (ix eligible 1))
-            (trap (looprange i 0 100
-                (if (or (= log_shutdown_state 1) (= log_shutdown_state 2))
-                    (sleep 0.01)))))
-        (atomic {
-            (setvar 'log_shutdown_state 3)
-            (setvar 'log_shutdown_caller 0)
-        })
-    })
-    nil
-})
-
-; Called in the sampler context only. Claim once; an exception or timeout
-; revokes the generation rather than converting it to a periodic retry.
-(defun log_service_once ()
-    (if (not (log_writer_owned)) nil {
-        (var claimed (atomic (if (= log_shutdown_state 1) {
-            (setvar 'log_shutdown_state 2)
-            t
-        } nil)))
-        (if claimed {
-            (trap (log_flush_once t))
-            (atomic (if (= log_shutdown_state 2)
-                (setvar 'log_shutdown_state 3)))
-        } (trap (log_flush_once nil)))
-    }))
-
-; Requests are scalar lists built outside atomic. The mailbox, not the wake,
-; owns work. A failed wake releases its own reservation; a later wake can pick
-; up either mailbox, including one whose notification was already consumed.
+; Receive context only validates bytes and reserves the request slot. Never
+; waits, reads telemetry, copies buffers or sends while in an atomic section.
 (defun log_admit (data)
 {
-    (var op (bufget-u8 data 0))
     (var len (buflen data))
-    (var block (if (= op 164) 1 (if (> len 1) (bufget-u8 data 1) 255)))
-    (var value (if (> len 2) (bufget-u8 data 2) 0))
-    (var pace (if (> len 3) (bufget-u8 data 3) 0))
-    (var req (list op block value pace len (if (> len 1) (bufget-u8 data 1) 0)))
-    (var is_read (= op 161))
-    (var accepted (atomic (if (and (>= log_owner 0) (= log_shutdown_state 0)
-        (if is_read (= log_read_busy 0) (= log_write_busy 0))) {
-        (if is_read {
-            (setvar 'log_read_busy 1)
-            (setvar 'log_read_request req)
-        } {
-            (setvar 'log_write_busy 1)
-            (setvar 'log_write_request req)
+    (var op (if (>= len 3) (bufget-u8 data 2) 0))
+    (var seq (if (>= len 5) (bufget-u16 data 3) 0))
+    (var token (if (>= len 9) (bufget-u32 data 5) 0))
+    (var row (if (= len 10) (bufget-u8 data 9) 255))
+    (if (or (< len 9) (!= (bufget-u8 data 1) LOG_VERSION)
+            (< op 1) (> op 3) (!= len (if (= op 3) 10 9))
+            (and (= op 3) (> row 9)))
+        (send-data (log_reply op seq token 1 row 12))
+        (if (atomic (if (and (>= log_owner 0) (= log_busy 0)) {
+                (setvar 'log_busy 1)
+                t
+            } nil))
+            {
+                (setvar 'log_request (list op seq token row))
+                (send log_owner 'log-wake)
+            }
+            (send-data (log_reply op seq token 2 row 12))))
+})
+
+(defun log_serve (req)
+{
+    (var op (ix req 0)) (var seq (ix req 1))
+    (var token (ix req 2)) (var row (ix req 3))
+    (var status 0)
+    (if (= op 2) {
+        (if (or (= log_snapshot_valid 0) (!= token log_snapshot_token)) {
+            (looprange i 0 320
+                (bufset-u8 log_snapshot_buf i (bufget-u8 log_live i)))
+            (setvar 'log_snapshot_token token)
+            (setvar 'log_snapshot_valid 1)
         })
-        t
-    } nil)))
-    (if accepted {
-        (var sent (trap (send log_owner 'log-wake)))
-        (if (not (and (eq (ix sent 0) 'exit-ok) (ix sent 1)))
-            (atomic (if is_read {
-                (if (eq log_read_request req) {
-                    (setvar 'log_read_request nil)
-                    (setvar 'log_read_busy 0)
-                })
-            } (if (eq log_write_request req) {
-                (setvar 'log_write_request nil)
-                (setvar 'log_write_busy 0)
-            }))))
     })
-})
-
-(defun log_ack (op status block)
-{
-    (var b (bufcreate 4))
-    (bufset-u8 b 0 178) (bufset-u8 b 1 op)
-    (bufset-u8 b 2 status) (bufset-u8 b 3 block)
-    (send-data b)
-})
-
-; Classify the exact captured image, not the boot mirror. Missing words stay
-; FFFFFFFF; magic/layout precedence is the same as log_boot_block.
-(defun log_snapshot_state (image n magic)
-{
-    (var any 0)
-    (looprange i 0 4
-        (if (!= (bufget-u32 image (* 4 i)) 4294967295u32) (setq any 1)))
-    (if (= any 0) 0
-        (if (!= (bufget-u32 image 8) magic) 5
-            (if (!= (bitwise-and (shr (bufget-u32 image 12) 8) 255) 1) 4 {
-                (var seq (bufget-u32 image 0))
-                (var complete 1)
-                (var crc 0u32)
-                (var word (bufcreate 4))
-                (looprange i 2 n {
-                    (var v (bufget-u32 image (* 4 i)))
-                    (if (= v 4294967295u32) (setq complete 0))
-                    (bufset-u32 word 0 v)
-                    (setq crc (crc32 word crc))
-                })
-                (if (or (= seq 4294967295u32) (= (bitwise-and seq 1) 1)
-                        (= complete 0) (= (bufget-u32 image 4) 4294967295u32)
-                        (!= (bitwise-and crc 2147483647u32) (bufget-u32 image 4)))
-                    3 (if (= (bitwise-and (bufget-u32 image 12) 1) 1) 1 2))
-            })))
-})
-
-(defun log_snapshot (block part)
-{
-    (var base (if (= block 0) LOG_A_BASE LOG_B_BASE))
-    (var n (if (= block 0) LOG_A_SLOTS LOG_B_SLOTS))
-    (var image (bufcreate (* 4 n)))
-    (var state 0)
-    ; Capture stored header and classify even for a live read. The owner is
-    ; the sole mutator, so no collector update can interleave this copy.
-    (var stored (if (= part 0) image (bufcreate (* 4 n))))
-    (looprange i 0 n {
-        (var v (trap (eeprom-read-i (+ base i))))
-        (bufset-u32 stored (* 4 i)
-            (if (and (eq (ix v 0) 'exit-ok) (number? (ix v 1))
-                     (>= (ix v 1) 0) (<= (ix v 1) 2147483647))
-                (ix v 1) 4294967295u32))
+    (if (and (= op 3) (or (= log_snapshot_valid 0)
+                           (!= token log_snapshot_token)))
+        (setq status 3))
+    (var size (if (= status 0) (if (= op 2) 20 (if (= op 3) 44 12)) 12))
+    (var reply (log_reply op seq token status row size))
+    (if (and (= status 0) (= op 2)) {
+        (var count 0) (var rejected 0)
+        (looprange i 0 10 {
+            (var c (bufget-u32 log_snapshot_buf (* 32 i)))
+            (var r (bufget-u32 log_snapshot_buf (+ 28 (* 32 i))))
+            (setq count (if (> c (- LOG_MAX_COUNT count)) LOG_MAX_COUNT (+ count c)))
+            (setq rejected (if (> r (- LOG_MAX_COUNT rejected)) LOG_MAX_COUNT (+ rejected r)))
+        })
+        ; Totals saturate; individual rows carry authoritative counts.
+        (bufset-u32 reply 12 count)
+        (bufset-u32 reply 16 rejected)
     })
-    (setq state (log_snapshot_state stored n (if (= block 0) 1112820807 1112820808)))
-    (var flag (bufget-u32 stored 12))
-    (if (and (!= flag 4294967295u32) (= (bitwise-and flag 1) 1))
-        (setq state (bitwise-or state 8)))
-    (if (= part 1) {
-        (var b (if (= block 0) log_a log_b))
-        (var enabled (if (= block 0) log_enable_a log_enable_b))
-        (var valid (if (= block 0) log_state_a log_state_b))
-        (looprange i 0 n
-            (bufset-u32 image (* 4 i)
-                (if (and (= enabled 1) (eq valid 'ok) b)
-                    (bufget-u32 b (+ 8 (* 4 i))) 4294967295u32)))
-    })
-    (list image state)
-})
-
-; The sender owns the snapshot exclusively. It is never shared back with the
-; owner, which can continue sampling while the transport yields.
-(defun log_send_snapshot_inner (block part pace image state)
-{
-    (var n (if (= block 0) LOG_A_SLOTS LOG_B_SLOTS))
-    (looprange chunk 0 11 {
-        (var count (if (= chunk 10) (- n 60) 6))
-        (var frame (bufcreate (+ 6 (* 4 count))))
-        (bufset-u8 frame 0 177) (bufset-u8 frame 1 block)
-        (bufset-u8 frame 2 part) (bufset-u8 frame 3 chunk)
-        (bufset-u8 frame 4 11)
-        (bufset-u8 frame 5 (if (= chunk 0) state 0))
-        (looprange i 0 count
-            (bufset-u32 frame (+ 6 (* 4 i)) (bufget-u32 image (* 4 (+ (* chunk 6) i)))))
-        (if (eq (send-data frame) nil) (car 1))
-        (if (< chunk 10) (sleep (/ pace 1000.0)))
-    })
-})
-
-(defun log_send_snapshot (block part pace image state)
-{
-    (var result (trap (log_send_snapshot_inner block part pace image state)))
-    (atomic (setvar 'log_read_busy 0))
-    result
-})
-
-(defun log_operation (req)
-{
-    (var op (ix req 0)) (var block (ix req 1))
-    (var value (ix req 2)) (var len (ix req 4))
-    (var desc (ix LOG_PROTOCOL_DESCRIPTORS (- op 161)))
-    (var bad (or (< len (ix desc 1)) (> len (ix desc 2))
-        (if (= op 161) (or (> block 1) (> value 1))
-            (if (= op 164) (> (+ (* (ix req 5) 256) value) 32767)
-                (or (> block 1) (if (= op 162) (!= value 90) (> value 1)))))))
-    (if bad (log_ack op 3 block)
-        (if (= op 161) {
-            (var snap (trap (log_snapshot block value)))
-            (if (eq (ix snap 0) 'exit-ok) {
-                (var pace (ix req 3))
-                (var ms (if (= pace 0) LOG_CHUNK_PACE_MS (if (> pace 250) 250 pace)))
-                (var sender (trap (spawn 120 log_send_snapshot block value ms
-                                    (ix (ix snap 1) 0) (ix (ix snap 1) 1))))
-                (if (not (and (eq (ix sender 0) 'exit-ok) (number? (ix sender 1))
-                              (>= (ix sender 1) 0)))
-                    (setvar 'log_read_busy 0))
-            } (setvar 'log_read_busy 0))
-        } {
-            (var status (if (not (log_at_rest)) 1
-                (if (!= log_shutdown_state 0) 2 {
-                    (var state (if (= block 0) log_state_a log_state_b))
-                    (var enabled (if (= block 0) log_enable_a log_enable_b))
-                    (var b (if (= block 0) log_a log_b))
-                    (if (if (= op 162)
-                            (not (or (eq state 'ok) (eq state 'empty)
-                                     (eq state 'foreign) (eq state 'in_progress)
-                                     (eq state 'crc_mismatch)))
-                            (if (= op 163) (not (or (eq state 'ok) (eq state 'empty)))
-                                (not (and (eq state 'ok) (= enabled 1) b))))
-                        2 {
-                            (if (and (not b) (!= op 164)) {
-                                (setq b (log_blk_new (if (= block 0) LOG_A_BASE LOG_B_BASE)
-                                            (if (= block 0) LOG_A_SLOTS LOG_B_SLOTS)))
-                                (if (= block 0) (setvar 'log_a b) (setvar 'log_b b))
-                                (if (= op 163) {
-                                    (log_apply b (if (= block 0) LOG_A_INIT LOG_B_INIT))
-                                    (if (= block 1) {
-                                        (if (not log_bs) (setvar 'log_bs (bufcreate 20)))
-                                        (log_b_references b)
-                                    })
-                                })
-                            })
-                            (setvar 'log_explicit_active 1)
-                            (var done (trap (if (= op 162) (log_clear b)
-                                (if (= op 163)
-                                    (if (eq state 'empty) (log_initialise b value)
-                                        (log_set_enabled b value))
-                                    (log_b_set_tag (+ (* (ix req 5) 256) value))))))
-                            (setvar 'log_explicit_active 0)
-                            (if (and (eq (ix done 0) 'exit-ok) (ix done 1)) {
-                                (if (and (= op 163) (= value 0)
-                                         (= log_enable_a 0) (= log_enable_b 0)) {
-                                    (setvar 'log_st nil)
-                                    (setvar 'log_skip_a 0)
-                                    (setvar 'log_skip_b 0)
-                                })
-                                (if (and (= op 163) (= value 1) (= enabled 0)) {
-                                (var other (if (= block 0) log_enable_b log_enable_a))
-                                (if (not log_st) {
-                                    (var st (bufcreate 108))
-                                    (bufset-f32 st 40 1)
-                                    (setvar 'log_st st)
-                                })
-                                (if (= other 0)
-                                    (bufset-u32 log_st 0 (systime))
-                                    (if (= block 0) (setvar 'log_skip_a 1)
-                                        (setvar 'log_skip_b 1)))
-                                })
-                                (if (not (log_at_rest)) 1
-                                    (if (= log_shutdown_state 0) 0 2))
-                            } (if (log_at_rest) 2 1))
-                        })
-                })))
-            (log_ack op status block)
-        }))
-})
-
-(defun log_requests ()
-{
-    (var write (atomic {
-        (var r log_write_request)
-        (setvar 'log_write_request nil)
-        r
-    }))
-    (if write {
-        (if (= log_shutdown_state 0) (trap (log_operation write)))
-        (atomic (setvar 'log_write_busy 0))
-    })
-    (var read_req (atomic {
-        (var r log_read_request)
-        (setvar 'log_read_request nil)
-        r
-    }))
-    (if read_req {
-        (var result (trap (log_operation read_req)))
-        (if (or (not (eq (ix result 0) 'exit-ok))
-                (not (and (or (= (ix read_req 4) 3) (= (ix read_req 4) 4))
-                          (<= (ix read_req 1) 1) (<= (ix read_req 2) 1))))
-            (setvar 'log_read_busy 0))
-    })
+    (if (and (= status 0) (= op 3))
+        (looprange i 0 32
+            (bufset-u8 reply (+ 12 i)
+                (bufget-u8 log_snapshot_buf (+ (* 32 row) i)))))
+    (send-data reply)
 })
 
 (defun log_owner_inner ()
 {
-    (if (and (= log_enable_a 1) (eq log_a nil)) {
-        (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))
-        (log_apply log_a LOG_A_INIT)
-    })
-    (if (and (= log_enable_b 1) (eq log_b nil)) {
-        (setvar 'log_b (log_blk_new LOG_B_BASE LOG_B_SLOTS))
-        (log_apply log_b LOG_B_INIT)
-        (setvar 'log_bs (bufcreate 20))
-        (log_b_references log_b)
-    })
-    (if (or (= log_enable_a 1) (= log_enable_b 1)) {
-        (var st (bufcreate 108))
-        (bufset-u32 st 0 (systime))
-        (bufset-f32 st 40 1)
-        (setvar 'log_st st)
-    })
+    (setvar 'log_live (bufcreate 320))
+    (setvar 'log_snapshot_buf (bufcreate 320))
+    (setvar 'log_snapshot_valid 0)
+    (setvar 'log_fault 0)
+    (setvar 'log_previous_speed SPEED_OFF)
+    (setvar 'log_previous_eligible 0)
     (setvar 'log_owner (self))
     (var deadline (systime))
     (loopwhile t {
-        (if (or (= log_enable_a 1) (= log_enable_b 1)) {
-            (if (not log_st) {
-                (var st (bufcreate 108))
-                (bufset-f32 st 40 1)
-                (bufset-u32 st 0 (systime))
-                (setvar 'log_st st)
-                (setq deadline (systime))
-            })
-            (var remaining (- LOG_SAMPLE_PERIOD (secs-since deadline)))
-            (var delay (if (> remaining 0) remaining 0))
-            (recv-to delay (_ nil))
-            (if (>= (secs-since deadline) LOG_SAMPLE_PERIOD) {
-                (setq deadline (systime))
-                (trap (log_sample))
-                (log_rest_tick)
-                (log_service_once)
-            })
-        } {
-            ; Remain blocked, without polling or retained sample state, while off.
-            (recv (_ nil))
-            (setq deadline (systime))
+        (var remaining (- LOG_SAMPLE_PERIOD (secs-since deadline)))
+        (recv-to (if (> remaining 0) remaining 0) (_ nil))
+        ; Serve first, then resume sampling: the copy is a single owner cut.
+        (var req (atomic {
+            (var r log_request)
+            (setvar 'log_request nil)
+            r
+        }))
+        (if req {
+            (var result (trap (log_serve req)))
+            (if (not (eq (ix result 0) 'exit-ok)) (setvar 'log_fault 1))
+            (atomic (setvar 'log_busy 0))
         })
-        (log_requests)
+        (if (>= (secs-since deadline) LOG_SAMPLE_PERIOD) {
+            (setq deadline (systime))
+            (var sampled (trap (log_sample)))
+            (if (not (eq (ix sampled 0) 'exit-ok)) (setvar 'log_fault 1))
+        })
     })
 })
 
 (defun log_owner_loop ()
 {
-    ; A trapped owner failure must not leave a published identity or an
-    ; admitted request waiting forever for a context that has exited.
-    (var result (trap (log_owner_inner)))
+    (trap (log_owner_inner))
     (atomic {
-        (setvar 'log_shutdown_state 3)
         (setvar 'log_owner -1)
-        (setvar 'log_write_request nil)
-        (setvar 'log_write_busy 0)
-        (setvar 'log_read_request nil)
-        (setvar 'log_read_busy 0)
-        (setvar 'log_explicit_active 0)
-        (setvar 'log_writer_active 0)
-        (setvar 'log_store_entered 0)
+        (setvar 'log_busy 0)
+        (setvar 'log_request nil)
+        (setvar 'log_fault 1)
     })
-    result
 })
 
 (defun log_start ()
 {
-    (if (= log_owner -1) {
-        (var owner (spawn THREAD_STACK_LOG log_owner_loop))
-        ; The event handler is not registered until readiness is published.
-        ; A failed allocation in the spawned startup must not hang the motor's
-        ; main setup forever. Admission stays disabled until publication.
-        (if (and (number? owner) (>= owner 0)) {
-            (var attempts 0)
-            (loopwhile (and (= log_owner -1) (< attempts 1000)) {
-                (sleep 0.001)
-                (setq attempts (+ attempts 1))
-            })
-        })
-    })
+    (if (= log_owner -1)
+        (spawn THREAD_STACK_LOG log_owner_loop))
 })
 
 ; Init-only peripheral setup. Lives in the init/main call path because
@@ -3359,8 +2418,6 @@
 (defun main ()
 {
     (update_settings_from_eeprom)
-
-    (trap (log_boot))
 
     (log_startup)
 
