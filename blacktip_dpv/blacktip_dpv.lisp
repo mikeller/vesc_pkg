@@ -306,6 +306,7 @@
 (define log_snapshot_buf nil)
 (define log_snapshot_token 0)
 (define log_snapshot_valid 0)
+(define log_snapshot_fault 0)
 (define log_fault 0)
 (define log_previous_speed SPEED_OFF)
 (define log_previous_eligible 0)
@@ -2052,7 +2053,7 @@
 ; token:u32 status:u8 row:u8 fault:u8 (12 bytes); snapshot adds count:u32
 ; rejected:u32 (20 bytes), row adds eight 32-bit fields (44 bytes).
 ; Status 0=ok, 1=invalid, 2=busy, 3=missing/mismatched snapshot.
-(defun log_reply (op seq token status row size)
+(defun log_reply (op seq token status row size fault)
 {
     (var b (bufcreate size))
     (bufset-u8 b 0 LOG_PREFIX)
@@ -2062,17 +2063,18 @@
     (bufset-u32 b 5 token)
     (bufset-u8 b 9 status)
     (bufset-u8 b 10 row)
-    (bufset-u8 b 11 log_fault)
+    (bufset-u8 b 11 fault)
     b
 })
 
 (defun log_valid (x limit)
     (and (number? x) (= x x) (>= x (- limit)) (<= x limit)))
 
-; The controller's own speed targets are capped at 4100/7100 eRPM and
-; configured current at 22.8/46 A. Readback may overshoot: these generous
-; sanity bounds reject disconnected/trapped telemetry, not clamp measurements.
-; Voltage 0..120 V and duty <=1 reflect the supported VESC supply/duty range.
+; The Blacktip/CudaX profiles set eRPM and current limits in ui.qml, but
+; readback may overshoot those limits and the active configuration can differ.
+; Do not impose invented voltage/current/RPM ceilings on measured telemetry.
+; Require finite f32-representable values, nonnegative supply voltage and a
+; physical duty fraction; check derived sums before writing any row fields.
 (defun log_sample ()
 {
     (var sp (to-i speed))
@@ -2099,9 +2101,9 @@
             (setq rpm (ix rpm 1)) (setq target (ix target 1))
             (setq current (ix current 1)) (setq phase (ix phase 1))
             (setq voltage (ix voltage 1)) (setq duty (ix duty 1))
-            (setq ok (and (log_valid rpm 20000) (log_valid target 20000)
-                          (log_valid current 200) (log_valid phase 400)
-                          (log_valid voltage 120) (>= voltage 0)
+            (setq ok (and (log_valid rpm 3.0e38) (log_valid target 3.0e38)
+                          (log_valid current 3.0e38) (log_valid phase 3.0e38)
+                          (log_valid voltage 3.0e38) (>= voltage 0)
                           (log_valid duty 1)))
         })
         (var off (* 32 sp))
@@ -2148,7 +2150,7 @@
     (if (or (< len 9) (!= (bufget-u8 data 1) LOG_VERSION)
             (< op 1) (> op 3) (!= len (if (= op 3) 10 9))
             (and (= op 3) (> row 9)))
-        (send-data (log_reply op seq token 1 row 12))
+        (send-data (log_reply op seq token 1 row 12 log_fault))
         (if (atomic (if (and (>= log_owner 0) (= log_busy 0)) {
                 (setvar 'log_busy 1)
                 t
@@ -2157,7 +2159,7 @@
                 (setvar 'log_request (list op seq token row))
                 (send log_owner 'log-wake)
             }
-            (send-data (log_reply op seq token 2 row 12))))
+            (send-data (log_reply op seq token 2 row 12 log_fault))))
 })
 
 (defun log_serve (req)
@@ -2169,6 +2171,7 @@
         (if (or (= log_snapshot_valid 0) (!= token log_snapshot_token)) {
             (looprange i 0 320
                 (bufset-u8 log_snapshot_buf i (bufget-u8 log_live i)))
+            (setvar 'log_snapshot_fault log_fault)
             (setvar 'log_snapshot_token token)
             (setvar 'log_snapshot_valid 1)
         })
@@ -2177,7 +2180,9 @@
                            (!= token log_snapshot_token)))
         (setq status 3))
     (var size (if (= status 0) (if (= op 2) 20 (if (= op 3) 44 12)) 12))
-    (var reply (log_reply op seq token status row size))
+    (var reply (log_reply op seq token status row size
+                          (if (and (= status 0) (or (= op 2) (= op 3)))
+                              log_snapshot_fault log_fault)))
     (if (and (= status 0) (= op 2)) {
         (var count 0) (var rejected 0)
         (looprange i 0 10 {
@@ -2202,6 +2207,7 @@
     (setvar 'log_live (bufcreate 320))
     (setvar 'log_snapshot_buf (bufcreate 320))
     (setvar 'log_snapshot_valid 0)
+    (setvar 'log_snapshot_fault 0)
     (setvar 'log_fault 0)
     (setvar 'log_previous_speed SPEED_OFF)
     (setvar 'log_previous_eligible 0)

@@ -73,6 +73,7 @@ Item {
     property int logRetries: 0
     property var logExpectedCount: 0
     property var logExpectedRejected: 0
+    property int logExpectedFault: 0
     property string logMessage: qsTr("Connect after the dive and download before the DPV powers off. Automatic firmware power-off can erase unsaved data.")
     property int logPage: 0
     property string logConnectedDevice: ""
@@ -144,6 +145,11 @@ Item {
                 view.getUint32(5) !== logToken ||
                 view.getUint8(10) !== (logPending === 3 ? logRow : 255)) return
         var status = view.getUint8(9)
+        var fault = view.getUint8(11)
+        if (fault > 1) {
+            logFail(qsTr("Invalid logging fault state in device reply."))
+            return
+        }
         if (status !== 0) {
             if (view.byteLength !== 12) return
             logFail(qsTr("Device rejected snapshot request (status %1).").arg(status))
@@ -151,18 +157,15 @@ Item {
         }
         if (logPending === 1) {
             if (view.byteLength !== 12) return
-            logStatus = view.getUint8(11) ? qsTr("Logging fault: collection frozen")
+            logStatus = fault ? qsTr("Logging fault: collection frozen")
                                            : qsTr("Collecting automatically while running; RAM is volatile")
             logTimeout.stop()
             logPending = 0
             return
         }
-        if (view.getUint8(11) !== 0) {
-            logFail(qsTr("Device reports logging fault; aggregates may be incomplete."))
-            return
-        }
         if (logPending === 2) {
             if (view.byteLength !== 20) return
+            logExpectedFault = fault
             logExpectedCount = view.getUint32(12)
             logExpectedRejected = view.getUint32(16)
             logTimeout.stop()
@@ -171,6 +174,10 @@ Item {
             return
         }
         if (view.byteLength !== 44 || logRows.length !== logRow) return
+        if (fault !== logExpectedFault) {
+            logFail(qsTr("Snapshot fault state changed during transfer."))
+            return
+        }
         var n = view.getUint32(12)
         var row = [n]
         for (var i = 0; i < 5; i++) {
@@ -206,13 +213,15 @@ Item {
                 logFail(qsTr("Snapshot totals do not match the ten rows."))
                 return
             }
-            logComplete = { token: logToken, rows: rows,
+            logComplete = { token: logToken, rows: rows, fault: logExpectedFault,
                             downloaded: new Date().toLocaleString(),
                             firmware: firmwareVersion, hardware: detectedHardwareModel,
                             device: logConnectedDevice }
             logRows = []
             logPending = 0
-            logMessage = qsTr("Complete snapshot in phone RAM only. Take and check screenshots in the gallery before closing the app. CSV export is unavailable in this package build.")
+            logMessage = logExpectedFault
+                    ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Take and check screenshots in the gallery before closing the app. CSV export is unavailable in this package build.")
+                    : qsTr("Complete snapshot in phone RAM only. Take and check screenshots in the gallery before closing the app. CSV export is unavailable in this package build.")
         }
     }
 
@@ -239,6 +248,14 @@ Item {
         }
         function onFwRxChanged() {
             if (logPending) logFail(qsTr("Firmware or device identity changed during download."))
+        }
+    }
+
+    Connections {
+        target: Qt.application
+        function onStateChanged(state) {
+            if (state !== Qt.ApplicationActive && logPending)
+                logFail(qsTr("App suspended during download; start a fresh snapshot transaction."))
         }
     }
 
@@ -915,6 +932,12 @@ Item {
                                         .arg(logComplete.device)
                                           : qsTr("No complete snapshot downloaded")
                     }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: !!logComplete && logComplete.fault !== 0
+                        wrapMode: Text.WordWrap
+                        text: qsTr("WARNING: logging fault. Collection frozen; these aggregates may be incomplete.")
+                    }
                     RowLayout {
                         visible: !!logComplete
                         Button {
@@ -942,6 +965,8 @@ Item {
                                          qsTr("sum |duty| (fraction)")]
                             var s = qsTr("Snapshot %1 | speed %2 / 9\nValid samples: %3 | rejected: %4\n")
                                     .arg(logComplete.token).arg(logPage).arg(count).arg(row[7])
+                            if (logComplete.fault)
+                                s += qsTr("WARNING: logging fault; collection frozen\n")
                             for (var i = 0; i < 5; i++)
                                 s += names[i] + ": " + row[i + 1] +
                                      (count ? " | mean: " + (row[i + 1] / count).toFixed(3) : " | mean: no data") + "\n"
