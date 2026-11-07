@@ -2071,19 +2071,64 @@ def test_performance_log_boot():
                 a, b = (expected, 'empty') if base == 64 else ('empty', expected)
                 assert_eq(state_result.strip(), f'({a} {b} 0 0)',
                           f'native block {base} {expected} stays disabled')
-        for stored_m, flags, expected_flag, expected_m in (
-            (1600, 275, 283, 1600), (1800, 275, 275, 1800),
-            (1600, 273, 281, 1600), (0, 273, 275, 1800)):
+            for missing_slot, expected in ((base, 'in_progress'),
+                                           (base + 1, 'crc_mismatch'),
+                                           (base + 5, 'crc_mismatch')):
+                absent = writes + f'\n(bufset-u8 present {missing_slot} 0)\n(log_boot)\n'
+                result = run_boot_native(repl, absent +
+                    '(list log_state_a log_state_b log_enable_a log_enable_b)')
+                a, b = (expected, 'empty') if base == 64 else ('empty', expected)
+                assert_eq(result.strip(), f'({a} {b} 0 0)',
+                          f'native block {base} missing slot {missing_slot} stays disabled')
+            disabled = {**image, base + 3: flags & ~1}
+            disabled[base + 1] = boot_crc(disabled, base, count)
+            saved = '\n'.join(f'(put {i} {v})' for i, v in sorted(disabled.items()))
+            result = run_boot_native(repl, saved + '''\n(log_boot)
+(list log_state_a log_state_b log_enable_a log_enable_b
+      (bufget-u32 (if (= (bufget-u8 present 64) 1) log_a log_b) 28))''')
+            a, b = ('ok', 'empty') if base == 64 else ('empty', 'ok')
+            enable = '0u32 0' if base == 64 else '0 0u32'
+            assert_eq(result.strip(), f'({a} {b} {enable} 42u32)',
+                      f'native block {base} valid-disabled restores but does not collect')
+            failed = writes + f"\n(setvar 'mock_fail_slot {base + 5})\n(log_boot)\n"
+            result = run_boot_native(repl, failed +
+                '(list log_state_a log_state_b log_enable_a log_enable_b)')
+            a, b = ('read_error', 'empty') if base == 64 else ('empty', 'read_error')
+            assert_eq(result.strip(), f'({a} {b} 0 0)',
+                      f'native block {base} read failure remains isolated and disabled')
+        both = []
+        for base, count, magic, flags in ((64, 63, 1112820807, 257),
+                                          (128, 64, 1112820808, 279)):
+            image = boot_image(base, count, magic, flags)
+            both.extend(f'(put {i} {v})' for i, v in sorted(image.items()))
+        for failed_slot, expected in ((69, '(read_error ok 0 1u32)'),
+                                      (133, '(ok read_error 1u32 0)')):
+            scenario = ('\n'.join(both) +
+                        f"\n(setvar 'mock_fail_slot {failed_slot})\n(log_boot)\n" +
+                        '(list log_state_a log_state_b log_enable_a log_enable_b)')
+            assert_eq(run_boot_native(repl, scenario).strip(), expected,
+                      f'native read error at {failed_slot} leaves other block enabled')
+        for stored_m, flags, fresh_m, fresh_bit, expected_flag, expected_m in (
+            (1600, 275, 1800, 2, 283, 1600),
+            (1800, 275, 1800, 2, 275, 1800),
+            (1600, 273, 1800, 2, 281, 1600),
+            (0, 273, 1800, 2, 275, 1800),
+            (1600, 275, 1600, 0, 275, 1600),
+            (1600, 273, 1600, 2, 273, 1600),
+            (0, 273, 1600, 2, 275, 1600),
+            (0, 275, 1600, 0, 273, 1600)):
             image = boot_image(128, 64, 1112820808, flags)
             image[189] = (228 << 15) | 850
             image[190] = stored_m << 15
             image[129] = boot_crc(image, 128, 64)
             writes = '\n'.join(f'(put {i} {v})' for i, v in sorted(image.items()))
-            result = run_boot_native(repl, writes + '''\n(log_boot)
+            result = run_boot_native(repl, writes + f'''\n(setvar 'mock_motor_ref {fresh_m})
+(setvar 'mock_motor_flag {fresh_bit})
+(log_boot)
 (list log_state_b (bufget-u32 log_b 20)
       (shr (bufget-u32 log_b 256) 15) (bufget-u32 log_bs 16))''')
             assert_eq(result.strip(), f'(ok {expected_flag}u32 {expected_m}u32 30u32)',
-                      f'native stored motor {stored_m}, flags {flags}')
+                      f'native stored motor {stored_m}, flags {flags}, fresh {fresh_m}/{fresh_bit}')
 
 
 def run_all_tests():

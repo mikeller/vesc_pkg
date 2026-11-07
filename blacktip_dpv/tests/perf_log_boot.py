@@ -43,7 +43,7 @@ def native_source():
     source = (ROOT / 'blacktip_dpv.lisp').read_text()
     section = source[source.index('(defun log_blk_new'):source.index('; Unlike the generic fractional positive-only adder')]
     # Only the exact production boot functions and their common helpers are
-    # evaluated; the full native REPL runs out of flash even on the parent tip.
+    # evaluated; the default 128 KiB native REPL image fills on the full source.
     section = section[:section.index('(defun log_motor_reference')] + section[section.index('(defun log_boot_block'):]
     section = section.replace('(eeprom-read-i ', '(mock-eeprom-read ')
     # The native BLDC stub returns eval_error for crc32. Exercise the production
@@ -57,12 +57,15 @@ def native_source():
 (define log_enable_a 0) (define log_enable_b 0)
 (define log_state_a 'empty) (define log_state_b 'empty)
 (define nv (bufcreate 1024)) (define present (bufcreate 256))
+(define mock_fail_slot -1)
 (defun mock-eeprom-read (addr) {
+    (if (= addr mock_fail_slot) (car 1))
     (if (or (< addr 64) (and (> addr 126) (< addr 128)) (> addr 191)) (car 1))
     (if (= (bufget-u8 present addr) 0) nil (bufget-u32 nv (* addr 4)))
 })
 (defun put (addr val) { (bufset-u32 nv (* addr 4) val) (bufset-u8 present addr 1) })
-(defun log_motor_reference () (list 1800 2))
+(define mock_motor_ref 1800) (define mock_motor_flag 2)
+(defun log_motor_reference () (list mock_motor_ref mock_motor_flag))
 (defun mock-crc32 (b init) {
     (var c (bitwise-xor init 0xFFFFFFFFu32))
     (looprange i 0 (buflen b) {
