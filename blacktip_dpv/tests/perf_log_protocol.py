@@ -277,6 +277,12 @@ def check(repl):
            "(mock-setup) (mock-request 163 0 1) (log_shutdown_flush) "
            "(log_requests) (list writes log_shutdown_state log_write_busy "
            "log_write_request frame_count)", '(0 3 0 nil 0)')
+    expect('quiescent activity re-arm never replays cancelled protocol work',
+           "(mock-setup) (mock-request 163 0 1) (log_shutdown_flush) "
+           "(setvar 'speed 5) (log_rest_tick) "
+           "(setvar 'speed SPEED_OFF) (log_rest_tick) "
+           "(log_requests) (list writes log_shutdown_state log_write_busy "
+           "log_write_request frame_count)", '(0 0 0 nil 0)')
     expect('lengths two, four and eight and settings-sized opcode rejected',
            "(mock-setup) (loopforeach n '(2 4 8 33) { "
            "(setvar 'log_write_busy 0) (setvar 'log_write_request nil) "
