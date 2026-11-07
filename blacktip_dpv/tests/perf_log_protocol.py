@@ -319,6 +319,24 @@ def check(repl):
            "(mock-request 163 0 1) (mock-await-frames 3) "
            "(list (= owner log_owner) frame_count log_enable_a log_state_a writes)",
            '(t 3 1 ok 72)')
+    owner_failure = run(repl,
+        "(setvar 'log_owner -1) (setvar 'log_st nil) "
+        "(setvar 'mock_concurrent 1) (log_start) "
+        "(mock-request 163 0 1) "
+        "(loopwhile (!= log_owner -1) (sleep 0.001)) "
+        "(list log_shutdown_state log_write_busy log_write_request log_read_busy "
+        "log_read_request writes)",
+        (('(log_requests)\n    })', '(mock-crash-owner)\n    })'),),
+        '(defun mock-crash-owner () (car 1))')
+    assert owner_failure == '(3 0 nil 0 nil 0)', ('owner trap cleanup', owner_failure)
+    startup_failure = run(repl,
+        "(setvar 'log_owner -1) (setvar 'log_enable_a 1) "
+        "(setvar 'log_a (log_blk_new 64 63)) "
+        "(setvar 'mock_concurrent 1) (log_start) "
+        "(list log_owner log_shutdown_state log_write_busy log_read_busy)",
+        (('(var st (bufcreate 108))', '(var st (mock-state-create 108))'),),
+        '(defun mock-state-create (n) (car 1))')
+    assert startup_failure == '(-1 3 0 0)', ('owner startup failure does not hang', startup_failure)
     expect('timed native owner samples despite protocol wake traffic',
            "(setvar 'log_owner -1) (setvar 'log_enable_a 1) "
            "(setvar 'log_a (log_blk_new 64 63)) "

@@ -3107,7 +3107,7 @@
     })
 })
 
-(defun log_owner_loop ()
+(defun log_owner_inner ()
 {
     (if (and (= log_enable_a 1) (eq log_a nil)) {
         (setvar 'log_a (log_blk_new LOG_A_BASE LOG_A_SLOTS))
@@ -3152,6 +3152,25 @@
         })
         (log_requests)
     })
+})
+
+(defun log_owner_loop ()
+{
+    ; A trapped owner failure must not leave a published identity or an
+    ; admitted request waiting forever for a context that has exited.
+    (var result (trap (log_owner_inner)))
+    (atomic {
+        (setvar 'log_shutdown_state 3)
+        (setvar 'log_owner -1)
+        (setvar 'log_write_request nil)
+        (setvar 'log_write_busy 0)
+        (setvar 'log_read_request nil)
+        (setvar 'log_read_busy 0)
+        (setvar 'log_explicit_active 0)
+        (setvar 'log_writer_active 0)
+        (setvar 'log_store_entered 0)
+    })
+    result
 })
 
 (defun log_start ()
