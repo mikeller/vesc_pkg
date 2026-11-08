@@ -229,6 +229,15 @@ def test_performance_log_ram_snapshot_contract():
               'QML accepts rows only in ordered snapshot sequence')
     assert_eq('logComplete = { token: logToken, rows: rows' in qml, True,
               'complete validated rows replace the prior phone-RAM snapshot')
+    results = qml[qml.index('Page {', qml.index('// Results page')):]
+    assert_eq('Check device status' not in results and 'Device status' not in results, True,
+              'Results page has no separate device-status control or label')
+    assert_eq('logExpectedFault = fault' in qml and
+              'logComplete = { token: logToken, rows: rows, fault: logExpectedFault' in qml, True,
+              'snapshot summary fault state is retained with complete results')
+    assert_eq('WARNING: logging fault; collection frozen' in qml and
+              'logComplete.fault !== 0' in results, True,
+              'a fault-bearing snapshot is visibly warned on the Results page')
 
 
 def test_results_page_swipeview_position():
