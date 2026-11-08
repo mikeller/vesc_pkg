@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 from perf_log_capture_native import check as check_capture_native
+from peripherals_setup_native import check as check_peripherals_setup_native
 from perf_log_qml_fixture import run as run_log_qml_fixture
 
 # Test counters
@@ -250,6 +251,20 @@ def test_performance_log_capture_native():
     except (AssertionError, subprocess.TimeoutExpired, OSError) as exc:
         print(f'  Native capture details: {exc}')
         assert_eq(False, True, 'native production owner/protocol scenarios complete')
+
+
+def test_peripherals_setup_native():
+    print('\n=== Testing production peripheral setup for unknown configuration (native LispBM) ===')
+    repl = os.environ.get('LBM_REPL', '')
+    if not repl or not os.access(repl, os.X_OK):
+        print('SKIPPED: set LBM_REPL to run production peripheral setup regression')
+        return
+    try:
+        check_peripherals_setup_native(repl)
+        assert_eq(True, True, 'native configuration 5 startup succeeds without pin initialisation')
+    except (AssertionError, subprocess.TimeoutExpired, OSError) as exc:
+        print(f'  Native peripheral setup details: {exc}')
+        assert_eq(False, True, 'native configuration 5 startup succeeds without pin initialisation')
 
 
 def test_performance_log_qml_runtime_fixture():
@@ -1553,6 +1568,7 @@ def run_all_tests():
     test_performance_log_motor_command_isolation()
     test_performance_log_ram_snapshot_contract()
     test_performance_log_capture_native()
+    test_peripherals_setup_native()
     test_performance_log_qml_runtime_fixture()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()
