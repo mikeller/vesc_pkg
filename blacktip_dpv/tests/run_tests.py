@@ -219,8 +219,8 @@ def test_performance_log_ram_snapshot_contract():
               'capture and download never persist performance data')
     assert_eq('multiple dives in one power cycle are mixed' in qml, True,
               'Results page explains per-power-cycle aggregation')
-    assert_eq('App termination can lose these phone-RAM results' in qml, True,
-              'Results page warns that downloaded results are volatile')
+    assert_eq('A BLE disconnect or reconnect may recreate this page and lose the downloaded results, as can app termination.' in qml, True,
+              'Results page warns that reconnect or app termination may discard downloaded results')
     assert_eq('logToken++' in qml and 'logRequest(2, 255)' in qml, True,
               'each download uses a fresh snapshot transaction token')
     assert_eq('logRows.length !== logRow' in qml and 'logRows.length !== 9' not in qml, True,

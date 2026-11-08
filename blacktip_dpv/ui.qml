@@ -62,7 +62,7 @@ Item {
     property bool fiveClickShutdownHardwareSupported: false
     property bool fiveClickShutdownFirmwareSupported: false
 
-    // Phone RAM only. Never replace a complete display with a partial transfer.
+    // This QML instance's RAM only. Reconnecting may recreate the instance.
     property var logComplete: null
     property var logRows: []
     // QML int is signed 32-bit; a token must stay a JS number to round-trip u32.
@@ -79,11 +79,19 @@ Item {
     property string logConnectedDevice: ""
     property string logStatus: qsTr("Device status not checked")
 
+    function logTokenText(token) {
+        // Force u32, then stringify before qsTr.arg: Qt formats numeric args
+        // with limited precision and can round large snapshot identities.
+        return "0x" + (token >>> 0).toString(16)
+    }
+
     function logFail(message) {
         logTimeout.stop()
         logPending = 0
         logRows = []
-        logMessage = message + qsTr(" Previous complete results remain in phone RAM; retry explicitly.")
+        logMessage = message + (logComplete
+                ? qsTr(" Previous complete results remain visible only while this Results page stays loaded; a BLE disconnect or reconnect may recreate it and lose them. Retry explicitly.")
+                : qsTr(" No complete results downloaded; retry explicitly."))
     }
 
     function logRequest(op, row) {
@@ -127,7 +135,7 @@ Item {
     function logCheckStatus() {
         if (logPending) return
         if (!VescIf.isPortConnected()) {
-            logStatus = qsTr("Device disconnected; previous results remain in phone RAM")
+            logStatus = qsTr("Device disconnected; previous results may be lost if VESC Tool recreates this page")
             return
         }
         logConnectedDevice = VescIf.getConnectedUuid() || VescIf.getConnectedPortName()
@@ -220,8 +228,8 @@ Item {
             logRows = []
             logPending = 0
             logMessage = logExpectedFault
-                    ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Take and check screenshots in the gallery before closing the app. CSV export is unavailable in this package build.")
-                    : qsTr("Complete snapshot in phone RAM only. Take and check screenshots in the gallery before closing the app. CSV export is unavailable in this package build.")
+                    ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Take and check screenshots in the gallery now. A BLE disconnect or reconnect can recreate this page and erase these results. CSV export is unavailable in this package build.")
+                    : qsTr("Complete snapshot in this Results page's RAM only. Take and check screenshots in the gallery now. A BLE disconnect or reconnect can recreate this page and erase these results. CSV export is unavailable in this package build.")
         }
     }
 
@@ -927,7 +935,7 @@ Item {
                         Layout.fillWidth: true
                         wrapMode: Text.WrapAnywhere
                         text: logComplete ? qsTr("Snapshot token %1 | phone download %2 | firmware %3 | hardware %4 | device %5")
-                                        .arg(logComplete.token).arg(logComplete.downloaded)
+                                        .arg(logTokenText(logComplete.token)).arg(logComplete.downloaded)
                                         .arg(logComplete.firmware).arg(logComplete.hardware)
                                         .arg(logComplete.device)
                                           : qsTr("No complete snapshot downloaded")
@@ -964,7 +972,7 @@ Item {
                                          qsTr("sum input power (W)"), qsTr("sum |RPM error| (eRPM)"),
                                          qsTr("sum |duty| (fraction)")]
                             var s = qsTr("Snapshot %1 | speed %2 / 9\nValid samples: %3 | rejected: %4\n")
-                                    .arg(logComplete.token).arg(logPage).arg(count).arg(row[7])
+                                    .arg(logTokenText(logComplete.token)).arg(logPage).arg(count).arg(row[7])
                             if (logComplete.fault)
                                 s += qsTr("WARNING: logging fault; collection frozen\n")
                             for (var i = 0; i < 5; i++)
@@ -977,7 +985,7 @@ Item {
                     Label {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
-                        text: qsTr("Ten labelled screenshot pages are needed for a complete capture. Check all images in your phone gallery. App termination can lose these phone-RAM results. The DPV collects automatically while powered; multiple dives in one power cycle are mixed. Samples are not seconds, energy or dive history.")
+                        text: qsTr("Ten labelled screenshot pages are needed for a complete capture. Check all images in your phone gallery now. A BLE disconnect or reconnect may recreate this page and lose the downloaded results, as can app termination. The DPV collects automatically while powered; multiple dives in one power cycle are mixed. Samples are not seconds, energy or dive history.")
                     }
                 }
             }
@@ -993,7 +1001,7 @@ Item {
         Label {
             width: parent.width
             wrapMode: Text.WordWrap
-            text: qsTr("The complete phone-RAM results may be unsaved. Check all ten screenshots in the gallery before refreshing; CSV export is unavailable.")
+            text: qsTr("The complete results exist only while this page stays loaded and may be lost on BLE disconnect or reconnect. Check all ten screenshots in the gallery before refreshing; CSV export is unavailable.")
         }
         onAccepted: logDownload()
     }
