@@ -77,7 +77,6 @@ Item {
     property string logMessage: qsTr("Connect after the dive and download before the DPV powers off. Automatic firmware power-off can erase unsaved data.")
     property int logPage: 0
     property string logConnectedDevice: ""
-    property string logStatus: qsTr("Device status not checked")
 
     function logTokenText(token) {
         // Force u32, then stringify before qsTr.arg: Qt formats numeric args
@@ -132,16 +131,6 @@ Item {
         logRequest(2, 255)
     }
 
-    function logCheckStatus() {
-        if (logPending) return
-        if (!VescIf.isPortConnected()) {
-            logStatus = qsTr("Device disconnected; previous results may be lost if VESC Tool recreates this page")
-            return
-        }
-        logConnectedDevice = VescIf.getConnectedUuid() || VescIf.getConnectedPortName()
-        logRequest(1, 255)
-    }
-
     function logReceive(view) {
         if (!VescIf.isPortConnected() ||
                 logConnectedDevice !== (VescIf.getConnectedUuid() || VescIf.getConnectedPortName())) {
@@ -161,14 +150,6 @@ Item {
         if (status !== 0) {
             if (view.byteLength !== 12) return
             logFail(qsTr("Device rejected snapshot request (status %1).").arg(status))
-            return
-        }
-        if (logPending === 1) {
-            if (view.byteLength !== 12) return
-            logStatus = fault ? qsTr("Logging fault: collection frozen")
-                                           : qsTr("Collecting automatically while running; RAM is volatile")
-            logTimeout.stop()
-            logPending = 0
             return
         }
         if (logPending === 2) {
@@ -920,16 +901,6 @@ Item {
                             if (logComplete) logReplaceDialog.open()
                             else logDownload()
                         }
-                    }
-                    Button {
-                        text: qsTr("Check device status")
-                        enabled: !logPending
-                        onClicked: logCheckStatus()
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        wrapMode: Text.WordWrap
-                        text: logStatus
                     }
                     Label {
                         Layout.fillWidth: true
