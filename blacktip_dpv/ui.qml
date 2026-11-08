@@ -81,6 +81,24 @@ Item {
     property string logConnectedDevice: ""
     property string logExportMessage: ""
 
+    function logSaveHelp() {
+        var directory = Platform.StandardPaths.writableLocation(Platform.StandardPaths.DocumentsLocation)
+        if (!directory || directory.indexOf("file:") === 0)
+            return qsTr("VESC Tool cannot determine a local Documents location here. Keep screenshots of all ten speeds as a fallback.")
+        var location = qsTr("VESC Tool's Documents location on this device: %1").arg(directory)
+        if (Qt.platform.os === "osx")
+            return location + qsTr(" On macOS, open Finder > Go > Go to Folder and paste this directory path; look for blacktip-results-*.csv.")
+        if (Qt.platform.os === "windows")
+            return location + qsTr(" On Windows, paste this directory path into File Explorer's address bar; look for blacktip-results-*.csv.")
+        if (Qt.platform.os === "linux")
+            return location + qsTr(" On Linux, paste this directory path into your file manager's location bar; look for blacktip-results-*.csv.")
+        if (Qt.platform.os === "android")
+            return location + qsTr(" On Android, try Files or a computer connected by USB. This may be an app-specific directory that Files cannot browse; a successful readback inside VESC Tool does not prove the file is accessible elsewhere.")
+        if (Qt.platform.os === "ios")
+            return location + qsTr(" On iOS, try Files > On My iPhone/iPad > VESC Tool. The app's Documents directory is sandboxed and may not appear in Files; a successful readback inside VESC Tool does not prove it is accessible elsewhere.")
+        return location + qsTr(" Look for blacktip-results-*.csv. The location may not be accessible in a file manager.")
+    }
+
     function logCsvCell(value) {
         return "\"" + String(value).replace(/"/g, "\"\"") + "\""
     }
@@ -116,7 +134,7 @@ Item {
             if (!logWriter.writeToLogFile(contents)) throw new Error("write")
             logWriter.closeLogFile()
             if (Utility.arr2str(Utility.readAllFromFile(path)) !== contents) throw new Error("verify")
-            logExportMessage = qsTr("Verified CSV at %1. Check that you can find and open it in your phone's Files app before leaving this page; keep screenshots as a fallback.").arg(path)
+            logExportMessage = qsTr("Verified CSV readback at %1. Check that you can find and open it outside VESC Tool before leaving this page; keep screenshots as a fallback.").arg(path)
         } catch (error) {
             logWriter.closeLogFile()
             logExportMessage = qsTr("CSV save or readback failed at %1. Results remain on this page; take screenshots. An incomplete file may remain.").arg(path)
@@ -257,8 +275,8 @@ Item {
             logRows = []
             logPending = 0
             logMessage = logExpectedFault
-                    ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Save a CSV and check it in Files, or take and check screenshots in the gallery. A BLE disconnect or reconnect can erase these results.")
-                    : qsTr("Complete snapshot in this Results page's RAM only. Save a CSV and check it in Files, or take and check screenshots in the gallery. A BLE disconnect or reconnect can erase these results.")
+                    ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Save a CSV and check it outside VESC Tool, or take and check screenshots. A BLE disconnect or reconnect can erase these results.")
+                    : qsTr("Complete snapshot in this Results page's RAM only. Save a CSV and check it outside VESC Tool, or take and check screenshots. A BLE disconnect or reconnect can erase these results.")
         }
     }
 
@@ -958,6 +976,11 @@ Item {
                     Label {
                         Layout.fillWidth: true
                         wrapMode: Text.WrapAnywhere
+                        text: logSaveHelp()
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
                         text: logExportMessage
                         visible: !!logExportMessage
                     }
@@ -1015,7 +1038,7 @@ Item {
                     Label {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
-                        text: qsTr("CSV contains all ten speeds, snapshot identity, fault status and device details. Save to this phone's Documents folder and check the file in Files. If it is not accessible, capture ten labelled screenshot pages and check all images in the gallery. A BLE disconnect or reconnect may recreate this page and lose the downloaded results, as can app termination. The DPV collects automatically while powered; multiple dives in one power cycle are mixed. Samples are not seconds, energy or dive history.")
+                        text: qsTr("CSV contains all ten speeds, snapshot identity, fault status and device details. Check that the saved file can be opened outside VESC Tool. If it is not accessible, capture ten labelled screenshot pages and check all images. A BLE disconnect or reconnect may recreate this page and lose the downloaded results, as can app termination. The DPV collects automatically while powered; multiple dives in one power cycle are mixed. Samples are not seconds, energy or dive history.")
                     }
                 }
             }
@@ -1031,7 +1054,7 @@ Item {
         Label {
             width: parent.width
             wrapMode: Text.WordWrap
-            text: qsTr("The complete results exist only while this page stays loaded and may be lost on BLE disconnect or reconnect. Check the saved CSV in Files or all ten screenshots in the gallery before refreshing.")
+            text: qsTr("The complete results exist only while this page stays loaded and may be lost on BLE disconnect or reconnect. Check that you can open the saved CSV outside VESC Tool or check all ten screenshots before refreshing.")
         }
         onAccepted: logDownload()
     }
