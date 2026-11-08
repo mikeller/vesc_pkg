@@ -1,4 +1,4 @@
-"""Execute the actual QML logReceive handler with a Node fixture context."""
+"""Execute production Results handlers in Node with VESC Tool fixtures."""
 
 import base64
 import shutil
@@ -9,65 +9,94 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def body_after(text, marker, start=0):
+    opening = text.index('{', text.index(marker, start))
+    depth = 1
+    pos = opening + 1
+    while depth:
+        if text[pos] == '{':
+            depth += 1
+        elif text[pos] == '}':
+            depth -= 1
+        pos += 1
+    return text[opening + 1:pos - 1]
+
+
 def run():
     node = shutil.which('node')
     if not node:
         return None
     qml = (ROOT / 'ui.qml').read_text()
-    marker = 'function logReceive(view) {'
-    start = qml.index(marker) + len(marker)
-    depth = 1
-    end = start
-    while depth:
-        if qml[end] == '{':
-            depth += 1
-        elif qml[end] == '}':
-            depth -= 1
-        end += 1
-    body = qml[start:end - 1]
+    receive = body_after(qml, 'function logReceive(view)')
+    fail = body_after(qml, 'function logFail(message)')
+    request = body_after(qml, 'function logRequest(op, row)')
+    app_signal = body_after(qml, 'function onStateChanged(state)')
+    timer_at = qml.index('id: logTimeout')
+    timeout = body_after(qml, 'onTriggered:', timer_at)
+    scripts = [receive, fail, request, app_signal, timeout]
+    encoded = [base64.b64encode(part.encode()).decode() for part in scripts]
     fixture = r'''
-const vm = require('vm');
-const q = { logComplete: {old:true}, logRows: [], logToken: 51,
-  logSequence: 8, logPending: 2, logRow: 255, logRetries: 0,
-  logExpectedCount: 0, logExpectedRejected: 0, logExpectedFault: 0,
-  logConnectedDevice: 'device', firmwareVersion: '7.00',
-  detectedHardwareModel: 'MK5', logMessage: '', logStatus: '',
-  VescIf: {isPortConnected:()=>true, getConnectedUuid:()=> 'device', getConnectedPortName:()=>''},
-  mCommands: {sendCustomAppData:()=>{}}, logTimeout: {stop:()=>{},restart:()=>{}},
-  qsTr:s=>s, logFail:(s)=>{q.logPending=0;q.logRows=[];q.logMessage=s;},
-  logRequest:(op,row)=>{q.logPending=op;q.logRow=row;q.logSequence++;} };
-const ctx = vm.createContext(q);
-const body = Buffer.from('BODY_B64','base64').toString();
-const receive = vm.runInContext('(function(view) {' + body + '\n})', ctx);
-function reply(op,row,length,fault=0) {
-  const b=new ArrayBuffer(length), v=new DataView(b);
-  v.setUint8(1,1); v.setUint8(2,op); v.setUint16(3,q.logSequence);
-  v.setUint32(5,q.logToken); v.setUint8(9,0); v.setUint8(10,row); v.setUint8(11,fault);
-  return v;
+const vm=require('vm');
+const q={logComplete:{old:true},logRows:[],logToken:51,logSequence:8,
+ logPending:2,logRow:255,logRetries:0,logExpectedCount:0,
+ logExpectedRejected:0,logExpectedFault:0,logConnectedDevice:'device',
+ firmwareVersion:'7.00',detectedHardwareModel:'MK5',logMessage:'',logStatus:'',
+ VescIf:{connected:true,isPortConnected(){return this.connected},
+   getConnectedUuid(){return 'device'},getConnectedPortName(){return ''}},
+ mCommands:{sent:[],sendCustomAppData(b){this.sent.push(b)}},
+ logTimeout:{stops:0,restarts:0,stop(){this.stops++},restart(){this.restarts++}},
+ qsTr:s=>s,Qt:{ApplicationActive:4}};
+const ctx=vm.createContext(q);
+function source(s){return Buffer.from(s,'base64').toString()}
+const receive=vm.runInContext('(function(view){'+source('RECEIVE')+'\n})',ctx);
+q.logFail=vm.runInContext('(function(message){'+source('FAIL')+'\n})',ctx);
+q.logRequest=vm.runInContext('(function(op,row){'+source('REQUEST')+'\n})',ctx);
+const suspended=vm.runInContext('(function(state){'+source('SUSPEND')+'\n})',ctx);
+const timeout=vm.runInContext('(function(){'+source('TIMEOUT')+'\n})',ctx);
+function reply(op,row,length,fault=0,sequence=q.logSequence,token=q.logToken){
+ const b=new ArrayBuffer(length),v=new DataView(b);
+ v.setUint8(1,1);v.setUint8(2,op);v.setUint16(3,sequence);
+ v.setUint32(5,token);v.setUint8(9,0);v.setUint8(10,row);v.setUint8(11,fault);return v;
 }
-const summary=reply(2,255,20);
+const summary=reply(2,255,20);new DataView(summary.buffer).setUint32(12,10);
 receive.call(q,summary);
-if(q.logPending!==3 || q.logRow!==0) throw Error('summary state: '+q.logPending+'/'+q.logRow+'/'+q.logSequence+'/'+q.logMessage);
-q.logExpectedCount=10; q.logExpectedRejected=0; q.logExpectedFault=0;
-for(let row=0;row<10;row++) {
-  if(q.logRow!==row) throw Error('out-of-order row request');
-  const v=reply(3,row,44); v.setUint32(12,1);
-  for(let i=0;i<5;i++) v.setFloat32(16+i*4,i+1);
-  v.setFloat32(36,6); v.setUint32(40,0);
-  receive.call(q,v);
+if(q.logPending!==3||q.logRow!==0||q.logExpectedCount!==10)
+ throw Error('production summary handler failed to request row zero/read wire totals');
+for(let row=0;row<10;row++){
+ if(q.logRow!==row)throw Error('production request order mismatch at '+row);
+ const v=reply(3,row,44);v.setUint32(12,1);
+ for(let i=0;i<5;i++)v.setFloat32(16+i*4,i+1);
+ v.setFloat32(36,6);v.setUint32(40,0);receive.call(q,v);
 }
-if(!q.logComplete || q.logComplete.rows.length!==10 || q.logPending!==0)
-  throw Error('ten production QML rows were not committed');
+if(!q.logComplete||q.logComplete.rows.length!==10||q.logPending!==0)
+ throw Error('production handler did not commit all ten rows');
 const previous=q.logComplete;
-q.logPending=3; q.logRow=0; q.logSequence++;
-const bad=reply(3,0,44,1); bad.setUint32(12,1);
-for(let i=0;i<5;i++) bad.setFloat32(16+i*4,i+1);
-bad.setFloat32(36,6); bad.setUint32(40,0);
-receive.call(q,bad);
-if(q.logComplete!==previous) throw Error('failed row replaced the complete snapshot');
-console.log(JSON.stringify({rows:previous.rows.length, preserved:q.logComplete===previous,
-  failureMessage:q.logMessage}));
-'''.replace('BODY_B64', base64.b64encode(body.encode()).decode())
+// Stale sequence, malformed short response and stale token are ignored.
+q.logPending=2;q.logSequence++;
+receive.call(q,reply(2,255,20,0,q.logSequence-1,q.logToken));
+if(q.logPending!==2)throw Error('stale sequence mutated the transaction');
+receive.call(q,new DataView(new ArrayBuffer(8)));
+if(q.logPending!==2)throw Error('malformed packet mutated the transaction');
+receive.call(q,reply(2,255,20,0,q.logSequence,q.logToken+1));
+if(q.logPending!==2)throw Error('stale token mutated the transaction');
+// A fault mismatch fails the transfer but preserves the last complete result.
+q.logPending=3;q.logRow=0;q.logSequence++;
+const bad=reply(3,0,44,1);bad.setUint32(12,1);
+for(let i=0;i<5;i++)bad.setFloat32(16+i*4,i+1);
+bad.setFloat32(36,6);bad.setUint32(40,0);receive.call(q,bad);
+if(q.logComplete!==previous||q.logPending!==0)throw Error('fault mismatch replaced results');
+// Disconnect, app suspension and exhausted retry use the actual failure paths.
+q.logPending=1;q.VescIf.connected=false;receive.call(q,reply(1,255,12));
+if(q.logComplete!==previous||q.logPending!==0)throw Error('disconnect lost complete result');
+q.VescIf.connected=true;q.logPending=1;suspended.call(q,1);
+if(q.logComplete!==previous||q.logPending!==0)throw Error('suspension lost complete result');
+q.logPending=1;q.logRetries=2;timeout.call(q);
+if(q.logComplete!==previous||q.logPending!==0)throw Error('timeout lost complete result');
+console.log(JSON.stringify({rows:previous.rows.length,preserved:q.logComplete===previous,
+  sent:q.mCommands.sent.length,timeoutFailures:q.logTimeout.stops}));
+'''
+    for name, value in zip(('RECEIVE', 'FAIL', 'REQUEST', 'SUSPEND', 'TIMEOUT'), encoded):
+        fixture = fixture.replace(name, value)
     with tempfile.TemporaryDirectory() as temp:
         path = Path(temp) / 'qml-fixture.js'
         path.write_text(fixture)

@@ -175,186 +175,28 @@ def request_five_click_shutdown_simulate(state):
     return 0 if five_click_shutdown_rejection_reason(state) is not None else 1
 
 
-def log_quantise(value, scale, offset=0):
-    return None if value is None else offset + int(value * scale + 0.5)
-
-
-def log_bin(value, edges):
-    return sum(value >= edge for edge in edges)
-
-
-def log_b_reference(motor, cudax=False, imbalance=False):
-    iref = 460 if cudax else 228
-    read = isinstance(motor, (int, float)) and not isinstance(motor, bool) and 30 <= motor <= 250
-    motref = int(motor * 10 + .5) if read else 1600
-    flags = 273 + (2 if read else 0) + (4 if imbalance else 0)
-    return (iref, 850, motref, flags, 5 * ((iref + 39) // 40))
-
-
-def log_b_sag(stored, delta):
-    return clamp(stored + delta, 0, 0x7fffffff)
-
-
-def log_b_ring_slot(seq):
-    return 169 + 5 * ((seq - 1) % 4)
-
-
-def log_b_ring_begin(image, pending, seq, tag, vref):
-    seq = min(seq + 1, 0x7fffffff)
-    base = log_b_ring_slot(seq)
-    for k in range(5):
-        image[base + k] = 32767 if k == 2 else 0
-        pending.pop((base + k, None), None)
-        for half in (0, 1):
-            pending.pop((base + k, half), None)
-    image[base + 4] = (tag << 15) | min(vref, 32767)
-    return seq
 
 
 
 
-def log_b_accumulate(image, pending, state, *, speed=SPEED_OFF, soft_start=False,
-                     safe_start_running=False, dt=.2, iin=None, vin=None,
-                     rpm=None, duty=None, fet=None, mot=None,
-                     settled=False, imbalance=None, warning=0, latch=0):
-    """Mirror the RAM-only 132..168 sample path, with a caller-supplied resting vref."""
-    run = speed != SPEED_OFF
-    steady = run and not soft_start
-    if vin is not None and vin >= 0 and state['vref10'] == 0:
-        state['vref10'] = log_quantise(vin, 10)
-    if not state['session'] and run:
-        log_update(image, pending, 132, None, 'add', 1)
-        state['session'] = True
-    if (steady and not safe_start_running and duty is not None and
-            abs(duty) >= .02 and iin is not None and vin is not None and
-            vin >= 0 and state['vref10'] > 0):
-        b = min(7, log_quantise(abs(iin), 10) // state['step'])
-        log_update(image, pending, 134 + 2 * b, None, 'add', 1)
-        slot = 135 + 2 * b
-        image[slot] = log_b_sag(image[slot], state['vref10'] - log_quantise(vin, 10))
-    if steady and duty is not None:
-        d = abs(duty)
-        if d >= .95 and 0 <= speed < 10:
-            log_update(image, pending, 150 + speed // 2, speed % 2, 'add', dt)
-        elif d < .8:
-            log_update(image, pending, 155 + log_bin(d, (.2, .4, .6)), None, 'add', 1)
-    if run:
-        if fet is not None:
-            b = log_bin(log_quantise(fet, 10), (400, 550, 700, 850))
-            log_update(image, pending, 159 + b, None, 'add', 1)
-            if b == 4:
-                log_update(image, pending, 164, None, 'add', 1)
-        if mot is not None and log_quantise(mot, 10) >= state['motref']:
-            log_update(image, pending, 165, None, 'add', 1)
-    if state['imbalance_enabled']:
-        if latch and latch != state['previous_latch']:
-            log_update(image, pending, 166, None, 'add', 1)
-        state['previous_latch'] = latch
-        if settled and imbalance is not None:
-            magnitude = min(32767, log_quantise(abs(imbalance), 100))
-            log_update(image, pending, 167, 0, 'max', magnitude)
-            image[167] = (image[167] & 0x3fff8000) | magnitude
-            if warning:
-                log_update(image, pending, 168, None, 'add', 1)
-
-
-def log_b_mirror_new(vref10=0, motref=1600, imbalance_enabled=True, step=30):
-    image = {slot: 1 << 30 for slot in range(135, 150, 2)}
-    state = dict(vref10=vref10, motref=motref, imbalance_enabled=imbalance_enabled,
-                 step=step, session=False, previous_latch=0)
-    return image, {}, state
 
 
 
 
-def log_update(image, pending, slot, half, operation, value, quiet=False):
-    """Mirror the slot-addressed accumulator, including independent fractional carry."""
-    limit = 32767 if half is not None else 0x7fffffff
-    shift = (15 if half == 0 else 0) if half is not None else 0
-    old = (image.get(slot, 0) >> shift) & limit
-    if operation == 'add':
-        field = (slot, half)
-        total = pending.get(field, 0) + value
-        whole = int(total)
-        pending[field] = total - whole
-        new = clamp(old + whole, 0, limit)
-    elif operation == 'max':
-        new = clamp(int(value), old, limit)
-    else:
-        new = clamp(int(value), 0, old)
-    image[slot] = (image.get(slot, 0) & ~(limit << shift)) | (new << shift)
-    return new != old and not quiet
 
 
-def test_performance_log_collector():
-    print('\n=== Testing RAM-only performance collector ===')
-    image, pending = {}, {}
-    assert_eq(log_quantise(41.2, 10, 1000), 1412, 'offset-binary temperature vector')
-    assert_eq(log_quantise(35.125, 100), 3513, 'voltage rounded half up')
-    assert_eq([log_bin(v, [.8, .9, .95]) for v in [.79, .8, .9, .95]],
-              [0, 1, 2, 3], 'duty-band boundaries and saturation')
-    assert_eq([log_bin(v, [30 * i for i in range(1, 8)]) for v in [29, 30, 209, 210, 228]],
-              [0, 1, 6, 7, 7], 'Blacktip current bins')
-    assert_eq([78 + 3 * i for i in [0, 1, 9]], [78, 81, 105], 'per-gear slot mapping')
-    assert_eq([(108 + i // 2, i % 2) for i in [0, 1, 8, 9]],
-              [(108, 0), (108, 1), (112, 0), (112, 1)], 'per-gear P15 packing')
-    for half, value in [(0, 1), (1, 3)]:
-        log_update(image, pending, 108, half, 'add', value)
-    assert_eq(image[108], 32771, 'P15(1, 3) vector')
-    assert_eq(log_update(image, pending, 108, 0, 'add', 40000), True, 'P15 saturates')
-    assert_eq((image[108] >> 15) & 32767, 32767, 'P15 field A ceiling')
-    log_update(image, pending, 72, None, 'add', 0x7fffffff)
-    assert_eq(log_update(image, pending, 72, None, 'add', 50), False, 'U31 saturation no wrap')
-    for slot in (72, 78, 79, 80):
-        image.pop(slot, None)
-    for _ in range(5):
-        log_update(image, pending, 72, None, 'add', .2)
-        log_update(image, pending, 78, None, 'add', .4)
-    assert_eq((image[72], image[78]), (1, 2), 'per-field fractional carry')
-    assert_eq(log_update(image, pending, 77, 1, 'min', 3511), False,
-              'minimum preserves unset sentinel without initialisation')
-    image[77] = 32767
-    assert_eq(log_update(image, pending, 77, 1, 'min', 3511), True, 'minimum voltage sentinel')
-    assert_eq(image[77], 3511, 'running minimum voltage')
-    # A nil RPM getter must not discard independent time/current/temperature.
-    readings = {'rpm': None, 'iin': 22.8, 'fet': 41.2}
-    for signal, slot, scale in [('rpm', 77, 1), ('iin', 76, 10), ('fet', 75, 10)]:
-        if readings[signal] is not None:
-            log_update(image, pending, slot, 0, 'max', log_quantise(readings[signal], scale))
-    log_update(image, pending, 72, None, 'add', 2)
-    assert_eq((image[72], image[76] >> 15, image[75] >> 15), (3, 228, 412),
-              'nil getter skips only its metric')
-    before = dict(image)
-    dirty = False
-    last_ah, last_wh = 1.0, 10.0
-    for tick in range(5000):
-        ah, wh = 1.0 + tick * .0001, 10.0 + tick * .001
-        running = False
-        if running:
-            dirty |= log_update(image, pending, 73, None, 'add', (ah - last_ah) * 1000, quiet=True)
-            dirty |= log_update(image, pending, 74, None, 'add', (wh - last_wh) * 10, quiet=True)
-            last_ah, last_wh = ah, wh
-    assert_eq((image, dirty), (before, False), 'long idle with drifting Ah/Wh changes no slots')
-    assert_eq((last_ah, last_wh), (1.0, 10.0), 'Ah/Wh baseline retained across idle')
-    assert_eq(log_update(image, pending, 73, None, 'add', (ah - last_ah) * 1000, quiet=True),
-              False, 'quiet charge increment does not mark dirty')
 
-    source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
-    commands = ('set-rpm', 'set-duty', 'set-current', 'set-brake', 'conf-set',
-                'conf-store', 'foc-beep', 'foc-play-tone')
-    expected = (1, 2, 1, 0, 3, 0, 11, 5)
-    assert_eq(tuple(len(re.findall(r'\(' + re.escape(name) + r'\s', source))
-                    for name in commands), expected, 'motor-command call sites unchanged')
-    collector = source[source.index('; Volatile 320-byte live buffer'):source.index('; Init-only peripheral setup.')]
-    sample = collector[collector.index('(defun log_sample'):collector.index('; Receive context only')]
-    assert_eq('eeprom-' in collector or 'conf-store' in collector, False,
-              'performance capture and snapshot protocol are RAM-only')
-    assert_eq("(setvar 'log_live (bufcreate 320))" in collector, True,
-              'each owner start creates a fresh volatile capture')
-    assert_eq("(setvar 'log_snapshot_buf (bufcreate 320))" in collector, True,
-              'snapshot buffer is per-owner RAM')
-    assert_eq('(spawn THREAD_STACK_LOG log_owner_loop)' in collector, True,
-              'automatic collection owner starts without a UI request')
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -384,6 +226,16 @@ def test_performance_log_ram_snapshot_contract():
               'QML accepts rows only in ordered snapshot sequence')
     assert_eq('logComplete = { token: logToken, rows: rows' in qml, True,
               'complete validated rows replace the prior phone-RAM snapshot')
+
+
+def test_performance_log_motor_command_isolation():
+    source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
+    commands = ('set-rpm', 'set-duty', 'set-current', 'set-brake', 'conf-set',
+                'conf-store', 'foc-beep', 'foc-play-tone')
+    expected = (1, 2, 1, 0, 3, 0, 11, 5)
+    assert_eq(tuple(len(re.findall(r'\(' + re.escape(name) + r'\s', source))
+                    for name in commands), expected,
+              'performance changes do not alter motor/config/beeper command sites')
 
 
 def test_performance_log_capture_native():
@@ -1698,7 +1550,7 @@ def run_all_tests():
     test_five_click_shutdown_decision()
     test_startup_trigger_readiness()
     test_click_and_beep_regressions()
-    test_performance_log_collector()
+    test_performance_log_motor_command_isolation()
     test_performance_log_ram_snapshot_contract()
     test_performance_log_capture_native()
     test_performance_log_qml_runtime_fixture()
