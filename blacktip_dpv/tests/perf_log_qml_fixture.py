@@ -35,7 +35,11 @@ def run():
     app_signal = body_after(qml, 'function onStateChanged(state)')
     timer_at = qml.index('id: logTimeout')
     timeout = body_after(qml, 'onTriggered:', timer_at)
-    scripts = [receive, fail, request, app_signal, timeout, token_text]
+    csv_cell = body_after(qml, 'function logCsvCell(value)')
+    csv = body_after(qml, 'function logCsv(snapshot)')
+    save = body_after(qml, 'function logSaveCsv()')
+    scripts = [receive, fail, request, app_signal, timeout, token_text,
+               csv_cell, csv, save]
     encoded = [base64.b64encode(part.encode()).decode() for part in scripts]
     fixture = r'''
 const vm=require('vm');
@@ -47,10 +51,16 @@ const q={logComplete:{old:true},logRows:[],logToken:51,logSequence:8,
    getConnectedUuid(){return 'device'},getConnectedPortName(){return ''}},
  mCommands:{sent:[],sendCustomAppData(b){this.sent.push(b)}},
  logTimeout:{stops:0,restarts:0,stop(){this.stops++},restart(){this.restarts++}},
- qsTr:s=>s,Qt:{ApplicationActive:4}};
+  qsTr:s=>s,Qt:{ApplicationActive:4},
+  Platform:{StandardPaths:{DocumentsLocation:1,writableLocation(){return this.path},path:'/tmp'}},
+  Utility:{arr2str:b=>Buffer.from(b).toString(),readAllFromFile:p=>q.files[p]},
+  files:{},logWriter:{path:null,openLogFileFullPath(p){this.path=p;return true},
+    writeToLogFile(s){q.files[this.path]=Buffer.from(s);return true},closeLogFile(){}}};
 const ctx=vm.createContext(q);
+vm.runInContext("String.prototype.arg=function(v){return this.replace('%1',v)}",ctx);
 function source(s){return Buffer.from(s,'base64').toString()}
 const tokenText=vm.runInContext('(function(token){'+source('TOKEN_TEXT')+'\n})',ctx);
+q.logTokenText=tokenText;
 for (const [value, expected] of [[1,'0x1'],[0x7fffffff,'0x7fffffff'],
     [0x80000000,'0x80000000'],[0xfffffffe,'0xfffffffe'],
     [0xffffffff,'0xffffffff'],[-1,'0xffffffff']]) {
@@ -62,6 +72,11 @@ q.logFail=vm.runInContext('(function(message){'+source('FAIL')+'\n})',ctx);
 q.logRequest=vm.runInContext('(function(op,row){'+source('REQUEST')+'\n})',ctx);
 const suspended=vm.runInContext('(function(state){'+source('SUSPEND')+'\n})',ctx);
 const timeout=vm.runInContext('(function(){'+source('TIMEOUT')+'\n})',ctx);
+const csvCell=vm.runInContext('(function(value){'+source('CSV_CELL')+'\n})',ctx);
+const csv=vm.runInContext('(function(snapshot){'+source('CSV')+'\n})',ctx);
+q.logCsv=csv;q.logCsvCell=csvCell;
+const save=vm.runInContext('(function(){'+source('SAVE')+'\n})',ctx);
+q.logSaveCsv=save;
 function reply(op,row,length,fault=0,sequence=q.logSequence,token=q.logToken){
  const b=new ArrayBuffer(length),v=new DataView(b);
  v.setUint8(1,1);v.setUint8(2,op);v.setUint16(3,sequence);
@@ -79,6 +94,24 @@ for(let row=0;row<10;row++){
 }
 if(!q.logComplete||q.logComplete.rows.length!==10||q.logPending!==0)
  throw Error('production handler did not commit all ten rows');
+const exported={token:0xffffffff,downloaded:'2026-11-08T12:34:56.789Z',firmware:'7.00',
+ hardware:'MK5',device:'device, "A"',fault:3,
+ rows:Array.from({length:10},(_,i)=>[i+1,1.25+i,2.5,3.75,4.5,5.25,6.5,7])};
+const text=csv(exported), parsed=text.trimEnd().split('\n');
+if(parsed.length!==19||parsed[6]!=='logging_fault,3'||parsed[7]!==''||
+ parsed[8]!=='speed,valid_samples,sum_abs_erpm,sum_input_current_A,sum_input_power_W,sum_abs_erpm_error,sum_abs_duty,peak_abs_phase_current_A,rejected_samples'||
+ !parsed[5].includes('"device, ""A"""')||!parsed[9].includes('1.25')||!parsed[18].startsWith('9,'))
+ throw Error('CSV metadata, quoting, numerical values, or ten row serialization is incorrect');
+q.logComplete=exported;q.logSaveCsv();
+const path=Object.keys(q.files)[0];
+if(!path||!path.endsWith('.csv')||Buffer.from(q.files[path]).toString()!==text||!q.logExportMessage.includes('Verified'))
+ throw Error('CSV production save/readback failed');
+const old=q.files[path];q.logWriter.writeToLogFile=()=>false;q.logSaveCsv();
+if(q.files[path]!==old||!q.logExportMessage.includes('failed'))
+ throw Error('CSV failed write did not preserve prior file/report failure');
+q.logWriter.writeToLogFile=()=>true;q.Platform.StandardPaths.writableLocation=()=>'';
+q.logSaveCsv();if(!q.logExportMessage.includes('Cannot determine'))throw Error('unsupported path not reported');
+q.Platform.StandardPaths.writableLocation=()=>'/tmp';
 const previous=q.logComplete;
 // Stale sequence, malformed short response and stale token are ignored.
 q.logPending=2;q.logSequence++;
@@ -105,11 +138,11 @@ if(q.logComplete!==previous||q.logPending!==0)throw Error('timeout lost complete
 const recreated=vm.createContext({logComplete:null});
 if(recreated.logComplete!==null || q.logComplete!==previous)
  throw Error('fixture incorrectly assumes reconnect preserves results');
-console.log(JSON.stringify({rows:previous.rows.length,preserved:q.logComplete===previous,
+ console.log(JSON.stringify({rows:previous.rows.length,preserved:q.logComplete===previous,
   sent:q.mCommands.sent.length,timeoutFailures:q.logTimeout.stops}));
 '''
     assert qml.count('.arg(logTokenText(logComplete.token))') == 2
-    for name, value in zip(('RECEIVE', 'FAIL', 'REQUEST', 'SUSPEND', 'TIMEOUT', 'TOKEN_TEXT'), encoded):
+    for name, value in zip(('RECEIVE', 'FAIL', 'REQUEST', 'SUSPEND', 'TIMEOUT', 'TOKEN_TEXT', 'CSV_CELL', 'CSV', 'SAVE'), encoded):
         fixture = fixture.replace(name, value)
     with tempfile.TemporaryDirectory() as temp:
         path = Path(temp) / 'qml-fixture.js'
