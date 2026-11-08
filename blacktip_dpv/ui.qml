@@ -889,8 +889,8 @@ Item {
                     }
                 }
             }
-        }
 
+        // Results page is the fourth SwipeView item, not a ColumnLayout sibling.
         Page {
             ScrollView {
                 anchors.fill: parent
@@ -981,6 +981,7 @@ Item {
                     }
                 }
             }
+        }
         }
     }
 
