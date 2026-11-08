@@ -261,10 +261,10 @@ def test_peripherals_setup_native():
         return
     try:
         check_peripherals_setup_native(repl)
-        assert_eq(True, True, 'native configuration 5 startup succeeds without pin initialisation')
+        assert_eq(True, True, 'native configuration 5 initialises the expected I2C pins once before display writes')
     except (AssertionError, subprocess.TimeoutExpired, OSError) as exc:
         print(f'  Native peripheral setup details: {exc}')
-        assert_eq(False, True, 'native configuration 5 startup succeeds without pin initialisation')
+        assert_eq(False, True, 'native configuration 5 initialises the expected I2C pins once before display writes')
 
 
 def test_performance_log_qml_runtime_fixture():
