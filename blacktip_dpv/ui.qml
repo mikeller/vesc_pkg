@@ -5,8 +5,10 @@ import QtQuick 2.7
 import QtQuick.Controls 2.2
 import QtQuick.Layouts 1.3
 import QtQuick.Controls.Material 2.2
+import Qt.labs.platform 1.0 as Platform
 
 import Vedder.vesc.utility 1.0
+import Vedder.vesc.logwriter 1.0
 import Vedder.vesc.commands 1.0
 import Vedder.vesc.configparams 1.0
 
@@ -77,6 +79,51 @@ Item {
     property string logMessage: qsTr("Connect after the dive and download before the DPV powers off. Automatic firmware power-off can erase unsaved data.")
     property int logPage: 0
     property string logConnectedDevice: ""
+    property string logExportMessage: ""
+
+    function logCsvCell(value) {
+        return "\"" + String(value).replace(/"/g, "\"\"") + "\""
+    }
+
+    function logCsv(snapshot) {
+        var lines = ["field,value", "snapshot_token," + logCsvCell(logTokenText(snapshot.token)),
+                     "phone_download," + logCsvCell(snapshot.downloaded),
+                     "firmware," + logCsvCell(snapshot.firmware),
+                     "hardware," + logCsvCell(snapshot.hardware),
+                     "device," + logCsvCell(snapshot.device),
+                     "logging_fault," + snapshot.fault,
+                     "", "speed,valid_samples,sum_abs_erpm,sum_input_current_A,sum_input_power_W,sum_abs_erpm_error,sum_abs_duty,peak_abs_phase_current_A,rejected_samples"]
+        for (var i = 0; i < 10; i++) {
+            var row = snapshot.rows[i]
+            lines.push([i].concat(row).join(","))
+        }
+        return lines.join("\n") + "\n"
+    }
+
+    function logSaveCsv() {
+        if (!logComplete) return
+        var snapshot = logComplete
+        var directory = Platform.StandardPaths.writableLocation(Platform.StandardPaths.DocumentsLocation)
+        if (!directory || directory.indexOf("file:") === 0) {
+            logExportMessage = qsTr("Cannot determine a local Documents directory. Results remain on this page; take screenshots.")
+            return
+        }
+        var filename = "blacktip-results-" + Date.now() + "-" + logTokenText(snapshot.token) + ".csv"
+        var path = directory.replace(/\/$/, "") + "/" + filename
+        var contents = logCsv(snapshot)
+        try {
+            if (!logWriter.openLogFileFullPath(path)) throw new Error("open")
+            if (!logWriter.writeToLogFile(contents)) throw new Error("write")
+            logWriter.closeLogFile()
+            if (Utility.arr2str(Utility.readAllFromFile(path)) !== contents) throw new Error("verify")
+            logExportMessage = qsTr("Verified CSV at %1. Check that you can find and open it in your phone's Files app before leaving this page; keep screenshots as a fallback.").arg(path)
+        } catch (error) {
+            logWriter.closeLogFile()
+            logExportMessage = qsTr("CSV save or readback failed at %1. Results remain on this page; take screenshots. An incomplete file may remain.").arg(path)
+        }
+    }
+
+    LogWriter { id: logWriter }
 
     function logTokenText(token) {
         // Force u32, then stringify before qsTr.arg: Qt formats numeric args
@@ -206,11 +253,12 @@ Item {
                             downloaded: new Date().toLocaleString(),
                             firmware: firmwareVersion, hardware: detectedHardwareModel,
                             device: logConnectedDevice }
+            logExportMessage = ""
             logRows = []
             logPending = 0
             logMessage = logExpectedFault
-                    ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Take and check screenshots in the gallery now. A BLE disconnect or reconnect can recreate this page and erase these results. CSV export is unavailable in this package build.")
-                    : qsTr("Complete snapshot in this Results page's RAM only. Take and check screenshots in the gallery now. A BLE disconnect or reconnect can recreate this page and erase these results. CSV export is unavailable in this package build.")
+                    ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Save a CSV and check it in Files, or take and check screenshots in the gallery. A BLE disconnect or reconnect can erase these results.")
+                    : qsTr("Complete snapshot in this Results page's RAM only. Save a CSV and check it in Files, or take and check screenshots in the gallery. A BLE disconnect or reconnect can erase these results.")
         }
     }
 
@@ -902,6 +950,17 @@ Item {
                             else logDownload()
                         }
                     }
+                    Button {
+                        text: qsTr("Save snapshot to CSV")
+                        enabled: !!logComplete
+                        onClicked: logSaveCsv()
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
+                        text: logExportMessage
+                        visible: !!logExportMessage
+                    }
                     Label {
                         Layout.fillWidth: true
                         wrapMode: Text.WrapAnywhere
@@ -956,7 +1015,7 @@ Item {
                     Label {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
-                        text: qsTr("Ten labelled screenshot pages are needed for a complete capture. Check all images in your phone gallery now. A BLE disconnect or reconnect may recreate this page and lose the downloaded results, as can app termination. The DPV collects automatically while powered; multiple dives in one power cycle are mixed. Samples are not seconds, energy or dive history.")
+                        text: qsTr("CSV contains all ten speeds, snapshot identity, fault status and device details. Save to this phone's Documents folder and check the file in Files. If it is not accessible, capture ten labelled screenshot pages and check all images in the gallery. A BLE disconnect or reconnect may recreate this page and lose the downloaded results, as can app termination. The DPV collects automatically while powered; multiple dives in one power cycle are mixed. Samples are not seconds, energy or dive history.")
                     }
                 }
             }
@@ -972,7 +1031,7 @@ Item {
         Label {
             width: parent.width
             wrapMode: Text.WordWrap
-            text: qsTr("The complete results exist only while this page stays loaded and may be lost on BLE disconnect or reconnect. Check all ten screenshots in the gallery before refreshing; CSV export is unavailable.")
+            text: qsTr("The complete results exist only while this page stays loaded and may be lost on BLE disconnect or reconnect. Check the saved CSV in Files or all ten screenshots in the gallery before refreshing.")
         }
         onAccepted: logDownload()
     }
