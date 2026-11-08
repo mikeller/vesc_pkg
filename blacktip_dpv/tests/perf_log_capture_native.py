@@ -11,6 +11,13 @@ def check(repl):
     app = (ROOT / 'blacktip_dpv.lisp').read_text()
     production = app[app.index('(defun log_reply'):app.index('; Init-only peripheral setup.')]
     production = production.replace('(send-data ', '(mock-send-data ')
+    production = production.replace('(systime)', '(mock-systime)')
+    production = production.replace('(secs-since deadline)', '(mock-secs-since deadline)')
+    production = production.replace('(loopwhile t {',
+        '(loopwhile (< mock_owner_ticks 4) { (setvar \'mock_owner_ticks (+ mock_owner_ticks 1)) '
+        '(if (= mock_owner_ticks 3) (setvar \'speed 0))', 1)
+    for getter in ('rpm', 'rpm-set', 'current-in', 'current', 'vin', 'duty'):
+        production = production.replace('(get-' + getter + ')', '(mock-get-' + getter + ')')
     prefix = '''
 (define LOG_PREFIX 177) (define LOG_VERSION 1)
 (define LOG_MAX_COUNT 4294967294u32) (define SPEED_OFF 99)
@@ -22,7 +29,14 @@ def check(repl):
 (define log_owner -1) (define log_request nil) (define log_busy 0)
 (define speed SPEED_OFF) (define soft_start_active 0)
 (define safe_start_status 'idle)
+(define mock_owner_ticks 0) (define mock_duty 0.4) (define mock_getter_failure 0)
 (define last_reply nil) (define reply_count 0)
+(defun mock-systime () 0)
+(defun mock-secs-since (start) 0.2)
+(defun mock-get-rpm () 100.0) (defun mock-get-rpm-set () 120.0)
+(defun mock-get-current-in () (if (= mock_getter_failure 1) (car 1) 2.0))
+(defun mock-get-current () 3.0)
+(defun mock-get-vin () 30.0) (defun mock-get-duty () mock_duty)
 (defun mock-send-data (b) {
     (setvar 'last_reply b) (setvar 'reply_count (+ reply_count 1)) t
 })
@@ -68,6 +82,52 @@ def check(repl):
 ''')
     assert result == '(1 3 0)', result
     print('native production snapshot protocol: mismatched token rejected:', result)
+
+    result = run('''
+(setvar 'log_live (bufcreate 320)) (setvar 'log_fault 0)
+(setvar 'log_previous_speed 5) (setvar 'log_previous_eligible 1) (setvar 'speed 5)
+(log_sample)
+(list (bufget-u32 log_live 160) (bufget-f32 log_live 164)
+      (bufget-f32 log_live 172) (bufget-u32 log_live 188))
+''')
+    assert result == '(1u32 100.000000f32 60.000000f32 0u32)', result
+    print('native production sampler: stable forward sample:', result)
+
+    result = run('''
+(setvar 'log_live (bufcreate 320)) (setvar 'log_fault 0)
+(setvar 'log_previous_speed 0) (setvar 'log_previous_eligible 1) (setvar 'speed 0)
+(log_sample)
+(list (bufget-u32 log_live 0) (bufget-f32 log_live 4)
+      (bufget-f32 log_live 12) (bufget-u32 log_live 28))
+''')
+    assert result == '(1u32 100.000000f32 60.000000f32 0u32)', result
+    print('native production sampler: reverse speed index:', result)
+
+    result = run('''
+(setvar 'log_live (bufcreate 320)) (setvar 'log_fault 0)
+(setvar 'log_previous_speed 5) (setvar 'log_previous_eligible 1) (setvar 'speed 5)
+(setvar 'mock_duty 2.0) (log_sample)
+(list (bufget-u32 log_live 160) (bufget-u32 log_live 188) log_fault)
+''')
+    assert result == '(0u32 1u32 0)', result
+    print('native production sampler: invalid duty rejected:', result)
+
+    result = run('''
+(setvar 'log_live (bufcreate 320)) (setvar 'log_fault 0)
+(setvar 'log_previous_speed 5) (setvar 'log_previous_eligible 1) (setvar 'speed 5)
+(setvar 'mock_getter_failure 1) (log_sample)
+(list (bufget-u32 log_live 160) (bufget-u32 log_live 188) log_fault)
+''')
+    assert result == '(0u32 1u32 0)', result
+    print('native production sampler: trapped getter failure rejected:', result)
+
+    result = run('''
+(setvar 'speed 5) (spawn THREAD_STACK_LOG log_owner_loop) (sleep 0.05)
+(list (= mock_owner_ticks 4) (= log_owner -1)
+      (bufget-u32 log_live 160) (bufget-u32 log_live 0) (= log_fault 1))
+''')
+    assert result == '(t t 1u32 1u32 t)', result
+    print('native production spawned owner: forward/reverse transition and cleanup:', result)
 
     owner = production[production.index('(defun log_owner_inner'):]
     assert "(setvar 'log_live (bufcreate 320))" in owner

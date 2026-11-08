@@ -194,7 +194,7 @@ The `B1` request and response protocol is read-only: status, snapshot summary an
 
 ### Verification limits
 
-`make test` runs Python smoke tests, source-contract checks, display and safety regressions, and release-artifact checks. The optional stripped-source reader comparison requires `LBM_REPL` to point to a native LispBM REPL; without it, that comparison is skipped. The current suite has no native simulation of this results collector. Source checks do not establish production heap headroom, stack high-water, BLE reliability or hardware sampling behaviour.
+`make test` runs Python smoke tests, source-contract checks, display and safety regressions, and release-artifact checks. With `LBM_REPL` set, a native harness executes the production sampler, snapshot-serving functions and a spawned owner with mocked telemetry and clock. The owner loop is bounded in the fixture; the production QML `logReceive` handler is executed under Node with mock VESC Tool objects and protocol frames. The stripped-source reader comparison also runs against the native REPL. These tests do not establish production heap headroom, stack high-water, BLE reliability, real-time scheduling or hardware sampling behaviour.
 
 ## Build System
 

@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 from perf_log_capture_native import check as check_capture_native
+from perf_log_qml_fixture import run as run_log_qml_fixture
 
 # Test counters
 test_passes = 0
@@ -397,6 +398,20 @@ def test_performance_log_capture_native():
     except (AssertionError, subprocess.TimeoutExpired, OSError) as exc:
         print(f'  Native capture details: {exc}')
         assert_eq(False, True, 'native production owner/protocol scenarios complete')
+
+
+def test_performance_log_qml_runtime_fixture():
+    print('\n=== Testing production QML snapshot handler (Node fixture) ===')
+    try:
+        result = run_log_qml_fixture()
+        if result is None:
+            print('SKIPPED: Node.js is unavailable for the QML JavaScript fixture')
+        else:
+            assert_eq('"rows":10' in result and '"preserved":true' in result,
+                      True, 'production QML validates ten rows and preserves prior snapshot on fault')
+    except (AssertionError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
+        print(f'  QML fixture details: {exc}')
+        assert_eq(False, True, 'production QML snapshot handler fixture completes')
 
 
 def trigger_click_accepted(trigger_input_ready, trigger_armed, sw_pressed):
@@ -1686,6 +1701,7 @@ def run_all_tests():
     test_performance_log_collector()
     test_performance_log_ram_snapshot_contract()
     test_performance_log_capture_native()
+    test_performance_log_qml_runtime_fixture()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()
     test_strip_lisp_mutation_check()
