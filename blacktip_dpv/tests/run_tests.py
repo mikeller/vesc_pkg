@@ -229,6 +229,51 @@ def test_performance_log_ram_snapshot_contract():
               'complete validated rows replace the prior phone-RAM snapshot')
 
 
+def test_results_page_swipeview_position():
+    """Keep the Results tab paired with its direct SwipeView page."""
+    qml = (Path(__file__).resolve().parents[1] / 'ui.qml').read_text()
+    swipe_start = qml.index('SwipeView {')
+    open_brace = qml.index('{', swipe_start)
+
+    # Mask comments and quoted strings so braces in text do not affect nesting.
+    code = re.sub(r'"(?:\\.|[^"\\])*"|//[^\n]*',
+                  lambda match: re.sub(r'[^\n]', ' ', match.group()), qml)
+    depth = 0
+    close_brace = None
+    for pos in range(open_brace, len(code)):
+        if code[pos] == '{':
+            depth += 1
+        elif code[pos] == '}':
+            depth -= 1
+            if depth == 0:
+                close_brace = pos
+                break
+    swipe_body = code[open_brace + 1:close_brace]
+
+    # Page objects at brace depth zero are the pages SwipeView actually owns.
+    direct_pages = []
+    depth = 0
+    for match in re.finditer(r'\bPage\s*\{|[{}]', swipe_body):
+        token = match.group()
+        if token.startswith('Page') and depth == 0:
+            direct_pages.append(match.start())
+        if token.endswith('{') and token.startswith('Page'):
+            depth += 1
+        elif token == '{':
+            depth += 1
+        elif token == '}':
+            depth -= 1
+
+    results_marker = qml.index('// Results page is the fourth SwipeView item')
+    results_offset = results_marker - (open_brace + 1)
+    results_index = sum(page < results_offset for page in direct_pages)
+    assert_eq(len(direct_pages), 4, 'SwipeView owns exactly four direct pages')
+    assert_eq(results_index, 3, 'Results content belongs to the fourth SwipeView page')
+    tab_buttons = re.findall(r'TabButton\s*\{[^}]*text:\s*qsTr\("([^"]+)"\)', qml)
+    assert_eq(tab_buttons[results_index], 'Results',
+              'the Results tab index selects the Results SwipeView page')
+
+
 def test_performance_log_motor_command_isolation():
     source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
     commands = ('set-rpm', 'set-duty', 'set-current', 'set-brake', 'conf-set',
@@ -1567,6 +1612,7 @@ def run_all_tests():
     test_click_and_beep_regressions()
     test_performance_log_motor_command_isolation()
     test_performance_log_ram_snapshot_contract()
+    test_results_page_swipeview_position()
     test_performance_log_capture_native()
     test_peripherals_setup_native()
     test_performance_log_qml_runtime_fixture()
