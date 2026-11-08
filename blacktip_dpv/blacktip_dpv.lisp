@@ -2258,11 +2258,11 @@
 {
     (if (or (= 0 hardware_configuration) (= 3 hardware_configuration)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
             (i2c-start 'rate-400k 'pin-swdio 'pin-swclk) ; Works HW 60 with screen on SWD Connector. Screen SDA pin to Vesc SWDIO (2), Screen SCL pin to Vesc SWCLK (4)
-            (if (or (= 1 hardware_configuration) ( = 4 hardware_configuration)) ; 1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth
+            (if (or (= 1 hardware_configuration) (= 4 hardware_configuration) (= 5 hardware_configuration)) ; 5 = test fixture, wired like 1/4 on HW60 Comm pins
                 (i2c-start 'rate-400k 'pin-rx 'pin-tx) ; Works HW 60 with screen on Comm Connector. Screen SDA pin to Vesc RX/SDA (5), Screen SCL pin to Vesc TX/SCL (6)
                 (if ( = 2 hardware_configuration)
                     (i2c-start 'rate-400k 'pin-tx 'pin-rx) ; tested on HW 410 Tested: SN 189, SN 1691
-                    nil))) ; Unrecognised configuration: no pin mapping; do not call nil as a function.
+                    nil))) ; Other configurations have no known I2C pin mapping.
 
     ; HT16K33 init sequence: oscillator -> brightness.
     ;
