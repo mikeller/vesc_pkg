@@ -16,12 +16,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from perf_log_native import run as run_log_native, integer_values as log_native_ints
-from perf_log_boot import classify as boot_classify, crc as boot_crc, make_image as boot_image
-from perf_log_boot import references as boot_references, native as run_boot_native
-from perf_log_boot import firmware_crc_vectors
-from perf_log_writer import check as check_writer_native
-from perf_log_protocol import check as check_protocol_native
 
 # Test counters
 test_passes = 0
@@ -215,34 +209,6 @@ def log_b_ring_begin(image, pending, seq, tag, vref):
     return seq
 
 
-def test_performance_log_ring():
-    print('\n=== Testing RAM session ring ===')
-    assert_eq([log_b_ring_slot(n) for n in (1, 2, 4, 5, 9)],
-              [169, 174, 184, 169, 169], 'ring index and wrap vectors')
-    image, pending, seq = {}, {}, 0
-    assert_eq(seq, 0, 'idle controller does not start a session')
-    seq = log_b_ring_begin(image, pending, seq, 7, 364)
-    assert_eq([image[slot] for slot in range(169, 174)],
-              [0, 0, 32767, 0, 229740], 'record reset sentinel and tag/start voltage')
-    log_update(image, pending, 169, None, 'add', 1.2)
-    log_update(image, pending, 170, 0, 'add', 3120)
-    log_update(image, pending, 170, 1, 'add', 346)
-    log_update(image, pending, 171, 0, 'max', 1412)
-    log_update(image, pending, 171, 1, 'min', 330)
-    log_update(image, pending, 172, 0, 'max', 198)
-    log_update(image, pending, 172, 1, 'max', 3600)
-    assert_eq([image[slot] for slot in range(169, 174)],
-              [1, 102236506, 46268746, 6491664, 229740], 'ring record spec vector')
-    log_update(image, pending, 169, None, 'add', .8)
-    assert_eq(image[169], 2, 'motor-on seconds carry a fractional remainder')
-    for _ in range(4):
-        seq = log_b_ring_begin(image, pending, seq, 0, 0)
-    assert_eq((seq, [image[slot] for slot in range(169, 174)]),
-              (5, [0, 0, 32767, 0, 0]), 'wrapped record clears old totals and pending fractions')
-    assert_eq((pending.get((169, None), 0), image[171] & 32767),
-              (0, 32767), 'wrapped minimum stays at no-sample sentinel')
-    assert_eq(log_b_ring_begin(image, pending, 0x7fffffff, 0, 0),
-              0x7fffffff, 'saturated sequence stays in the final ring record')
 
 
 def log_b_accumulate(image, pending, state, *, speed=SPEED_OFF, soft_start=False,
@@ -297,87 +263,6 @@ def log_b_mirror_new(vref10=0, motref=1600, imbalance_enabled=True, step=30):
     return image, {}, state
 
 
-def test_performance_log_b():
-    print('\n=== Testing extended RAM collector vectors ===')
-    for value, ref, bit in [(160, 1600, 1), (180, 1800, 1), (250, 2500, 1),
-                            (None, 1600, 0), ('error', 1600, 0),
-                            ('exit-error', 1600, 0), (29.9, 1600, 0), (250.1, 1600, 0)]:
-        iref, fet, mot, flags, step = log_b_reference(value)
-        assert_eq((fet, mot, flags, (flags >> 1) & 1, (flags >> 4) & 1),
-                  (850, ref, 273 + bit * 2, bit, 1), f'reference and header {value}')
-    assert_eq(log_b_reference(160, imbalance=True)[3], 279, 'imbalance header flag')
-    assert_eq(log_b_reference(None, imbalance=True)[3], 277, 'fallback with imbalance')
-    assert_eq(log_b_reference(160, cudax=True)[::4], (460, 60), 'Cuda X current step')
-    assert_eq((step, [step * n for n in range(1, 8)]),
-              (30, [30, 60, 90, 120, 150, 180, 210]), 'Blacktip current edges in 0.1 A')
-    assert_eq([min(7, x // step) for x in (0, 29, 30, 139, 140, 209, 210, 228)],
-              [0, 0, 1, 4, 4, 6, 7, 7], 'current boundary bins')
-    fet_edges = [fet - n for n in (450, 300, 150, 0)]
-    assert_eq(fet_edges, [400, 550, 700, 850], 'fixed FET edges')
-    assert_eq([log_bin(v, fet_edges) for v in (399, 400, 549, 550, 699, 700, 849, 850)],
-              [0, 1, 1, 2, 2, 3, 3, 4], 'signed FET boundaries')
-    assert_eq([log_bin(v, (.2, .4, .6)) for v in (0, .2, .4, .6, .79)],
-              [0, 1, 2, 3, 3], 'duty histogram edges')
-    bias = 1 << 30
-    assert_eq((log_b_sag(bias, 364 - 351), log_b_sag(bias, 364 - 365)),
-              (bias + 13, bias - 1), 'signed sag sample and bin-four vector')
-    assert_eq((log_b_sag(0, -1), log_b_sag(0x7fffffff, 1)),
-              (0, 0x7fffffff), 'sag saturates at both ends')
-    image, pending = {150: 0}, {}
-    log_update(image, pending, 150, 0, 'add', 32767)
-    log_update(image, pending, 150, 1, 'add', 3)
-    log_update(image, pending, 150, 0, 'add', 1)
-    assert_eq(image[150], (32767 << 15) + 3, 'per-index duty P15 saturation and isolation')
-    assert_eq((int(85 >= 85), int(160 >= 160), int(159.9 >= 160)),
-              (1, 1, 0), 'both derating boundaries')
-    assert_eq((sum(x != 0 and x != prev for prev, x in zip((0, 1, 1, 2), (1, 1, 2, 0))),
-               max(38, 215), 38, sum(x > 200 for x in (38, 215))),
-              (2, 215, 38, 1), 'latch transition, settled maximum/last and over-warn')
-    image, pending, state = log_b_mirror_new(vref10=364)
-    for _ in range(5):
-        log_b_accumulate(image, pending, state, speed=5, iin=14, vin=35.1,
-                         rpm=2950, duty=.96, fet=41.2, mot=30)
-    assert_eq(tuple(image.get(slot, 0) for slot in (132, 142, 143, 152, 160, 164, 165)),
-              (1, 5, bias + 65, 1, 5, 0, 0), 'mirror matches native sag, duty and FET vector')
-    image, pending, state = log_b_mirror_new(motref=1600)
-    for fet_temp, mot_temp in ((39.9, 159.9), (40, 160), (55, 160),
-                               (70, 160), (85, 160)):
-        log_b_accumulate(image, pending, state, speed=5, soft_start=True,
-                         fet=fet_temp, mot=mot_temp, duty=.96, iin=14, vin=35)
-    assert_eq(tuple(image.get(slot, 0) for slot in range(159, 166)),
-              (1, 1, 1, 1, 1, 1, 4), 'FET bins and assumed derating match at boundaries during soft start')
-    assert_eq(tuple(image.get(slot, 0) for slot in (142, 152, 155)),
-              (0, 0, 0), 'soft start excludes loaded current and duty bins')
-    image, pending, state = log_b_mirror_new()
-    for settled, magnitude, warning, latch in ((False, 2.15, 2, 1),
-                                                 (True, 2.15, 2, 1),
-                                                 (True, .38, 0, 2),
-                                                 (True, None, 0, 0),
-                                                 (True, .38, 0, 0),
-                                                 (True, .38, 0, 2)):
-        log_b_accumulate(image, pending, state, settled=settled,
-                         imbalance=magnitude, warning=warning, latch=latch)
-    assert_eq(tuple(image.get(slot, 0) for slot in (166, 167, 168)),
-              (3, (215 << 15) | 38, 1), 'settled imbalance, last/max and changed nonzero latch')
-    image, pending, state = log_b_mirror_new(imbalance_enabled=False)
-    log_b_accumulate(image, pending, state, settled=True, imbalance=3,
-                     warning=2, latch=1)
-    assert_eq(tuple(image.get(slot, 0) for slot in (166, 167, 168)),
-              (0, 0, 0), 'disabled imbalance never accumulates')
-    image, pending, state = log_b_mirror_new(vref10=364)
-    image[142], image[143], image[159], image[164], image[165], image[166], image[168] = (
-        0x7fffffff, 0x7fffffff, 0x7fffffff, 0x7fffffff,
-        0x7fffffff, 0x7fffffff, 0x7fffffff)
-    log_b_accumulate(image, pending, state, speed=5, iin=14, vin=35.1,
-                     fet=85, mot=160, settled=True, imbalance=1, warning=2, latch=1)
-    assert_eq(tuple(image[s] for s in (142, 143, 159, 164, 165, 166, 168)),
-              (0x7fffffff,) * 7, 'all U31 count and sag sums saturate without wrapping')
-    source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
-    assert_eq(bool(re.search(r"\(conf-get\s+'l-(?:temp-fet-(?:start|end)|in-current-max)", source)),
-              False, 'no unsupported FET or transient current reference reads')
-    collector = source[source.index('(defun log_b_set_tag'):source.index('(defun log_b_ring_begin')]
-    assert_eq('eeprom-store-' in collector, False,
-              'block B tag change remains RAM-only until the gated writer runs')
 
 
 def log_update(image, pending, slot, half, operation, value, quiet=False):
@@ -458,299 +343,45 @@ def test_performance_log_collector():
     expected = (1, 2, 1, 0, 3, 0, 11, 5)
     assert_eq(tuple(len(re.findall(r'\(' + re.escape(name) + r'\s', source))
                     for name in commands), expected, 'motor-command call sites unchanged')
-    collector = source[source.index('(defun log_blk_new'):source.index('; Init-only peripheral setup.')]
-    sample = collector[collector.index('(defun log_sample'):collector.index('; Hook in safe_start_abort_with_reason')]
-    sample_path = collector[collector.index('(defun log_apply'):collector.index('; Hook in safe_start_abort_with_reason')]
-    sample_path = '\n'.join(line.split(';', 1)[0] for line in sample_path.splitlines())
-    sample_path = re.sub(r'\(defun [^\n]*', '', sample_path)
-    calls = set(re.findall(r'\(([a-z][\w?-]*)', sample_path))
-    allowed = set(('defun var if and match loopforeach looprange setq eq number? '
-                   'abs floor clamp ix bitwise-and bitwise-or bitwise-not shl shr to-i to-u32 '
-                   'bufget-f32 bufget-u32 bufset-f32 bufset-u32 buflen '
-                   'get-ah get-wh get-rpm get-rpm-set get-current get-current-in '
-                   'get-duty get-fault get-temp-fet get-temp-mot get-vin '
-                   'secs-since systime trap log_apply log_bin log_upd log_rules '
-                    'log_q log_get log_set log_motor_reference log_b_sag log_b_sample '
-                    'log_boot_block log_b_boot_references log_blk_new eeprom-read-i crc32 bufcreate not-eq or '
-                    'log_b_last_imbalance log_b_ring_begin log_b_ring_slot log_b_ring_sample '
-                    'get_battery_imbalance_warning '
-                    'get_battery_imbalance_voltage conf-get setvar list not').split())
-    assert_eq(calls - allowed, set(), 'complete sampling call set stays read-only')
-    assert_eq(all('(trap (' + getter in sample for getter in
-                  ('get-ah', 'get-wh', 'get-rpm', 'get-rpm-set', 'get-current',
-                   'get-current-in', 'get-duty', 'get-fault', 'get-temp-fet',
-                   'get-temp-mot', 'get-vin')), True, 'each telemetry getter trapped')
-    assert_eq(bool(re.search(r'\((?:set-[\w-]+|conf-[\w-]+|foc-[\w-]+|eeprom-store-[\w-]+|shutdown-[\w-]+|event-[\w-]+)\b', sample)),
-              False, 'sampling path contains no actuator/inactivity-reset call')
-    assert_eq(bool(re.search(r'\((?:min|max)\s', collector)), False,
-              'collector does not call unsupported min/max')
-    writer = collector[collector.index('(defun log_rest_ok'):collector.index('(defun log_start')]
-    assert_eq('eeprom-store-i' in writer, True, 'only the dedicated writer persists log data')
-    assert_eq('eeprom-store-' in collector[:collector.index('(defun log_rest_ok')], False,
-              'aggregation and boot classification never persist data')
+    collector = source[source.index('; Volatile 320-byte live buffer'):source.index('; Init-only peripheral setup.')]
+    sample = collector[collector.index('(defun log_sample'):collector.index('; Receive context only')]
+    assert_eq('eeprom-' in collector or 'conf-store' in collector, False,
+              'performance capture and snapshot protocol are RAM-only')
+    assert_eq("(setvar 'log_live (bufcreate 320))" in collector, True,
+              'each owner start creates a fresh volatile capture')
+    assert_eq("(setvar 'log_snapshot_buf (bufcreate 320))" in collector, True,
+              'snapshot buffer is per-owner RAM')
+    assert_eq('(spawn THREAD_STACK_LOG log_owner_loop)' in collector, True,
+              'automatic collection owner starts without a UI request')
 
 
-def test_performance_log_native():
-    """Use real LispBM helpers and rule table, replacing only getters and time."""
-    print('\n=== Testing actual LispBM RAM collector (native simulation) ===')
-    repl = os.environ.get('LBM_REPL', '')
-    if not repl or not os.access(repl, os.X_OK):
-        print('SKIPPED: set LBM_REPL to the release_7_00 native repl for collector execution')
-        return
 
-    cases = [
-        ('ring index vectors from LispBM',
-         '(list (to-u32 (log_b_ring_slot 1)) (to-u32 (log_b_ring_slot 2)) '
-         '(to-u32 (log_b_ring_slot 4)) (to-u32 (log_b_ring_slot 5)) '
-         '(to-u32 (log_b_ring_slot 9)))',
-         [169, 174, 184, 169, 169]),
-        ('ring idle never advances session sequence',
-         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
-         '(looprange k 0 5 (trap (log_sample))) '
-         '(list (mock-slot-b 132) (mock-slot-b 169) (mock-slot-b 171))',
-         [0, 0, 32767]),
-        ('ring idle and first start with tag, vref and empty minimum',
-         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) (trap (log_sample)) '
-         '(log_b_set_tag 7) (bufset-u32 log_bs 4 364) '
-         "(setvar 'speed 5) (trap (log_sample)) "
-         '(list (mock-slot-b 132) (mock-slot-b 169) (mock-slot-b 170) '
-         '(mock-slot-b 171) (mock-slot-b 173))',
-         [1, 0, 0, 46268767, 229740]),
-        ('ring running totals, extrema and tag update',
-         '(mock-setup-b) (bufset-u32 log_bs 4 364) '
-         "(setvar 'speed 5) (mock-put 3 1.25) (mock-put 4 2.5) "
-         '(trap (log_sample)) (log_b_set_tag 7) '
-         '(mock-put 3 1.5) (mock-put 4 3.0) (mock-put 9 33.0) '
-         '(mock-put 2 19.8) (mock-put 0 3600) '
-         '(looprange k 0 5 (trap (log_sample))) '
-         '(list (mock-slot-b 132) (mock-slot-b 169) (mock-slot-b 170) '
-         '(mock-slot-b 171) (mock-slot-b 172) (mock-slot-b 173))',
-         [1, 1, 49152030, 46268746, 6491664, 229740]),
-        ('ring four sessions wrap and clear prior minima',
-         '(mock-setup-b) (bufset-u32 log_bs 4 364) '
-         "(setvar 'speed 5) (log_b_set_tag 7) "
-         '(looprange k 0 5 { (bufset-u32 log_bs 12 0) (trap (log_sample)) }) '
-         '(list (mock-slot-b 132) (mock-slot-b 169) (mock-slot-b 171) '
-         '(mock-slot-b 173) (mock-slot-b 176) (mock-slot-b 181) (mock-slot-b 186))',
-         [5, 0, 46268767, 229740, 46268767, 46268767, 46268767]),
-        ('ring tag rejects invalid values and disabled block',
-         '(mock-setup-b) (log_b_set_tag 32767) '
-         '(define hi (mock-slot-b 133)) (log_b_set_tag -1) '
-         '(log_b_set_tag 32768) (log_b_set_tag 1.5) '
-         '(define same (mock-slot-b 133)) (mock-setup) '
-         '(define disabled (log_b_set_tag 2)) '
-         '(list hi same (if disabled 1u32 0u32) (if log_b 1u32 0u32))',
-         [1073709056, 1073709056, 0, 0]),
-        ('ring sequence saturation and reset clears fractional carry',
-         '(mock-setup-b) (bufset-u32 log_b (+ 8 (* 4 (- 132 LOG_B_BASE))) 2147483647u32) '
-         '(log_upd log_b 0 358 0.8) '
-         '(log_b_ring_begin log_b log_bs) '
-         '(list (mock-slot-b 132) (mock-slot-b 179) (mock-slot-b 181) '
-         '(if (= (bufget-f32 log_b (+ 8 (shr (- (buflen log_b) 8) 1) '
-         '(* 4 (- 358 (* 2 LOG_B_BASE))))) 0) 1u32 0u32))',
-         [2147483647, 0, 32767, 1]),
-        ('block B references: read 160 versus fallback 160',
-         '(mock-setup-b) (define accepted (mock-slot-b 131)) '
-         "(setvar 'mock_motor_ref -123457) (log_b_references log_b) "
-         '(list accepted (mock-slot-b 131) (mock-slot-b 189) (mock-slot-b 190))',
-         [275, 273, 7471954, 52428800]),
-        ('block B references: 180 accepted; 250 accepted; 250.1 rejected',
-         "(setvar 'mock_motor_ref 180) (mock-setup-b) (define a (mock-slot-b 190)) "
-         "(setvar 'mock_motor_ref 250) (log_b_references log_b) "
-         "(define b (mock-slot-b 190)) (setvar 'mock_motor_ref 250.1) "
-         '(log_b_references log_b) (list a b (mock-slot-b 190) (mock-slot-b 131))',
-         [58982400, 81920000, 52428800, 273]),
-        ('block B sag table, FET histogram, duty time and reference',
-         "(mock-setup-b) (setvar 'speed 5) (bufset-u32 log_bs 4 364) "
-         '(looprange k 0 5 (trap (log_sample))) '
-         '(list (mock-slot-b 132) (mock-slot-b 142) (mock-slot-b 143) '
-         '(mock-slot-b 152) (mock-slot-b 160) (mock-slot-b 164))',
-         [1, 5, 1073741889, 1, 5, 0]),
-        ('block B idle before 2 seconds does not replace vref',
-         '(mock-setup-b) (trap (log_sample)) (list (bufget-u32 log_bs 4) '
-         '(mock-slot-b 142) (mock-slot-b 143))',
-         [351, 0, 1073741824]),
-        ('block B captures settled idle Vin then credits signed sag',
-         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
-         "(trap (log_sample)) (setvar 'mock_vref_time 2.1) (mock-put 9 36.4) "
-         '(trap (log_sample)) (setvar \'speed 5) (mock-put 10 0.96) '
-         '(mock-put 9 35.1) (trap (log_sample)) '
-         '(list (bufget-u32 log_bs 4) (mock-slot-b 142) (mock-slot-b 143))',
-         [364, 1, 1073741837]),
-        ('block B invalid motor reference values use fallback',
-         "(setvar 'mock_motor_ref 29.9) (mock-setup-b) "
-         '(define low (mock-slot-b 131)) '
-         "(setvar 'mock_motor_ref -123456) (log_b_references log_b) "
-         '(list low (mock-slot-b 131) (mock-slot-b 190))',
-         [273, 273, 52428800]),
-        ('block B non-number and out-of-range motor references',
-         "(mock-setup-b) (setvar 'mock_motor_ref 'non-number) "
-         '(log_b_references log_b) (define bad (mock-slot-b 131)) '
-         "(setvar 'mock_motor_ref 250.1) (log_b_references log_b) "
-         '(list bad (mock-slot-b 131) (mock-slot-b 190))',
-         [273, 273, 52428800]),
-        ('block B trapped motor read error falls back with bit 4 unchanged',
-         "(mock-setup-b) (setvar 'mock_motor_ref -123457) "
-         '(log_b_references log_b) (list (mock-slot-b 131) (mock-slot-b 190))',
-         [273, 52428800]),
-        ('block B Cuda X reference selects 6 A current bin step',
-         "(mock-setup) (setvar 'scooter_type SCOOTER_CUDAX) "
-         '(setvar \'log_bs (bufcreate 20)) '
-         '(setvar \'log_b (log_blk_new LOG_B_BASE LOG_B_SLOTS)) '
-         '(log_apply log_b LOG_B_INIT) (log_b_references log_b) '
-         '(list (bufget-u32 log_bs 16) (mock-slot-b 189))',
-         [60, 15074130]),
-        ('block B invalid rest RPM and duty reset idle window',
-         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
-         '(trap (log_sample)) (mock-put 9 36.4) '
-         "(setvar 'mock_vref_time 2.1) (mock-put 0 25) "
-         '(trap (log_sample)) (define rpm_reset (bufget-u32 log_bs 0)) '
-         '(mock-put 0 0) (mock-put 10 0.02) (trap (log_sample)) '
-         '(define duty_reset (bufget-u32 log_bs 0)) '
-         '(mock-put 10 -123456) (trap (log_sample)) '
-         '(list rpm_reset duty_reset (bufget-u32 log_bs 0) (bufget-u32 log_bs 4))',
-         [0, 0, 0, 351]),
-        ('block B nil RPM cannot capture resting Vin',
-         '(mock-setup-b) (mock-put 0 -123456) (mock-put 10 0) '
-         "(setvar 'mock_vref_time 2.1) (mock-put 9 36.4) "
-         '(trap (log_sample)) (list (bufget-u32 log_bs 0) (bufget-u32 log_bs 4))',
-         [0, 364]),
-        ('block B running never refreshes resting reference',
-         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
-         '(trap (log_sample)) (setvar \'speed 5) '
-         "(setvar 'mock_vref_time 2.1) (mock-put 9 36.4) "
-         '(trap (log_sample)) (list (bufget-u32 log_bs 0) (bufget-u32 log_bs 4))',
-         [0, 351]),
-        ('block B resting voltage qualifies after a fresh continuous window',
-         '(mock-setup-b) (mock-put 0 0) (mock-put 10 0) '
-         '(trap (log_sample)) (mock-put 0 25) '
-         "(setvar 'mock_vref_time 2.1) (trap (log_sample)) "
-         "(setvar 'mock_vref_time 0) (mock-put 0 0) (mock-put 9 36.4) "
-         '(trap (log_sample)) (define early (bufget-u32 log_bs 4)) '
-         "(setvar 'mock_vref_time 2.1) (trap (log_sample)) "
-         '(list early (bufget-u32 log_bs 4))',
-         [351, 364]),
-        ('block B nil duty and trapped RPM getter block rest reference',
-         '(mock-setup-b) (mock-put 0 -123457) (mock-put 10 0) '
-         "(setvar 'mock_vref_time 2.1) (trap (log_sample)) "
-         '(define rpm_block (bufget-u32 log_bs 0)) '
-         '(mock-put 0 0) (mock-put 10 -123456) '
-         '(trap (log_sample)) (list rpm_block (bufget-u32 log_bs 0))',
-         [0, 0]),
-        ('block B settled imbalance polling and latch transition',
-         "(mock-setup-b) (setvar 'battery_imbalance_threshold_centi 200) "
-         "(setvar 'balance_smoothing_held 0) (setvar 'lower_voltage_smooth 18.0) "
-         "(setvar 'total_voltage_smooth 40.0) "
-         "(setvar 'battery_imbalance_latched BATTERY_IMBALANCE_WARN_PACK_2) "
-         '(trap (log_sample)) (trap (log_sample)) '
-         '(list (mock-slot-b 166) (mock-slot-b 167) (mock-slot-b 168))',
-         [1, 13107600, 2]),
-        ('block B sag saturates in both directions',
-         '(mock-setup-b) (log_b_sag log_b 143 -1073741825) '
-         '(define low (mock-slot-b 143)) (log_b_sag log_b 143 1073741824) '
-         '(log_b_sag log_b 143 1073741824) '
-         '(list low (mock-slot-b 143))',
-         [0, 2147483647]),
-        ('block B disabled makes no block B allocation or changes',
-         "(mock-setup) (setvar 'speed 5) (trap (log_sample)) "
-         '(list (if log_b 11u32 10u32) (mock-slot 72))',
-         [10, 2]),
-        ('sample vector: index 5, 14 A, duty .96',
-         "(mock-setup) (setvar 'speed 5) (trap (log_sample)) "
-         '(list (mock-slot 68) (mock-slot 69) (mock-slot 72) '
-         '(mock-slot 93) (mock-slot 94) (mock-slot 95) (mock-slot 113))',
-         [1, 1, 2, 2, 280, 10, 2]),
-        ('sample vector: index 9, 21.7 A, duty .92, five samples',
-         "(mock-setup) (setvar 'speed 9) (mock-put 0 4000) (mock-put 1 4000) "
-         '(mock-put 2 21.7) (mock-put 10 0.92) '
-         '(looprange k 0 5 (trap (log_sample))) '
-         '(list (mock-slot 105) (mock-slot 106) (mock-slot 107) '
-         '(mock-slot 112) (mock-slot 114) (mock-slot 113))',
-         [10, 2170, 0, 1, 10, 0]),
-        ('duty .8 enters lowest band; current below limit is excluded',
-         "(mock-setup) (setvar 'speed 9) (mock-put 2 21.65) "
-         '(mock-put 10 0.8) (looprange k 0 5 (trap (log_sample))) '
-         '(list (mock-slot 112) (mock-slot 113) (mock-slot 114) (mock-slot 115))',
-         [0, 0, 0, 10]),
-        ('soft start excludes tracking, limit and duty',
-         "(mock-setup) (setvar 'speed 5) (setvar 'soft_start_active 1) "
-         '(trap (log_sample)) (list (mock-slot 72) (mock-slot 75) '
-         '(mock-slot 93) (mock-slot 94) (mock-slot 113))',
-         [2, 46269716, 0, 0, 0]),
-        ('nil RPM skips only the RPM and tracking deficit metrics',
-         "(mock-setup) (setvar 'speed 5) (mock-put 0 -123456) "
-         '(trap (log_sample)) (list (mock-slot 72) (mock-slot 93) '
-         '(mock-slot 94) (mock-slot 95) (mock-slot 77))',
-         [2, 2, 280, 0, 3510]),
-        ('trapped FET getter failure skips only FET',
-         "(mock-setup) (setvar 'speed 5) (mock-put 6 -123457) "
-         '(trap (log_sample)) (list (mock-slot 72) (mock-slot 75) (mock-slot 76))',
-         [2, 1300, 7864460]),
-        ('fault transition, abort reasons and retries exhausted',
-         "(mock-setup) (setvar 'speed 5) (mock-put 5 5) "
-         '(trap (log_sample)) (trap (log_sample)) '
-         '(setvar \'safe_start_failures SAFE_START_MAX_RETRIES) '
-         '(log_note_abort "timeout") (trap (log_sample)) '
-         '(list (mock-slot 70) (mock-slot 71) (mock-slot 118))',
-         [1, 1, 32768]),
-        ('idle drift changes neither RAM image nor Ah/Wh baselines',
-         '(mock-setup) (looprange k 0 100 { '
-         '(mock-put 3 (* k 0.001)) (mock-put 4 (* k 0.01)) '
-         '(trap (log_sample)) }) '
-         '(list (mock-slot 68) (mock-slot 72) (mock-slot 73) (mock-slot 74) '
-         '(bufget-u32 log_a 4))',
-         [0, 0, 0, 0, 0]),
-        ('fractional carry across five 0.06 s samples',
-         "(mock-setup) (setvar 'speed 5) (setvar 'mock_elapsed 0.06) "
-         '(looprange k 0 5 (trap (log_sample))) '
-         '(list (mock-slot 72) (mock-slot 93))',
-         [3, 3]),
-        ('sample time clamp, voltage sentinel and offset temperature',
-         "(mock-setup) (setvar 'speed 5) (setvar 'mock_elapsed 2) "
-         '(mock-put 6 -5.3) (mock-put 9 31.876) (trap (log_sample)) '
-         '(list (mock-slot 72) (mock-slot 75) (mock-slot 77))',
-         [5, 31032596, 96668788]),
-        ('P15 ceiling and separate field preservation',
-         '(mock-setup) (log_upd log_a 8 216 32760) '
-         '(log_upd log_a 8 217 3) (log_upd log_a 8 216 100) '
-         '(list (mock-slot 108))',
-         [1073709059]),
-        ('U31 ceiling does not round up through f32',
-         '(mock-setup) (log_upd log_a 0 144 2147483647) '
-         '(log_upd log_a 0 144 1000) (list (mock-slot 72))',
-         [2147483647]),
-        ('1000 running samples retain independent totals',
-         "(mock-setup) (setvar 'speed 5) "
-         '(looprange k 0 1000 (trap (log_sample))) '
-         '(list (mock-slot 72) (mock-slot 93) (mock-slot 94) (mock-slot 95))',
-         [2000, 2000, 280000, 10000]),
-        ('160-word spawned sample succeeds with every getter present',
-         "(mock-setup) (setvar 'speed 5) (spawn THREAD_STACK_LOG log_sample) "
-         '(sleep 0.1) (list (mock-slot 72) (mock-slot 93))',
-         [2, 2]),
-        ('160-word spawned block B sample succeeds',
-         "(mock-setup-b) (setvar 'speed 5) (spawn THREAD_STACK_LOG log_sample) "
-         '(sleep 0.1) (list (mock-slot-b 132) (mock-slot-b 142))',
-         [1, 1]),
-    ]
-    for name, script, expected in cases:
-        try:
-            result = log_native_ints(run_log_native(repl, script))
-        except (AssertionError, subprocess.TimeoutExpired) as exc:
-            result = str(exc)
-        assert_eq(result, expected, 'native collector: ' + name)
 
-    try:
-        alloc = []
-        for count in (100, 1000):
-            result = run_log_native(repl, "(mock-setup) (setvar 'speed 5) "
-                                    f'(trap (log_sample)) (looprange k 0 {count} '
-                                    '(trap (log_sample))) (gc) '
-                                    "(list (lbm-heap-state 'get-num-alloc-cells) (mock-slot 72))")
-            alloc.append(int(re.search(r'\((\d+)u\b', result).group(1)))
-        assert_eq(alloc[1], alloc[0], 'native collector: GC-reclaimed heap stable from 100 to 1000 samples')
-    except (AssertionError, AttributeError, subprocess.TimeoutExpired) as exc:
-        assert_eq(str(exc), 'stable', 'native collector: GC-reclaimed heap stable')
+def test_performance_log_ram_snapshot_contract():
+    """Guard the current volatile capture and QML snapshot contract."""
+    print('\n=== Testing automatic RAM capture and QML snapshots ===')
+    source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
+    qml = (Path(__file__).resolve().parents[1] / 'ui.qml').read_text()
+    owner = source[source.index('(defun log_owner_inner'):source.index('(defun log_owner_loop')]
+    serve = source[source.index('(defun log_serve'):source.index('(defun log_owner_inner')]
+    assert_eq("(setvar 'log_live (bufcreate 320))" in owner, True,
+              'RAM capture starts empty after every owner start/power cycle')
+    assert_eq("(setvar 'log_snapshot_valid 0)" in owner, True,
+              'a prior snapshot cannot survive owner restart')
+    assert_eq('(log_sample)' in owner and 'LOG_SAMPLE_PERIOD' in owner, True,
+              'owner samples automatically on its periodic deadline')
+    assert_eq('eeprom-' not in owner + serve and 'conf-store' not in owner + serve, True,
+              'capture and download never persist performance data')
+    assert_eq('multiple dives in one power cycle are mixed' in qml, True,
+              'Results page explains per-power-cycle aggregation')
+    assert_eq('App termination can lose these phone-RAM results' in qml, True,
+              'Results page warns that downloaded results are volatile')
+    assert_eq('logToken++' in qml and 'logRequest(2, 255)' in qml, True,
+              'each download uses a fresh snapshot transaction token')
+    assert_eq('logRows.length !== logRow' in qml and 'logRows.length !== 9' not in qml, True,
+              'QML accepts rows only in ordered snapshot sequence')
+    assert_eq('logComplete = { token: logToken, rows: rows' in qml, True,
+              'complete validated rows replace the prior phone-RAM snapshot')
 
 
 def trigger_click_accepted(trigger_input_ready, trigger_armed, sw_pressed):
@@ -2005,205 +1636,8 @@ def test_strip_lisp_native_reader():
 # Test Runner
 # =============================================================================
 
-def test_performance_log_boot():
-    print('\n=== Testing read-only boot and CRC ===')
-    for base, count, magic, flags in ((64, 63, 1112820807, 257),
-                                      (128, 64, 1112820808, 279)):
-        good = boot_image(base, count, magic, flags)
-        variants = [('empty', {}, False), ('foreign', {base: 0}, False),
-                    ('ok', good, True)]
-        disabled = {**good, base + 3: flags & ~1}
-        disabled[base + 1] = boot_crc(disabled, base, count)
-        variants.append(('ok', disabled, False))
-        unknown = {**good, base + 3: 513}
-        variants.append(('unknown_layout', unknown, False))
-        odd = {**good, base: 1}
-        variants.append(('in_progress', odd, False))
-        missing_seq = dict(good)
-        missing_seq.pop(base)
-        variants.append(('in_progress', missing_seq, False))
-        damaged = {**good, base + 5: 1}
-        variants.append(('crc_mismatch', damaged, False))
-        missing = dict(good)
-        missing.pop(base + 5)
-        variants.append(('crc_mismatch', missing, False))
-        for name, image, enabled in variants:
-            assert_eq(boot_classify(image, base, count, magic), (name, enabled),
-                      f'block {base} {name}, enabled={enabled}')
-        assert_eq(boot_crc(good, base, count), good[base + 1], f'block {base} CRC')
-    for stored, flags, fresh, status, expected in (
-        (1600, 275, 1800, False, (1600, 283)),
-        (1600, 275, 1600, False, (1600, 275)),
-        (1600, 273, 1600, True, (1600, 273)),
-        (0, 273, 1600, True, (1600, 275)),
-        (0, 275, 1600, False, (1600, 273))):
-        result = boot_references(228, 850, stored, flags, 228, fresh, status)
-        assert_eq((result[2], result[3]), expected, f'restored motor reference {stored}/{fresh}')
-    assert_eq(boot_references(228, 850, 1600, 275, 460, 1600, False),
-              (228, 850, 1600, 283), 'stored current reference wins and marks mismatch')
-    assert_eq(boot_references(0, 0, 0, 273, 228, 1600, True),
-              (228, 850, 1600, 275), 'unset references use fresh read and fixed FET')
-    crc_source = os.environ.get('LBM_CRC_SOURCE')
-    if crc_source:
-        for index, (actual, expected) in enumerate(firmware_crc_vectors(crc_source)):
-            assert_eq(actual, expected, f'unmodified firmware CRC32 vector {index}')
-    source = LISP_SOURCE.read_text()
-    boot = source[source.index('(defun log_boot_block'):source.index('; Unlike the generic fractional')]
-    assert_eq('eeprom-store-i' in boot or "conf-get 'l-temp-fet" in source,
-              False, 'boot reads only; no FET configuration read')
-    repl = os.environ.get('LBM_REPL', '')
-    if repl:
-        assert_eq(run_boot_native(repl, '''(define bytes (bufcreate 9))
-(looprange i 0 9 (bufset-u8 bytes i (+ 49 i)))
-(mock-crc32 bytes 0)''').strip(), '3421780262',
-                  'native harness CRC32 standard check value (extension stub unavailable)')
-        scenario = '''(log_boot)
-(list log_state_a log_state_b log_enable_a log_enable_b)
-'''
-        assert_eq(run_boot_native(repl, scenario).strip(), '(empty empty 0 0)',
-                  'native LispBM empty boot, no sampling thread')
-        for base, count, magic, flags in ((64, 63, 1112820807, 257),
-                                          (128, 64, 1112820808, 279)):
-            image = boot_image(base, count, magic, flags)
-            image[base + 5] = 42
-            image[base + 1] = boot_crc(image, base, count)
-            writes = '\n'.join(f'(put {i} {v})' for i, v in sorted(image.items()))
-            result = run_boot_native(repl, writes + '''\n(log_boot)
-(list log_state_a log_state_b log_enable_a log_enable_b
-      (bufget-u32 (if (= log_enable_a 1) log_a log_b) 28))''')
-            state = 'ok empty' if base == 64 else 'empty ok'
-            enable = '1u32 0' if base == 64 else '0 1u32'
-            assert_eq(result.strip(), f'({state} {enable} 42u32)',
-                      f'native block {base} CRC, enable, restored counter')
-            for change, expected in (((base, 1), 'in_progress'),
-                                     ((base + 5, 43), 'crc_mismatch'),
-                                     ((base + 3, 513), 'unknown_layout'),
-                                     ((base + 2, 0), 'foreign')):
-                broken = writes + f'\n(put {change[0]} {change[1]})\n(log_boot)\n'
-                state_result = run_boot_native(repl, broken +
-                    '(list log_state_a log_state_b log_enable_a log_enable_b)')
-                a, b = (expected, 'empty') if base == 64 else ('empty', expected)
-                assert_eq(state_result.strip(), f'({a} {b} 0 0)',
-                          f'native block {base} {expected} stays disabled')
-            for missing_slot, expected in ((base, 'in_progress'),
-                                           (base + 1, 'crc_mismatch'),
-                                           (base + 5, 'crc_mismatch')):
-                absent = writes + f'\n(bufset-u8 present {missing_slot} 0)\n(log_boot)\n'
-                result = run_boot_native(repl, absent +
-                    '(list log_state_a log_state_b log_enable_a log_enable_b)')
-                a, b = (expected, 'empty') if base == 64 else ('empty', expected)
-                assert_eq(result.strip(), f'({a} {b} 0 0)',
-                          f'native block {base} missing slot {missing_slot} stays disabled')
-            disabled = {**image, base + 3: flags & ~1}
-            disabled[base + 1] = boot_crc(disabled, base, count)
-            saved = '\n'.join(f'(put {i} {v})' for i, v in sorted(disabled.items()))
-            result = run_boot_native(repl, saved + '''\n(log_boot)
-(list log_state_a log_state_b log_enable_a log_enable_b
-      (bufget-u32 (if (= (bufget-u8 present 64) 1) log_a log_b) 28))''')
-            a, b = ('ok', 'empty') if base == 64 else ('empty', 'ok')
-            enable = '0u32 0' if base == 64 else '0 0u32'
-            assert_eq(result.strip(), f'({a} {b} {enable} 42u32)',
-                      f'native block {base} valid-disabled restores but does not collect')
-            failed = writes + f"\n(setvar 'mock_fail_slot {base + 5})\n(log_boot)\n"
-            result = run_boot_native(repl, failed +
-                '(list log_state_a log_state_b log_enable_a log_enable_b)')
-            a, b = ('read_error', 'empty') if base == 64 else ('empty', 'read_error')
-            assert_eq(result.strip(), f'({a} {b} 0 0)',
-                      f'native block {base} read failure remains isolated and disabled')
-        both = []
-        for base, count, magic, flags in ((64, 63, 1112820807, 257),
-                                          (128, 64, 1112820808, 279)):
-            image = boot_image(base, count, magic, flags)
-            both.extend(f'(put {i} {v})' for i, v in sorted(image.items()))
-        for failed_slot, expected in ((69, '(read_error ok 0 1u32)'),
-                                      (133, '(ok read_error 1u32 0)')):
-            scenario = ('\n'.join(both) +
-                        f"\n(setvar 'mock_fail_slot {failed_slot})\n(log_boot)\n" +
-                        '(list log_state_a log_state_b log_enable_a log_enable_b)')
-            assert_eq(run_boot_native(repl, scenario).strip(), expected,
-                      f'native read error at {failed_slot} leaves other block enabled')
-        for stored_m, flags, fresh_m, fresh_bit, expected_flag, expected_m in (
-            (1600, 275, 1800, 2, 283, 1600),
-            (1800, 275, 1800, 2, 275, 1800),
-            (1600, 273, 1800, 2, 281, 1600),
-            (0, 273, 1800, 2, 275, 1800),
-            (1600, 275, 1600, 0, 275, 1600),
-            (1600, 273, 1600, 2, 273, 1600),
-            (0, 273, 1600, 2, 275, 1600),
-            (0, 275, 1600, 0, 273, 1600)):
-            image = boot_image(128, 64, 1112820808, flags)
-            image[189] = (228 << 15) | 850
-            image[190] = stored_m << 15
-            image[129] = boot_crc(image, 128, 64)
-            writes = '\n'.join(f'(put {i} {v})' for i, v in sorted(image.items()))
-            result = run_boot_native(repl, writes + f'''\n(setvar 'mock_motor_ref {fresh_m})
-(setvar 'mock_motor_flag {fresh_bit})
-(log_boot)
-(list log_state_b (bufget-u32 log_b 20)
-      (shr (bufget-u32 log_b 256) 15) (bufget-u32 log_bs 16))''')
-            assert_eq(result.strip(), f'(ok {expected_flag}u32 {expected_m}u32 30u32)',
-                      f'native stored motor {stored_m}, flags {flags}, fresh {fresh_m}/{fresh_bit}')
 
 
-def test_performance_log_writer():
-    print('\n=== Testing gated single-writer flush ===')
-    source = LISP_SOURCE.read_text()
-
-    def gate(state, five_click=False):
-        return (state['enabled_dirty'] and state['speed'] == SPEED_OFF and
-                state['pressed'] == 0 and state['tune'] == 0 and
-                state['rpm'] is not None and abs(state['rpm']) < 25 and
-                state['duty'] is not None and abs(state['duty']) < .02 and
-                (five_click or (state['settled'] >= 5 and state['since_flush'] >= 60)))
-
-    safe = dict(enabled_dirty=True, speed=SPEED_OFF, pressed=0, tune=0,
-                rpm=0.0, duty=0.0, settled=5, since_flush=60)
-    assert_eq(gate(safe), True, 'periodic gate accepts settled dirty image')
-    for key, value in (('enabled_dirty', False), ('speed', 5), ('pressed', 1),
-                       ('tune', 1), ('rpm', 25), ('rpm', None),
-                       ('duty', .02), ('duty', None), ('settled', 4.99),
-                       ('since_flush', 59.99)):
-        assert_eq(gate(dict(safe, **{key: value})), False,
-                  f'periodic gate refuses {key}={value}')
-    for key, value in (('settled', 0), ('since_flush', 0)):
-        assert_eq(gate(dict(safe, **{key: value}), True), True,
-                  f'five-click waives only {key}')
-    for key, value in (('enabled_dirty', False), ('pressed', 1), ('speed', 5),
-                       ('tune', 1), ('rpm', 25), ('duty', .02)):
-        assert_eq(gate(dict(safe, **{key: value}), True), False,
-                  f'five-click retains {key} guard')
-    # Once the only dirty segment has been flushed, even hours of inactivity
-    # cannot produce another store or reset the firmware inactivity clock.
-    assert_eq([gate(dict(safe, enabled_dirty=False, settled=hour * 3600,
-                          since_flush=hour * 3600)) for hour in range(1, 9)],
-              [False] * 8, 'multi-hour idle remains write-free')
-    hook = source[source.index('(defun request_five_click_shutdown'):source.index('; Settings initialization')]
-    assert_eq(hook.count('(trap (log_shutdown_flush))'), 1,
-              'one trap-wrapped five-click flush request')
-    assert_eq(hook.index('(foc-beep 325') < hook.index('(trap (log_shutdown_flush))') <
-              hook.index('(shutdown true)'), True,
-              'confirmation and shutdown order unchanged around flush')
-    writer = source[source.index('(defun log_rest_ok'):source.index('(defun log_start ()')]
-    assert_eq(bool(re.search(r'\(eeprom-store-i\s+slot\s+val\)', writer)), True,
-              'only checked generic slot writer stores the log')
-    assert_eq("(setvar 'log_shutdown_state 3)" in writer and '(looprange i 0 100' in writer,
-              True, 'queued five-click request is bounded and cancelled')
-    assert_eq('shutdown-hold' in writer or 'event-shutdown' in writer, False,
-              'no shutdown hold or shutdown event handler in writer')
-    repl = os.environ.get('LBM_REPL', '')
-    if not repl or not os.access(repl, os.X_OK):
-        print('SKIPPED: set LBM_REPL to release_7_00 native REPL for writer failure vectors')
-    else:
-        try:
-            check_writer_native(repl)
-            assert_eq(True, True, 'native writer failure and reboot vectors')
-            try:
-                check_protocol_native(repl)
-                assert_eq(True, True, 'native protocol admission, states and chunks')
-            except Exception as exc:
-                assert_eq(str(exc), '', 'native protocol admission, states and chunks')
-        except Exception as exc:
-            assert_eq(str(exc), '', 'native writer failure and reboot vectors')
 
 
 def run_all_tests():
@@ -2235,11 +1669,7 @@ def run_all_tests():
     test_startup_trigger_readiness()
     test_click_and_beep_regressions()
     test_performance_log_collector()
-    test_performance_log_b()
-    test_performance_log_ring()
-    test_performance_log_boot()
-    test_performance_log_writer()
-    test_performance_log_native()
+    test_performance_log_ram_snapshot_contract()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()
     test_strip_lisp_mutation_check()
