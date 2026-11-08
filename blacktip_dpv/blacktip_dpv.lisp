@@ -2262,7 +2262,7 @@
                 (i2c-start 'rate-400k 'pin-rx 'pin-tx) ; Works HW 60 with screen on Comm Connector. Screen SDA pin to Vesc RX/SDA (5), Screen SCL pin to Vesc TX/SCL (6)
                 (if ( = 2 hardware_configuration)
                     (i2c-start 'rate-400k 'pin-tx 'pin-rx) ; tested on HW 410 Tested: SN 189, SN 1691
-                    (nil))))
+                    nil))) ; Unrecognised configuration: no pin mapping; do not call nil as a function.
 
     ; HT16K33 init sequence: oscillator -> brightness.
     ;
