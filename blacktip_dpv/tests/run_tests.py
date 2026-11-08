@@ -221,6 +221,8 @@ def test_performance_log_ram_snapshot_contract():
               'Results page explains per-power-cycle aggregation')
     assert_eq('A BLE disconnect or reconnect may recreate this page and lose the downloaded results, as can app termination.' in qml, True,
               'Results page warns that reconnect or app termination may discard downloaded results')
+    assert_eq('The complete results exist only while this page stays loaded and may be lost on BLE disconnect or reconnect.' in qml, True,
+              'pre-download confirmation warns that disconnect or reconnect may recreate the Results page')
     assert_eq('logToken++' in qml and 'logRequest(2, 255)' in qml, True,
               'each download uses a fresh snapshot transaction token')
     assert_eq('logRows.length !== logRow' in qml and 'logRows.length !== 9' not in qml, True,

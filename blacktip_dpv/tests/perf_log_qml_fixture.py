@@ -28,6 +28,7 @@ def run():
         return None
     qml = (ROOT / 'ui.qml').read_text()
     receive = body_after(qml, 'function logReceive(view)')
+    assert 'function logTokenText(token)' in qml
     token_text = body_after(qml, 'function logTokenText(token)')
     fail = body_after(qml, 'function logFail(message)')
     request = body_after(qml, 'function logRequest(op, row)')
