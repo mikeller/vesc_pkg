@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from perf_log_capture_native import check as check_capture_native
 
 # Test counters
 test_passes = 0
@@ -382,6 +383,20 @@ def test_performance_log_ram_snapshot_contract():
               'QML accepts rows only in ordered snapshot sequence')
     assert_eq('logComplete = { token: logToken, rows: rows' in qml, True,
               'complete validated rows replace the prior phone-RAM snapshot')
+
+
+def test_performance_log_capture_native():
+    print('\n=== Testing production RAM snapshot protocol (native LispBM) ===')
+    repl = os.environ.get('LBM_REPL', '')
+    if not repl or not os.access(repl, os.X_OK):
+        print('SKIPPED: set LBM_REPL to run production snapshot protocol cases')
+        return
+    try:
+        check_capture_native(repl)
+        assert_eq(True, True, 'native production owner/protocol scenarios complete')
+    except (AssertionError, subprocess.TimeoutExpired, OSError) as exc:
+        print(f'  Native capture details: {exc}')
+        assert_eq(False, True, 'native production owner/protocol scenarios complete')
 
 
 def trigger_click_accepted(trigger_input_ready, trigger_armed, sw_pressed):
@@ -1670,6 +1685,7 @@ def run_all_tests():
     test_click_and_beep_regressions()
     test_performance_log_collector()
     test_performance_log_ram_snapshot_contract()
+    test_performance_log_capture_native()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()
     test_strip_lisp_mutation_check()
