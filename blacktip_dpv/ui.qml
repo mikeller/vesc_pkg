@@ -82,8 +82,8 @@ Item {
     property string logExportMessage: ""
 
     function logSaveHelp() {
-        var directory = Platform.StandardPaths.writableLocation(Platform.StandardPaths.DocumentsLocation)
-        if (!directory || directory.indexOf("file:") === 0)
+        var directory = logDocumentsPath()
+        if (!directory)
             return qsTr("VESC Tool cannot determine a local Documents location here. Keep screenshots of all ten speeds as a fallback.")
         var location = qsTr("VESC Tool's Documents location on this device: %1").arg(directory)
         if (Qt.platform.os === "osx")
