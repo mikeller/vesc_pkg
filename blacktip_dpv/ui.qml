@@ -118,11 +118,32 @@ Item {
         return lines.join("\n") + "\n"
     }
 
+    function logDocumentsPath() {
+        // Qt.labs.platform returns a URL, while LogWriter and Utility use local paths.
+        var location = Platform.StandardPaths.writableLocation(Platform.StandardPaths.DocumentsLocation)
+        if (!location) return ""
+        var path = String(location)
+        if (path.indexOf("file:") === 0) {
+            var match = /^file:\/\/([^/]*)(\/.*)$/.exec(path)
+            if (!match || /[?#]/.test(path)) return ""
+            try {
+                path = decodeURIComponent(match[2])
+            } catch (error) {
+                return ""
+            }
+            if (match[1] && match[1] !== "localhost") path = "//" + match[1] + path
+            else if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1)
+        }
+        // Never pass a non-file URL or a relative location to the file APIs.
+        if (path.indexOf("\0") !== -1 || !(/^[A-Za-z]:[\\/]/.test(path) || path.charAt(0) === "/")) return ""
+        return path
+    }
+
     function logSaveCsv() {
         if (!logComplete) return
         var snapshot = logComplete
-        var directory = Platform.StandardPaths.writableLocation(Platform.StandardPaths.DocumentsLocation)
-        if (!directory || directory.indexOf("file:") === 0) {
+        var directory = logDocumentsPath()
+        if (!directory) {
             logExportMessage = qsTr("Cannot determine a local Documents directory. Results remain on this page; take screenshots.")
             return
         }
@@ -983,6 +1004,15 @@ Item {
                         wrapMode: Text.WrapAnywhere
                         text: logExportMessage
                         visible: !!logExportMessage
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
+                        text: {
+                            var directory = logDocumentsPath()
+                            return directory ? qsTr("VESC Tool's Documents location on this device: %1. Look for blacktip-results-*.csv; this directory may be app-specific and unavailable in a file manager.").arg(directory)
+                                             : qsTr("VESC Tool cannot determine a local Documents location here. Keep screenshots of all ten speeds as a fallback.")
+                        }
                     }
                     Label {
                         Layout.fillWidth: true
