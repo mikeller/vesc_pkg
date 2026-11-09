@@ -193,6 +193,13 @@
 (define SHUTDOWN_TONE_GAP 0.18)
 (define SHUTDOWN_DISPLAY_SETTLE 0.3)
 
+; Automatic volatile per-power-cycle speed aggregates. No EEPROM slots belong to this log.
+(define THREAD_STACK_LOG 160)
+(define LOG_SAMPLE_PERIOD 0.2)
+(define LOG_PREFIX 177) ; B1; A1-A4 remain reserved for obsolete clients.
+(define LOG_VERSION 1)
+(define LOG_MAX_COUNT 4294967294u32)
+
 ; Lightweight macro to conditionally evaluate debug logging expressions
 ; Only evaluates the logging expression when debug_enabled is 1
 ; This prevents expensive str-merge and to-str calls on memory-constrained targets
@@ -293,6 +300,19 @@
 (define balance_log_counter 0)            ; throttle counter for the periodic balance-voltage debug log
 (define battery_imbalance_latched 0)      ; latched warning (BATTERY_IMBALANCE_WARN_*); persists across motor restarts
 (define imbalance_run_flash_counter 0)    ; cycles the periodic warning flash while the motor is running
+
+; Only the owner writes these two fixed-size buffers. Requests are one bounded slot.
+(define log_live nil)
+(define log_snapshot_buf nil)
+(define log_snapshot_token 0)
+(define log_snapshot_valid 0)
+(define log_snapshot_fault 0)
+(define log_fault 0)
+(define log_previous_speed SPEED_OFF)
+(define log_previous_eligible 0)
+(define log_owner -1)
+(define log_request nil)
+(define log_busy 0)
 
 ; Display LUT byte array. import MUST be a top-level form (not inside a flashed
 ; const-block function), so the binding survives onto the heap. VESC Tool embeds
@@ -672,6 +692,8 @@
         (sleep SHUTDOWN_TONE_GAP)
         (foc-beep 325 SHUTDOWN_TONE_DURATION beeps_vol)
         (sleep SHUTDOWN_TONE_GAP)
+        ; One bounded request, serviced by the sole log writer. A failed or
+        ; unfinished write must never prevent the hardware shutdown.
         (debug_log "Five-click shutdown: requesting hardware shutdown")
         ; A successful shutdown never returns. nil means unsupported, failed,
         ; or held input and is not retried here.
@@ -858,9 +880,14 @@
 
 (defun receive_data (data)
 {
+    (if (= (buflen data) 0) nil
     (if (= (bufget-u8 data 0) HANDSHAKE_CODE) {
         ; Handshake to trigger data send if not yet received.
         (send_current_settings)
+    } (if (= (bufget-u8 data 0) LOG_PREFIX) {
+        (log_admit data)
+    } (if (and (>= (bufget-u8 data 0) 161) (<= (bufget-u8 data 0) 164)) {
+        nil ; obsolete experimental logger requests are consumed, never settings
     } {
         ; For non-handshake messages, validate buffer size
         (if (< (buflen data) EEPROM_SETTINGS_COUNT) {
@@ -872,7 +899,7 @@
             (update_settings_from_eeprom) ; updates actual settings in lisp
             (debug_log "Settings updated")
         })
-    })
+    }))))
 })
 
 ; Setup functions
@@ -2018,17 +2045,223 @@
     })
 })
 
+; Volatile 320-byte live buffer and 320-byte snapshot, ten 32-byte rows.
+; Wire format, network (big-endian) integers/floats, one request slot:
+; B1 version opcode sequence:u16 token:u32 [row:u8]. Commands 1=status,
+; 2=snapshot, 3=row. Response header B1 version opcode sequence:u16
+; token:u32 status:u8 row:u8 fault:u8 (12 bytes); snapshot adds count:u32
+; rejected:u32 (20 bytes), row adds eight 32-bit fields (44 bytes).
+; Status 0=ok, 1=invalid, 2=busy, 3=missing/mismatched snapshot.
+(defun log_reply (op seq token status row size fault)
+{
+    (var b (bufcreate size))
+    (bufset-u8 b 0 LOG_PREFIX)
+    (bufset-u8 b 1 LOG_VERSION)
+    (bufset-u8 b 2 op)
+    (bufset-u16 b 3 seq)
+    (bufset-u32 b 5 token)
+    (bufset-u8 b 9 status)
+    (bufset-u8 b 10 row)
+    (bufset-u8 b 11 fault)
+    b
+})
+
+(defun log_valid (x limit)
+    (and (number? x) (= x x) (>= x (- limit)) (<= x limit)))
+
+; The Blacktip/CudaX profiles set eRPM and current limits in ui.qml, but
+; readback may overshoot those limits and the active configuration can differ.
+; Do not impose invented voltage/current/RPM ceilings on measured telemetry.
+; Require finite f32-representable values, nonnegative supply voltage and a
+; physical duty fraction; check derived sums before writing any row fields.
+(defun log_sample ()
+{
+    (var sp (to-i speed))
+    (var ready (and (>= sp 0) (< sp 10) (= soft_start_active 0)
+                    (not (eq safe_start_status 'running))))
+    (var eligible (and ready (= log_previous_eligible 1)
+                       (= sp log_previous_speed)))
+    (setvar 'log_previous_speed sp)
+    (setvar 'log_previous_eligible (if ready 1 0))
+    (if (and eligible (= log_fault 0)) {
+        (var rpm (trap (get-rpm)))
+        (var target (trap (get-rpm-set)))
+        (var current (trap (get-current-in)))
+        (var phase (trap (get-current)))
+        (var voltage (trap (get-vin)))
+        (var duty (trap (get-duty)))
+        (var ok (and (eq (ix rpm 0) 'exit-ok)
+                     (eq (ix target 0) 'exit-ok)
+                     (eq (ix current 0) 'exit-ok)
+                     (eq (ix phase 0) 'exit-ok)
+                     (eq (ix voltage 0) 'exit-ok)
+                     (eq (ix duty 0) 'exit-ok)))
+        (if ok {
+            (setq rpm (ix rpm 1)) (setq target (ix target 1))
+            (setq current (ix current 1)) (setq phase (ix phase 1))
+            (setq voltage (ix voltage 1)) (setq duty (ix duty 1))
+            (setq ok (and (log_valid rpm 3.0e38) (log_valid target 3.0e38)
+                          (log_valid current 3.0e38) (log_valid phase 3.0e38)
+                          (log_valid voltage 3.0e38) (>= voltage 0)
+                          (log_valid duty 1)))
+        })
+        (var off (* 32 sp))
+        (if (not ok) {
+            (var rejected (bufget-u32 log_live (+ off 28)))
+            (if (>= rejected LOG_MAX_COUNT) (setvar 'log_fault 1)
+                (bufset-u32 log_live (+ off 28) (+ rejected 1)))
+        } {
+            (var count (bufget-u32 log_live off))
+            (var rpm_sum (+ (bufget-f32 log_live (+ off 4)) (abs rpm)))
+            (var current_sum (+ (bufget-f32 log_live (+ off 8)) current))
+            (var power_sum (+ (bufget-f32 log_live (+ off 12)) (* voltage current)))
+            (var error_sum (+ (bufget-f32 log_live (+ off 16)) (abs (- target rpm))))
+            (var duty_sum (+ (bufget-f32 log_live (+ off 20)) (abs duty)))
+            (setq ok (< count LOG_MAX_COUNT))
+            (setq ok (and ok (log_valid rpm_sum 3.0e38)
+                           (log_valid current_sum 3.0e38)
+                           (log_valid power_sum 3.0e38)
+                           (log_valid error_sum 3.0e38)
+                           (log_valid duty_sum 3.0e38)))
+            (if ok {
+                (bufset-u32 log_live off (+ count 1))
+                (bufset-f32 log_live (+ off 4) rpm_sum)
+                (bufset-f32 log_live (+ off 8) current_sum)
+                (bufset-f32 log_live (+ off 12) power_sum)
+                (bufset-f32 log_live (+ off 16) error_sum)
+                (bufset-f32 log_live (+ off 20) duty_sum)
+                (if (> (abs phase) (bufget-f32 log_live (+ off 24)))
+                    (bufset-f32 log_live (+ off 24) (abs phase)))
+            } (setvar 'log_fault 1))
+        })
+    })
+})
+
+; Receive context only validates bytes and reserves the request slot. Never
+; waits, reads telemetry, copies buffers or sends while in an atomic section.
+(defun log_admit (data)
+{
+    (var len (buflen data))
+    (var op (if (>= len 3) (bufget-u8 data 2) 0))
+    (var seq (if (>= len 5) (bufget-u16 data 3) 0))
+    (var token (if (>= len 9) (bufget-u32 data 5) 0))
+    (var row (if (= len 10) (bufget-u8 data 9) 255))
+    (if (or (< len 9) (!= (bufget-u8 data 1) LOG_VERSION)
+            (< op 1) (> op 3) (!= len (if (= op 3) 10 9))
+            (and (= op 3) (> row 9)))
+        (send-data (log_reply op seq token 1 row 12 log_fault))
+        (if (atomic (if (and (>= log_owner 0) (= log_busy 0)) {
+                (setvar 'log_busy 1)
+                t
+            } nil))
+            {
+                (setvar 'log_request (list op seq token row))
+                (send log_owner 'log-wake)
+            }
+            (send-data (log_reply op seq token 2 row 12 log_fault))))
+})
+
+(defun log_serve (req)
+{
+    (var op (ix req 0)) (var seq (ix req 1))
+    (var token (ix req 2)) (var row (ix req 3))
+    (var status 0)
+    (if (= op 2) {
+        (if (or (= log_snapshot_valid 0) (!= token log_snapshot_token)) {
+            (looprange i 0 320
+                (bufset-u8 log_snapshot_buf i (bufget-u8 log_live i)))
+            (setvar 'log_snapshot_fault log_fault)
+            (setvar 'log_snapshot_token token)
+            (setvar 'log_snapshot_valid 1)
+        })
+    })
+    (if (and (= op 3) (or (= log_snapshot_valid 0)
+                           (!= token log_snapshot_token)))
+        (setq status 3))
+    (var size (if (= status 0) (if (= op 2) 20 (if (= op 3) 44 12)) 12))
+    (var reply (log_reply op seq token status row size
+                          (if (and (= status 0) (or (= op 2) (= op 3)))
+                              log_snapshot_fault log_fault)))
+    (if (and (= status 0) (= op 2)) {
+        (var count 0) (var rejected 0)
+        (looprange i 0 10 {
+            (var c (bufget-u32 log_snapshot_buf (* 32 i)))
+            (var r (bufget-u32 log_snapshot_buf (+ 28 (* 32 i))))
+            (setq count (if (> c (- LOG_MAX_COUNT count)) LOG_MAX_COUNT (+ count c)))
+            (setq rejected (if (> r (- LOG_MAX_COUNT rejected)) LOG_MAX_COUNT (+ rejected r)))
+        })
+        ; Totals saturate; individual rows carry authoritative counts.
+        (bufset-u32 reply 12 count)
+        (bufset-u32 reply 16 rejected)
+    })
+    (if (and (= status 0) (= op 3))
+        (looprange i 0 32
+            (bufset-u8 reply (+ 12 i)
+                (bufget-u8 log_snapshot_buf (+ (* 32 row) i)))))
+    (send-data reply)
+})
+
+(defun log_owner_inner ()
+{
+    (setvar 'log_live (bufcreate 320))
+    (setvar 'log_snapshot_buf (bufcreate 320))
+    (setvar 'log_snapshot_valid 0)
+    (setvar 'log_snapshot_fault 0)
+    (setvar 'log_fault 0)
+    (setvar 'log_previous_speed SPEED_OFF)
+    (setvar 'log_previous_eligible 0)
+    (setvar 'log_owner (self))
+    (var deadline (systime))
+    (loopwhile t {
+        (var remaining (- LOG_SAMPLE_PERIOD (secs-since deadline)))
+        (recv-to (if (> remaining 0) remaining 0) (_ nil))
+        ; Serve first, then resume sampling: the copy is a single owner cut.
+        (var req (atomic {
+            (var r log_request)
+            (setvar 'log_request nil)
+            r
+        }))
+        (if req {
+            (var result (trap (log_serve req)))
+            (if (not (eq (ix result 0) 'exit-ok)) (setvar 'log_fault 1))
+            (atomic (setvar 'log_busy 0))
+        })
+        (if (>= (secs-since deadline) LOG_SAMPLE_PERIOD) {
+            (setq deadline (systime))
+            (var sampled (trap (log_sample)))
+            (if (not (eq (ix sampled 0) 'exit-ok)) (setvar 'log_fault 1))
+        })
+    })
+})
+
+(defun log_owner_loop ()
+{
+    (trap (log_owner_inner))
+    (atomic {
+        (setvar 'log_owner -1)
+        (setvar 'log_busy 0)
+        (setvar 'log_request nil)
+        (setvar 'log_fault 1)
+    })
+})
+
+(defun log_start ()
+{
+    (if (= log_owner -1)
+        (spawn THREAD_STACK_LOG log_owner_loop))
+})
+
 ; Init-only peripheral setup. Lives in the init/main call path because
 ; image-save does not restore external hardware state.
 (defun peripherals_setup ()
 {
     (if (or (= 0 hardware_configuration) (= 3 hardware_configuration)) ; turn on i2c for the screen based on wiring. 0 = Blacktip with Bluetooth, 3 = CudaX with Bluetooth
             (i2c-start 'rate-400k 'pin-swdio 'pin-swclk) ; Works HW 60 with screen on SWD Connector. Screen SDA pin to Vesc SWDIO (2), Screen SCL pin to Vesc SWCLK (4)
-            (if (or (= 1 hardware_configuration) ( = 4 hardware_configuration)) ; 1 = Blacktip without Bluetooth, 4 = CudaX without Bluetooth
+            (if (or (= 1 hardware_configuration) (= 4 hardware_configuration) (= 5 hardware_configuration)) ; 5 = test fixture, wired like 1/4 on HW60 Comm pins
                 (i2c-start 'rate-400k 'pin-rx 'pin-tx) ; Works HW 60 with screen on Comm Connector. Screen SDA pin to Vesc RX/SDA (5), Screen SCL pin to Vesc TX/SCL (6)
                 (if ( = 2 hardware_configuration)
                     (i2c-start 'rate-400k 'pin-tx 'pin-rx) ; tested on HW 410 Tested: SN 189, SN 1691
-                    (nil))))
+                    nil))) ; Other configurations have no known I2C pin mapping.
 
     ; HT16K33 init sequence: oscillator -> brightness.
     ;
@@ -2197,7 +2430,6 @@
 
     (thirds_warning_startup)
 
-    (setup_event_handler)
 
     (setvar 'sw_state 0)
     (setvar 'trigger_input_ready 0)
@@ -2265,6 +2497,9 @@
     (start_display_battery_loop)
 
     (start_balance_loop)
+
+    (trap (log_start))
+    (setup_event_handler)
 
     (setvar 'smart_cruise SMART_CRUISE_OFF)
 

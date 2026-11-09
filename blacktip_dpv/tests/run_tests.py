@@ -6,17 +6,22 @@ Tests pure functions to catch regressions before flashing hardware
 
 import contextlib
 import csv
+import hashlib
 import importlib.util
 import io
 import os
 import random
 import re
+import zlib
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from perf_log_capture_native import check as check_capture_native
+from peripherals_setup_native import check as check_peripherals_setup_native
+from perf_log_qml_fixture import run as run_log_qml_fixture
 
 # Test counters
 test_passes = 0
@@ -200,6 +205,167 @@ def request_five_click_shutdown_simulate(state):
     return 0 if five_click_shutdown_rejection_reason(state) is not None else 1
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def test_performance_log_ram_snapshot_contract():
+    """Guard the current volatile capture and QML snapshot contract."""
+    print('\n=== Testing automatic RAM capture and QML snapshots ===')
+    source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
+    qml = (Path(__file__).resolve().parents[1] / 'ui.qml').read_text()
+    owner = source[source.index('(defun log_owner_inner'):source.index('(defun log_owner_loop')]
+    serve = source[source.index('(defun log_serve'):source.index('(defun log_owner_inner')]
+    assert_eq("(setvar 'log_live (bufcreate 320))" in owner, True,
+              'RAM capture starts empty after every owner start/power cycle')
+    assert_eq("(setvar 'log_snapshot_valid 0)" in owner, True,
+              'a prior snapshot cannot survive owner restart')
+    assert_eq('(log_sample)' in owner and 'LOG_SAMPLE_PERIOD' in owner, True,
+              'owner samples automatically on its periodic deadline')
+    assert_eq('eeprom-' not in owner + serve and 'conf-store' not in owner + serve, True,
+              'capture and download never persist performance data')
+    assert_eq('multiple dives in one power cycle are mixed' in qml, True,
+              'Results page explains per-power-cycle aggregation')
+    assert_eq('A BLE disconnect or reconnect may recreate this page and lose the downloaded results, as can app termination.' in qml, True,
+              'Results page warns that reconnect or app termination may discard downloaded results')
+    assert_eq('The complete results exist only while this page stays loaded and may be lost on BLE disconnect or reconnect.' in qml, True,
+              'pre-download confirmation warns that disconnect or reconnect may recreate the Results page')
+    assert_eq('logToken++' in qml and 'logRequest(2, 255)' in qml, True,
+              'each download uses a fresh snapshot transaction token')
+    assert_eq('logRows.length !== logRow' in qml and 'logRows.length !== 9' not in qml, True,
+              'QML accepts rows only in ordered snapshot sequence')
+    assert_eq('logComplete = { token: logToken, rows: rows' in qml, True,
+              'complete validated rows replace the prior phone-RAM snapshot')
+    results = qml[qml.index('Page {', qml.index('// Results page')):]
+    assert_eq('Check device status' not in results and 'Device status' not in results, True,
+              'Results page has no separate device-status control or label')
+    assert_eq('logExpectedFault = fault' in qml and
+              'logComplete = { token: logToken, rows: rows, fault: logExpectedFault' in qml, True,
+              'snapshot summary fault state is retained with complete results')
+    assert_eq('WARNING: logging fault; collection frozen' in qml and
+              'logComplete.fault !== 0' in results, True,
+              'a fault-bearing snapshot is visibly warned on the Results page')
+
+
+def test_results_page_swipeview_position():
+    """Keep the Results tab paired with its direct SwipeView page."""
+    qml = (Path(__file__).resolve().parents[1] / 'ui.qml').read_text()
+    swipe_start = qml.index('SwipeView {')
+    open_brace = qml.index('{', swipe_start)
+
+    # Mask comments and quoted strings so braces in text do not affect nesting.
+    code = re.sub(r'"(?:\\.|[^"\\])*"|//[^\n]*',
+                  lambda match: re.sub(r'[^\n]', ' ', match.group()), qml)
+    depth = 0
+    close_brace = None
+    for pos in range(open_brace, len(code)):
+        if code[pos] == '{':
+            depth += 1
+        elif code[pos] == '}':
+            depth -= 1
+            if depth == 0:
+                close_brace = pos
+                break
+    swipe_body = code[open_brace + 1:close_brace]
+
+    # Page objects at brace depth zero are the pages SwipeView actually owns.
+    direct_pages = []
+    depth = 0
+    for match in re.finditer(r'\bPage\s*\{|[{}]', swipe_body):
+        token = match.group()
+        if token.startswith('Page') and depth == 0:
+            direct_pages.append(match.start())
+        if token.endswith('{') and token.startswith('Page'):
+            depth += 1
+        elif token == '{':
+            depth += 1
+        elif token == '}':
+            depth -= 1
+
+    results_marker = qml.index('// Results page is the fourth SwipeView item')
+    results_offset = results_marker - (open_brace + 1)
+    results_index = sum(page < results_offset for page in direct_pages)
+    assert_eq(len(direct_pages), 4, 'SwipeView owns exactly four direct pages')
+    assert_eq(results_index, 3, 'Results content belongs to the fourth SwipeView page')
+    tab_buttons = re.findall(r'TabButton\s*\{[^}]*text:\s*qsTr\("([^"]+)"\)', qml)
+    assert_eq(tab_buttons[results_index], 'Results',
+              'the Results tab index selects the Results SwipeView page')
+
+
+def test_performance_log_motor_command_isolation():
+    source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
+    commands = ('set-rpm', 'set-duty', 'set-current', 'set-brake', 'conf-set',
+                'conf-store', 'foc-beep', 'foc-play-tone')
+    expected = (1, 2, 1, 0, 3, 0, 11, 5)
+    assert_eq(tuple(len(re.findall(r'\(' + re.escape(name) + r'\s', source))
+                    for name in commands), expected,
+              'performance changes do not alter motor/config/beeper command sites')
+
+
+def test_performance_log_capture_native():
+    print('\n=== Testing production RAM snapshot protocol (native LispBM) ===')
+    repl = os.environ.get('LBM_REPL', '')
+    if not repl or not os.access(repl, os.X_OK):
+        print('SKIPPED: set LBM_REPL to run production snapshot protocol cases')
+        return
+    try:
+        check_capture_native(repl)
+        assert_eq(True, True, 'native production owner/protocol scenarios complete')
+    except (AssertionError, subprocess.TimeoutExpired, OSError) as exc:
+        print(f'  Native capture details: {exc}')
+        assert_eq(False, True, 'native production owner/protocol scenarios complete')
+
+
+def test_peripherals_setup_native():
+    print('\n=== Testing production peripheral setup for unknown configuration (native LispBM) ===')
+    repl = os.environ.get('LBM_REPL', '')
+    if not repl or not os.access(repl, os.X_OK):
+        print('SKIPPED: set LBM_REPL to run production peripheral setup regression')
+        return
+    try:
+        check_peripherals_setup_native(repl)
+        assert_eq(True, True, 'native configuration 5 initialises the expected I2C pins once before display writes')
+    except (AssertionError, subprocess.TimeoutExpired, OSError) as exc:
+        print(f'  Native peripheral setup details: {exc}')
+        assert_eq(False, True, 'native configuration 5 initialises the expected I2C pins once before display writes')
+
+
+def test_performance_log_qml_runtime_fixture():
+    print('\n=== Testing production QML snapshot handler (Node fixture) ===')
+    try:
+        result = run_log_qml_fixture()
+        if result is None:
+            print('SKIPPED: Node.js is unavailable for the QML JavaScript fixture')
+        else:
+            assert_eq('"rows":10' in result and '"preserved":true' in result,
+                      True, 'production QML validates ten rows and preserves prior snapshot on fault')
+    except (AssertionError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
+        print(f'  QML fixture details: {exc}')
+        assert_eq(False, True, 'production QML snapshot handler fixture completes')
+
+
 def trigger_click_accepted(trigger_input_ready, trigger_armed, sw_pressed):
     """Mirror the stopped-state guard before beginning a click sequence."""
     return trigger_input_ready == 1 and trigger_armed == 1 and sw_pressed == 1
@@ -323,6 +489,13 @@ def test_motor_speed_command_centralisation():
     """Normal selector commands must retain one RPM-controlled path."""
     print("\n=== Testing motor speed command centralisation ===")
     source = (Path(__file__).resolve().parents[1] / 'blacktip_dpv.lisp').read_text()
+
+    motor_sites = re.findall(
+        r'\((?:set-rpm|set-duty|set-current|set-brake|conf-set|conf-store|'
+        r'foc-beep|foc-play-tone)\b[^\n]*', source)
+    assert_eq(hashlib.sha256('\n'.join(motor_sites).encode()).hexdigest(),
+              '8305d2b0745ff14f084a72a7eb571e7000d44cf6a1c3a4d1c57f2f840d3c6eec',
+              'motor/config/beeper command sites match the pre-protocol source')
 
     assert_eq('(defun set_motor_speed (speed_index divisor)' in source, True,
               "motor speed: common command helper exists")
@@ -1962,21 +2135,35 @@ def test_rig_config5_fallback():
     if not repl:
         print('SKIPPED: native rig profile execution requires LBM_REPL')
         return
-    src = log_native_source()
-    start = src.index('(defun update_settings_from_eeprom ()')
-    end = src.index('(defun log_settings_1 ()', start)
-    src = src[:start] + src[start:end].replace('(eeprom-read-i ', '(mock-rig-read ') + src[end:]
-    start = src.index('(defun peripherals_setup ()')
-    end = src.index('(defun validate_lut_header', start)
-    src = (src[:start] + src[start:end].replace('(i2c-start ', '(mock-i2c-start ')
-           .replace('(i2c-tx-rx ', '(mock-i2c-tx-rx ') + src[end:])
-    src += '''
+    source = LISP_SOURCE.read_text()
+    settings_start = source.index('(defun update_settings_from_eeprom ()')
+    settings_end = source.index('(defun log_settings_1 ()', settings_start)
+    settings = source[settings_start:settings_end]
+    setup_start = source.index('(defun peripherals_setup ()')
+    setup_end = source.index('; Display LUT binary format helpers', setup_start)
+    setup = source[setup_start:setup_end]
+    globals_start = source.index('; --- EEPROM-backed configuration ---')
+    globals_end = source.index('; --- Runtime state machine / motor / display vars ---', globals_start)
+    globals_source = source[globals_start:globals_end]
+    globals_source = globals_source.replace(
+        '(define adc_balance_wire_multiplier_x10 ADC_BAL_MULT_X10_DEFAULT)',
+        '(define adc_balance_wire_multiplier_x10 162)')
+    settings = settings.replace('(eeprom-read-i ', '(mock-rig-read ')
+    setup = setup.replace('(i2c-start ', '(mock-i2c-start ')
+    setup = setup.replace('(i2c-tx-rx ', '(mock-i2c-tx-rx ')
+    src = '''
+(define HARDWARE_BLACKTIP_MAX 2)
+(define SCOOTER_BLACKTIP 0)
+(define SCOOTER_CUDAX 1)
+(define BRIGHTNESS_LUT (list 224 227 230 233 236 239))
+(defun clamp (value low high) (if (< value low) low (if (> value high) high value)))
 (define mock_rig_hw 0)
 (define mock_rig_pins nil)
 (define mock_rig_result nil)
 (defun mock-rig-read (addr) (if (= addr 19) mock_rig_hw 0))
 (defun mock-i2c-start (rate sda scl) (setvar 'mock_rig_pins (list sda scl)))
 (defun mock-i2c-tx-rx (addr data) t)
+''' + globals_source + settings + setup + '''
 (looprange hw 0 6 {
     (setvar 'mock_rig_hw hw)
     (update_settings_from_eeprom)
@@ -2004,6 +2191,10 @@ mock_rig_result
 # =============================================================================
 # Test Runner
 # =============================================================================
+
+
+
+
 
 def run_all_tests():
     """Run all test suites"""
@@ -2037,6 +2228,12 @@ def run_all_tests():
     test_startup_trigger_readiness()
     test_click_and_beep_regressions()
     test_rig_config5_fallback()
+    test_performance_log_motor_command_isolation()
+    test_performance_log_ram_snapshot_contract()
+    test_results_page_swipeview_position()
+    test_performance_log_capture_native()
+    test_peripherals_setup_native()
+    test_performance_log_qml_runtime_fixture()
     test_strip_lisp_real_file()
     test_strip_lisp_edge_cases()
     test_strip_lisp_mutation_check()

@@ -5,8 +5,10 @@ import QtQuick 2.7
 import QtQuick.Controls 2.2
 import QtQuick.Layouts 1.3
 import QtQuick.Controls.Material 2.2
+import Qt.labs.platform 1.0 as Platform
 
 import Vedder.vesc.utility 1.0
+import Vedder.vesc.logwriter 1.0
 import Vedder.vesc.commands 1.0
 import Vedder.vesc.configparams 1.0
 
@@ -62,6 +64,282 @@ Item {
     property bool fiveClickShutdownHardwareSupported: false
     property bool fiveClickShutdownFirmwareSupported: false
 
+    // This QML instance's RAM only. Reconnecting may recreate the instance.
+    property var logComplete: null
+    property var logRows: []
+    // QML int is signed 32-bit; a token must stay a JS number to round-trip u32.
+    property var logToken: Math.floor(Math.random() * 4294967295) + 1
+    property int logSequence: 0
+    property int logPending: 0
+    property int logRow: 0
+    property int logRetries: 0
+    property var logExpectedCount: 0
+    property var logExpectedRejected: 0
+    property int logExpectedFault: 0
+    property string logMessage: qsTr("Connect after the dive and download before the DPV powers off. Automatic firmware power-off can erase unsaved data.")
+    property int logPage: 0
+    property string logConnectedDevice: ""
+    property string logExportMessage: ""
+
+    function logSaveHelp() {
+        var directory = logDocumentsPath()
+        if (!directory)
+            return qsTr("VESC Tool cannot determine a local Documents location here. Keep screenshots of all ten speeds as a fallback.")
+        var location = qsTr("VESC Tool's Documents location on this device: %1").arg(directory)
+        if (Qt.platform.os === "osx")
+            return location + qsTr(" On macOS, open Finder > Go > Go to Folder and paste this directory path; look for blacktip-results-*.csv.")
+        if (Qt.platform.os === "windows")
+            return location + qsTr(" On Windows, paste this directory path into File Explorer's address bar; look for blacktip-results-*.csv.")
+        if (Qt.platform.os === "linux")
+            return location + qsTr(" On Linux, paste this directory path into your file manager's location bar; look for blacktip-results-*.csv.")
+        if (Qt.platform.os === "android")
+            return location + qsTr(" On Android, try Files or a computer connected by USB. This may be an app-specific directory that Files cannot browse; a successful readback inside VESC Tool does not prove the file is accessible elsewhere.")
+        if (Qt.platform.os === "ios")
+            return location + qsTr(" On iOS, try Files > On My iPhone/iPad > VESC Tool. The app's Documents directory is sandboxed and may not appear in Files; a successful readback inside VESC Tool does not prove it is accessible elsewhere.")
+        return location + qsTr(" Look for blacktip-results-*.csv. The location may not be accessible in a file manager.")
+    }
+
+    function logCsvCell(value) {
+        return "\"" + String(value).replace(/"/g, "\"\"") + "\""
+    }
+
+    function logCsv(snapshot) {
+        var lines = ["field,value", "snapshot_token," + logCsvCell(logTokenText(snapshot.token)),
+                     "phone_download," + logCsvCell(snapshot.downloaded),
+                     "firmware," + logCsvCell(snapshot.firmware),
+                     "hardware," + logCsvCell(snapshot.hardware),
+                     "device," + logCsvCell(snapshot.device),
+                     "logging_fault," + snapshot.fault,
+                     "", "speed,valid_samples,sum_abs_erpm,sum_input_current_A,sum_input_power_W,sum_abs_erpm_error,sum_abs_duty,peak_abs_phase_current_A,rejected_samples"]
+        for (var i = 0; i < 10; i++) {
+            var row = snapshot.rows[i]
+            lines.push([i].concat(row).join(","))
+        }
+        return lines.join("\n") + "\n"
+    }
+
+    function logDocumentsPath() {
+        // Qt.labs.platform returns a URL, while LogWriter and Utility use local paths.
+        var location = Platform.StandardPaths.writableLocation(Platform.StandardPaths.DocumentsLocation)
+        if (!location) return ""
+        var path = String(location)
+        if (path.indexOf("file:") === 0) {
+            var match = /^file:\/\/([^/]*)(\/.*)$/.exec(path)
+            if (!match || /[?#]/.test(path)) return ""
+            try {
+                path = decodeURIComponent(match[2])
+            } catch (error) {
+                return ""
+            }
+            if (match[1] && match[1] !== "localhost") path = "//" + match[1] + path
+            else if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1)
+        }
+        // Never pass a non-file URL or a relative location to the file APIs.
+        if (path.indexOf("\0") !== -1 || !(/^[A-Za-z]:[\\/]/.test(path) || path.charAt(0) === "/")) return ""
+        return path
+    }
+
+    function logSaveCsv() {
+        if (!logComplete) return
+        var snapshot = logComplete
+        var directory = logDocumentsPath()
+        if (!directory) {
+            logExportMessage = qsTr("Cannot determine a local Documents directory. Results remain on this page; take screenshots.")
+            return
+        }
+        var filename = "blacktip-results-" + Date.now() + "-" + logTokenText(snapshot.token) + ".csv"
+        var path = directory.replace(/\/$/, "") + "/" + filename
+        var contents = logCsv(snapshot)
+        try {
+            if (!logWriter.openLogFileFullPath(path)) throw new Error("open")
+            if (!logWriter.writeToLogFile(contents)) throw new Error("write")
+            logWriter.closeLogFile()
+            if (Utility.arr2str(Utility.readAllFromFile(path)) !== contents) throw new Error("verify")
+            logExportMessage = qsTr("Verified CSV readback at %1. Check that you can find and open it outside VESC Tool before leaving this page; keep screenshots as a fallback.").arg(path)
+        } catch (error) {
+            logWriter.closeLogFile()
+            logExportMessage = qsTr("CSV save or readback failed at %1. Results remain on this page; take screenshots. An incomplete file may remain.").arg(path)
+        }
+    }
+
+    LogWriter { id: logWriter }
+
+    function logTokenText(token) {
+        // Force u32, then stringify before qsTr.arg: Qt formats numeric args
+        // with limited precision and can round large snapshot identities.
+        return "0x" + (token >>> 0).toString(16)
+    }
+
+    function logFail(message) {
+        logTimeout.stop()
+        logPending = 0
+        logRows = []
+        logMessage = message + (logComplete
+                ? qsTr(" Previous complete results remain visible only while this Results page stays loaded; a BLE disconnect or reconnect may recreate it and lose them. Retry explicitly.")
+                : qsTr(" No complete results downloaded; retry explicitly."))
+    }
+
+    function logRequest(op, row) {
+        if (!VescIf.isPortConnected() || logSequence >= 65535) {
+            logFail(qsTr("Connection unavailable or transaction sequence exhausted."))
+            return
+        }
+        logPending = op
+        logRow = row
+        logSequence++
+        var packet = new ArrayBuffer(op === 3 ? 10 : 9)
+        var view = new DataView(packet)
+        view.setUint8(0, 177)
+        view.setUint8(1, 1)
+        view.setUint8(2, op)
+        view.setUint16(3, logSequence)
+        view.setUint32(5, logToken)
+        if (op === 3) view.setUint8(9, row)
+        mCommands.sendCustomAppData(packet)
+        logTimeout.restart()
+    }
+
+    function logDownload() {
+        if (logPending) return
+        if (!VescIf.isPortConnected()) {
+            logFail(qsTr("Connect to the DPV before downloading."))
+            return
+        }
+        if (logToken >= 4294967295) {
+            logFail(qsTr("Transaction identity exhausted; reopen the results page."))
+            return
+        }
+        logToken++
+        logConnectedDevice = VescIf.getConnectedUuid() || VescIf.getConnectedPortName()
+        logRows = []
+        logRetries = 0
+        logMessage = qsTr("Downloading snapshot; existing results remain visible.")
+        logRequest(2, 255)
+    }
+
+    function logReceive(view) {
+        if (!VescIf.isPortConnected() ||
+                logConnectedDevice !== (VescIf.getConnectedUuid() || VescIf.getConnectedPortName())) {
+            if (logPending) logFail(qsTr("Connection or device changed during download."))
+            return
+        }
+        if (view.byteLength < 12 || view.getUint8(1) !== 1 || !logPending ||
+                view.getUint8(2) !== logPending || view.getUint16(3) !== logSequence ||
+                view.getUint32(5) !== logToken ||
+                view.getUint8(10) !== (logPending === 3 ? logRow : 255)) return
+        var status = view.getUint8(9)
+        var fault = view.getUint8(11)
+        if (fault > 1) {
+            logFail(qsTr("Invalid logging fault state in device reply."))
+            return
+        }
+        if (status !== 0) {
+            if (view.byteLength !== 12) return
+            logFail(qsTr("Device rejected snapshot request (status %1).").arg(status))
+            return
+        }
+        if (logPending === 2) {
+            if (view.byteLength !== 20) return
+            logExpectedFault = fault
+            logExpectedCount = view.getUint32(12)
+            logExpectedRejected = view.getUint32(16)
+            logTimeout.stop()
+            logRetries = 0
+            logRequest(3, 0)
+            return
+        }
+        if (view.byteLength !== 44 || logRows.length !== logRow) return
+        if (fault !== logExpectedFault) {
+            logFail(qsTr("Snapshot fault state changed during transfer."))
+            return
+        }
+        var n = view.getUint32(12)
+        var row = [n]
+        for (var i = 0; i < 5; i++) {
+            var value = view.getFloat32(16 + i * 4)
+            if (!isFinite(value) || (n === 0 && value !== 0) ||
+                    (i !== 1 && i !== 2 && value < 0)) {
+                logFail(qsTr("Invalid aggregate in speed %1.").arg(logRow))
+                return
+            }
+            row.push(value)
+        }
+        var peak = view.getFloat32(36)
+        if (!isFinite(peak) || peak < 0 || (n === 0 && peak !== 0)) {
+            logFail(qsTr("Invalid phase current peak."))
+            return
+        }
+        row.push(peak)
+        row.push(view.getUint32(40))
+        logRows.push(row)
+        logTimeout.stop()
+        logRetries = 0
+        if (logRow < 9) {
+            logRequest(3, logRow + 1)
+        } else {
+            var rows = logRows.slice(0)
+            var counts = 0
+            var rejects = 0
+            for (var j = 0; j < rows.length; j++) {
+                counts = Math.min(4294967294, counts + rows[j][0])
+                rejects = Math.min(4294967294, rejects + rows[j][7])
+            }
+            if (counts !== logExpectedCount || rejects !== logExpectedRejected) {
+                logFail(qsTr("Snapshot totals do not match the ten rows."))
+                return
+            }
+            logComplete = { token: logToken, rows: rows, fault: logExpectedFault,
+                            downloaded: new Date().toLocaleString(),
+                            firmware: firmwareVersion, hardware: detectedHardwareModel,
+                            device: logConnectedDevice }
+            logExportMessage = ""
+            logRows = []
+            logPending = 0
+            logMessage = logExpectedFault
+                    ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Save a CSV and check it outside VESC Tool, or take and check screenshots. A BLE disconnect or reconnect can erase these results.")
+                    : qsTr("Complete snapshot in this Results page's RAM only. Save a CSV and check it outside VESC Tool, or take and check screenshots. A BLE disconnect or reconnect can erase these results.")
+        }
+    }
+
+    Timer {
+        id: logTimeout
+        interval: 1500
+        repeat: false
+        onTriggered: {
+            if (!logPending) return
+            if (logRetries >= 2) {
+                logFail(qsTr("Download timed out."))
+            } else {
+                logRetries++
+                // Retry the same transaction and row; stale sequences are ignored.
+                logRequest(logPending, logRow)
+            }
+        }
+    }
+
+    Connections {
+        target: VescIf
+        function onPortConnectedChanged() {
+            if (logPending) logFail(qsTr("Connection changed during download."))
+        }
+        function onFwRxChanged() {
+            if (logPending) logFail(qsTr("Firmware or device identity changed during download."))
+        }
+    }
+
+    Connections {
+        target: Qt.application
+        function onStateChanged(state) {
+            if (state !== Qt.ApplicationActive && logPending)
+                logFail(qsTr("App suspended during download; start a fresh snapshot transaction."))
+        }
+    }
+
+    Component.onDestruction: {
+        logTimeout.stop()
+        logPending = 0
+    }
+
     Component.onCompleted: {
         mCommands.emitEmptySetupValues()
         updateFwText()
@@ -77,7 +355,7 @@ Item {
             implicitWidth: 0
             clip: true
 
-            property int buttons: 3
+            property int buttons: 4
             property int buttonWidth: 120
 
             TabButton {
@@ -91,6 +369,10 @@ Item {
             }
             TabButton {
                 text: qsTr("Speeds")
+                width: Math.max(tabBar.buttonWidth, tabBar.width / tabBar.buttons)
+            }
+            TabButton {
+                text: qsTr("Results")
                 width: Math.max(tabBar.buttonWidth, tabBar.width / tabBar.buttons)
             }
         }
@@ -683,7 +965,128 @@ Item {
                     }
                 }
             }
+
+        // Results page is the fourth SwipeView item, not a ColumnLayout sibling.
+        Page {
+            ScrollView {
+                anchors.fill: parent
+                clip: true
+                contentWidth: availableWidth
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 8
+
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: logMessage
+                    }
+                    Button {
+                        text: qsTr("Download snapshot / Refresh")
+                        enabled: !logPending
+                        onClicked: {
+                            if (logComplete) logReplaceDialog.open()
+                            else logDownload()
+                        }
+                    }
+                    Button {
+                        text: qsTr("Save snapshot to CSV")
+                        enabled: !!logComplete
+                        onClicked: logSaveCsv()
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
+                        text: logSaveHelp()
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
+                        text: logExportMessage
+                        visible: !!logExportMessage
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
+                        text: {
+                            var directory = logDocumentsPath()
+                            return directory ? qsTr("VESC Tool's Documents location on this device: %1. Look for blacktip-results-*.csv; this directory may be app-specific and unavailable in a file manager.").arg(directory)
+                                             : qsTr("VESC Tool cannot determine a local Documents location here. Keep screenshots of all ten speeds as a fallback.")
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WrapAnywhere
+                        text: logComplete ? qsTr("Snapshot token %1 | phone download %2 | firmware %3 | hardware %4 | device %5")
+                                        .arg(logTokenText(logComplete.token)).arg(logComplete.downloaded)
+                                        .arg(logComplete.firmware).arg(logComplete.hardware)
+                                        .arg(logComplete.device)
+                                          : qsTr("No complete snapshot downloaded")
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: !!logComplete && logComplete.fault !== 0
+                        wrapMode: Text.WordWrap
+                        text: qsTr("WARNING: logging fault. Collection frozen; these aggregates may be incomplete.")
+                    }
+                    RowLayout {
+                        visible: !!logComplete
+                        Button {
+                            text: qsTr("Previous speed")
+                            enabled: logPage > 0
+                            onClicked: logPage--
+                        }
+                        Label { text: qsTr("Speed %1 / 9").arg(logPage) }
+                        Button {
+                            text: qsTr("Next speed")
+                            enabled: logPage < 9
+                            onClicked: logPage++
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: !!logComplete
+                        wrapMode: Text.WrapAnywhere
+                        text: {
+                            if (!logComplete) return ""
+                            var row = logComplete.rows[logPage]
+                            var count = row[0]
+                            var names = [qsTr("sum |RPM| (eRPM)"), qsTr("sum input current (A)"),
+                                         qsTr("sum input power (W)"), qsTr("sum |RPM error| (eRPM)"),
+                                         qsTr("sum |duty| (fraction)")]
+                            var s = qsTr("Snapshot %1 | speed %2 / 9\nValid samples: %3 | rejected: %4\n")
+                                    .arg(logTokenText(logComplete.token)).arg(logPage).arg(count).arg(row[7])
+                            if (logComplete.fault)
+                                s += qsTr("WARNING: logging fault; collection frozen\n")
+                            for (var i = 0; i < 5; i++)
+                                s += names[i] + ": " + row[i + 1] +
+                                     (count ? " | mean: " + (row[i + 1] / count).toFixed(3) : " | mean: no data") + "\n"
+                            s += qsTr("Peak |phase current| (A): ") + row[6]
+                            return s
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: qsTr("CSV contains all ten speeds, snapshot identity, fault status and device details. Check that the saved file can be opened outside VESC Tool. If it is not accessible, capture ten labelled screenshot pages and check all images. A BLE disconnect or reconnect may recreate this page and lose the downloaded results, as can app termination. The DPV collects automatically while powered; multiple dives in one power cycle are mixed. Samples are not seconds, energy or dive history.")
+                    }
+                }
+            }
         }
+        }
+    }
+
+    Dialog {
+        id: logReplaceDialog
+        title: qsTr("Replace downloaded snapshot?")
+        standardButtons: Dialog.Yes | Dialog.No
+        modal: true
+        Label {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("The complete results exist only while this page stays loaded and may be lost on BLE disconnect or reconnect. Check that you can open the saved CSV outside VESC Tool or check all ten screenshots before refreshing.")
+        }
+        onAccepted: logDownload()
     }
 
     // handshake timmer to initiate first transfer of values from lisp
@@ -1133,6 +1536,11 @@ Item {
 
         function onCustomAppDataReceived (data) {
             var dv = new DataView(data)
+            if (dv.byteLength && (dv.getUint8(0) === 177 ||
+                    (dv.getUint8(0) >= 161 && dv.getUint8(0) <= 164))) {
+                if (dv.getUint8(0) === 177) logReceive(dv)
+                return
+            }
             if (dv.byteLength < 31) {
                 console.warn("Settings payload too short:", dv.byteLength)
                 return
