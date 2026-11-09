@@ -37,9 +37,10 @@ def run():
     timeout = body_after(qml, 'onTriggered:', timer_at)
     csv_cell = body_after(qml, 'function logCsvCell(value)')
     csv = body_after(qml, 'function logCsv(snapshot)')
+    documents_path = body_after(qml, 'function logDocumentsPath()')
     save = body_after(qml, 'function logSaveCsv()')
     scripts = [receive, fail, request, app_signal, timeout, token_text,
-               csv_cell, csv, save]
+               csv_cell, csv, documents_path, save]
     encoded = [base64.b64encode(part.encode()).decode() for part in scripts]
     fixture = r'''
 const vm=require('vm');
@@ -52,7 +53,7 @@ const q={logComplete:{old:true},logRows:[],logToken:51,logSequence:8,
  mCommands:{sent:[],sendCustomAppData(b){this.sent.push(b)}},
  logTimeout:{stops:0,restarts:0,stop(){this.stops++},restart(){this.restarts++}},
   qsTr:s=>s,Qt:{ApplicationActive:4},
-  Platform:{StandardPaths:{DocumentsLocation:1,writableLocation(){return this.path},path:'/tmp'}},
+  Platform:{StandardPaths:{DocumentsLocation:1,writableLocation(){return this.path},path:{toString(){return 'file:///tmp'}}}},
   Utility:{arr2str:b=>Buffer.from(b).toString(),readAllFromFile:p=>q.files[p]},
   files:{},logWriter:{path:null,openLogFileFullPath(p){this.path=p;return true},
     writeToLogFile(s){q.files[this.path]=Buffer.from(s);return true},closeLogFile(){}}};
@@ -102,16 +103,31 @@ if(parsed.length!==19||parsed[6]!=='logging_fault,3'||parsed[7]!==''||
  parsed[8]!=='speed,valid_samples,sum_abs_erpm,sum_input_current_A,sum_input_power_W,sum_abs_erpm_error,sum_abs_duty,peak_abs_phase_current_A,rejected_samples'||
  !parsed[5].includes('"device, ""A"""')||!parsed[9].includes('1.25')||!parsed[18].startsWith('9,'))
  throw Error('CSV metadata, quoting, numerical values, or ten row serialization is incorrect');
+q.logDocumentsPath=vm.runInContext('(function(){'+source('DOCUMENTS_PATH')+'\n})',ctx);
 q.logComplete=exported;q.logSaveCsv();
 const path=Object.keys(q.files)[0];
-if(!path||!path.endsWith('.csv')||Buffer.from(q.files[path]).toString()!==text||!q.logExportMessage.includes('Verified'))
+if(!path||!path.startsWith('/tmp/blacktip-results-')||!path.endsWith('.csv')||Buffer.from(q.files[path]).toString()!==text||!q.logExportMessage.includes('Verified'))
  throw Error('CSV production save/readback failed');
+for (const [url, expected] of [
+ ['file:///home/user/My%20Documents','/home/user/My Documents'],
+ ['file:///home/user/100%25%20done','/home/user/100% done'],
+ ['file://localhost/home/user/docs','/home/user/docs'],
+ ['file://server/share/docs','//server/share/docs'],
+ ['file:///C:/Users/name/Documents','C:/Users/name/Documents']]) {
+ q.Platform.StandardPaths.path={toString(){return url}};
+ if(q.logDocumentsPath()!==expected)throw Error('Documents URL conversion failed: '+url+' => '+q.logDocumentsPath());
+}
+for (const url of ['https://example.test/docs','relative/docs','file:///bad%ZZ','file:///docs?query=1','file:///docs#fragment']) {
+ q.Platform.StandardPaths.path={toString(){return url}};
+ if(q.logDocumentsPath()!=='')throw Error('unsafe Documents URL accepted: '+url);
+}
+q.Platform.StandardPaths.path={toString(){return 'file:///tmp'}};
 const old=q.files[path];q.logWriter.writeToLogFile=()=>false;q.logSaveCsv();
 if(q.files[path]!==old||!q.logExportMessage.includes('failed'))
  throw Error('CSV failed write did not preserve prior file/report failure');
 q.logWriter.writeToLogFile=()=>true;q.Platform.StandardPaths.writableLocation=()=>'';
 q.logSaveCsv();if(!q.logExportMessage.includes('Cannot determine'))throw Error('unsupported path not reported');
-q.Platform.StandardPaths.writableLocation=()=>'/tmp';
+q.Platform.StandardPaths.writableLocation=()=>({toString(){return 'file:///tmp'}});
 const previous=q.logComplete;
 // Stale sequence, malformed short response and stale token are ignored.
 q.logPending=2;q.logSequence++;
@@ -142,7 +158,7 @@ if(recreated.logComplete!==null || q.logComplete!==previous)
   sent:q.mCommands.sent.length,timeoutFailures:q.logTimeout.stops}));
 '''
     assert qml.count('.arg(logTokenText(logComplete.token))') == 2
-    for name, value in zip(('RECEIVE', 'FAIL', 'REQUEST', 'SUSPEND', 'TIMEOUT', 'TOKEN_TEXT', 'CSV_CELL', 'CSV', 'SAVE'), encoded):
+    for name, value in zip(('RECEIVE', 'FAIL', 'REQUEST', 'SUSPEND', 'TIMEOUT', 'TOKEN_TEXT', 'CSV_CELL', 'CSV', 'DOCUMENTS_PATH', 'SAVE'), encoded):
         fixture = fixture.replace(name, value)
     with tempfile.TemporaryDirectory() as temp:
         path = Path(temp) / 'qml-fixture.js'
