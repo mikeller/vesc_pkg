@@ -123,6 +123,34 @@ def check(repl):
     print('native production snapshot protocol: mismatched token rejected:', result)
 
     result = run('''
+(define op4_short (bufcreate 9))
+(bufset-u8 op4_short 0 LOG_PREFIX) (bufset-u8 op4_short 1 LOG_VERSION)
+(bufset-u8 op4_short 2 4) (bufset-u32 op4_short 5 42)
+(log_admit op4_short)
+(define op4_status (bufget-u8 last_reply 9))
+(define op4_reply_len (buflen last_reply))
+(define op5_long (bufcreate 10))
+(bufset-u8 op5_long 0 LOG_PREFIX) (bufset-u8 op5_long 1 LOG_VERSION)
+(bufset-u8 op5_long 2 5) (bufset-u32 op5_long 5 42)
+(log_admit op5_long)
+(define op5_status (bufget-u8 last_reply 9))
+(define op5_reply_len (buflen last_reply))
+(define op4_valid (bufcreate 10))
+(bufset-u8 op4_valid 0 LOG_PREFIX) (bufset-u8 op4_valid 1 LOG_VERSION)
+(bufset-u8 op4_valid 2 4) (bufset-u32 op4_valid 5 42) (bufset-u8 op4_valid 9 0)
+(log_admit op4_valid)
+(define op4_valid_status (bufget-u8 last_reply 9))
+(define op5_valid (bufcreate 9))
+(bufset-u8 op5_valid 0 LOG_PREFIX) (bufset-u8 op5_valid 1 LOG_VERSION)
+(bufset-u8 op5_valid 2 5) (bufset-u32 op5_valid 5 42)
+(log_admit op5_valid)
+(list op4_status op4_reply_len op5_status op5_reply_len
+      op4_valid_status (bufget-u8 last_reply 9))
+''')
+    assert result == '(1 12 1 12 2 2)', result
+    print('native production log_admit: malformed op4/op5 lengths rejected; valid extension requests admitted to busy response:', result)
+
+    result = run('''
 (setvar 'log_live (bufcreate 320)) (setvar 'log_fault 0)
 (setvar 'log_previous_speed 5) (setvar 'log_previous_eligible 1) (setvar 'speed 5)
 (log_sample)
@@ -213,6 +241,17 @@ def check(repl):
 ''')
     assert result == '(0u32 3u32 91.300003f32 29.799999f32)', result
     print('native production diagnostics: unknown minimum initialises then tracks lower voltage:', result)
+
+    result = run('''
+(setvar 'log_diag_live (bufcreate 320)) (setvar 'mock_invert 0)
+(log_diag_sample 0 1.0 2.0 29.8)
+(log_diag_sample 0 1.0 2.0 29.8)
+(log_diag_sample 0 1.0 2.0 29.8)
+(list (bufget-u32 log_diag_live 16) (bufget-f32 log_diag_live 20)
+      (bufget-f32 log_diag_live 24) (bufget-u32 log_diag_live 20))
+''')
+    assert result == '(3u32 89.399994f32 29.799999f32 1119014092u32)', result
+    print('native production diagnostics: three 29.8 V samples retain repeated binary32 rounding:', result)
 
     result = run('''
 (setvar 'log_diag_live (bufcreate 320))
