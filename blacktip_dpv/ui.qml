@@ -67,6 +67,9 @@ Item {
     // This QML instance's RAM only. Reconnecting may recreate the instance.
     property var logComplete: null
     property var logRows: []
+    property var logDiagnostics: []
+    property var logFaultSamples: null
+    property var logPendingSnapshot: null
     // QML int is signed 32-bit; a token must stay a JS number to round-trip u32.
     property var logToken: Math.floor(Math.random() * 4294967295) + 1
     property int logSequence: 0
@@ -118,6 +121,34 @@ Item {
         return lines.join("\n") + "\n"
     }
 
+    // Additive export only: never append columns to the original v1 CSV.
+    // Diagnostic counts are independent of the v1 valid-sample count; an empty
+    // voltage row has an unknown minimum, not a measured zero.
+    function logDiagnosticCsv(snapshot) {
+        if (!snapshot.diagnostics || !snapshot.faultSamples) return ""
+        var fault = snapshot.faultSamples
+        var lines = ["field,value", "schema,blacktip-results-diagnostics-v2",
+                     "snapshot_token," + logCsvCell(logTokenText(snapshot.token)),
+                     "units,erpm;V;sample_counts",
+                     "target_frame,raw_get-rpm-set_controller_command_not_ramped_pid",
+                     "rpm_frame,signed_get-rpm",
+                     "signed_error,direction_normalised_target_minus_signed_rpm",
+                     "limit_reason,unavailable",
+                     "fault_scope,controller_get-fault_polled_each_logger_tick_not_event_history",
+                     "nonzero_fault_samples," + fault[0],
+                     "last_nonzero_fault_code," + (fault[0] ? fault[1] : ""),
+                     "fault_read_failures," + fault[2],
+                     "", "speed,command_valid_samples,mean_raw_controller_target_erpm,mean_signed_erpm,mean_signed_error_erpm,voltage_valid_samples,mean_bus_voltage_V,min_bus_voltage_V,diagnostic_failures"]
+        for (var i = 0; i < 10; i++) {
+            var d = snapshot.diagnostics[i]
+            lines.push([i, d[0], d[0] ? d[1] / d[0] : "",
+                        d[0] ? d[2] / d[0] : "", d[0] ? d[3] / d[0] : "",
+                        d[4], d[4] ? d[5] / d[4] : "",
+                        d[4] ? d[6] : "", d[7]].join(","))
+        }
+        return lines.join("\n") + "\n"
+    }
+
     function logDocumentsPath() {
         // Qt.labs.platform returns a URL, while LogWriter and Utility use local paths.
         var location = Platform.StandardPaths.writableLocation(Platform.StandardPaths.DocumentsLocation)
@@ -140,16 +171,18 @@ Item {
     }
 
     function logSaveCsv() {
+        var enhanced = arguments[0] === true
         if (!logComplete) return
+        if (enhanced && (!logComplete.diagnostics || !logComplete.faultSamples)) return
         var snapshot = logComplete
         var directory = logDocumentsPath()
         if (!directory) {
             logExportMessage = qsTr("Cannot determine a local Documents directory. Results remain on this page; take screenshots.")
             return
         }
-        var filename = "blacktip-results-" + Date.now() + "-" + logTokenText(snapshot.token) + ".csv"
+        var filename = (enhanced ? "blacktip-diagnostics-v2-" : "blacktip-results-") + Date.now() + "-" + logTokenText(snapshot.token) + ".csv"
         var path = directory.replace(/\/$/, "") + "/" + filename
-        var contents = logCsv(snapshot)
+        var contents = enhanced ? logDiagnosticCsv(snapshot) : logCsv(snapshot)
         try {
             if (!logWriter.openLogFileFullPath(path)) throw new Error("open")
             if (!logWriter.writeToLogFile(contents)) throw new Error("write")
@@ -174,6 +207,8 @@ Item {
         logTimeout.stop()
         logPending = 0
         logRows = []
+        logPendingSnapshot = null
+        logDiagnostics = []
         logMessage = message + (logComplete
                 ? qsTr(" Previous complete results remain visible only while this Results page stays loaded; a BLE disconnect or reconnect may recreate it and lose them. Retry explicitly.")
                 : qsTr(" No complete results downloaded; retry explicitly."))
@@ -187,14 +222,14 @@ Item {
         logPending = op
         logRow = row
         logSequence++
-        var packet = new ArrayBuffer(op === 3 ? 10 : 9)
+        var packet = new ArrayBuffer(op === 3 || op === 4 ? 10 : 9)
         var view = new DataView(packet)
         view.setUint8(0, 177)
         view.setUint8(1, 1)
         view.setUint8(2, op)
         view.setUint16(3, logSequence)
         view.setUint32(5, logToken)
-        if (op === 3) view.setUint8(9, row)
+        if (op === 3 || op === 4) view.setUint8(9, row)
         mCommands.sendCustomAppData(packet)
         logTimeout.restart()
     }
@@ -212,9 +247,43 @@ Item {
         logToken++
         logConnectedDevice = VescIf.getConnectedUuid() || VescIf.getConnectedPortName()
         logRows = []
+        logDiagnostics = []
+        logFaultSamples = null
+        logPendingSnapshot = null
         logRetries = 0
         logMessage = qsTr("Downloading snapshot; existing results remain visible.")
         logRequest(2, 255)
+    }
+
+    function logDownloadDiagnostics() {
+        // Explicit second request on the same snapshot token. Old firmware can
+        // reject/ignore op 5 without affecting the already downloaded v1 rows.
+        if (logPending || !logComplete || !VescIf.isPortConnected() ||
+                logComplete.device !== (VescIf.getConnectedUuid() || VescIf.getConnectedPortName()) ||
+                logComplete.token !== logToken || logComplete.diagnostics) return
+        logPendingSnapshot = { token: logComplete.token, rows: logComplete.rows,
+                               fault: logComplete.fault, downloaded: logComplete.downloaded,
+                               firmware: logComplete.firmware, hardware: logComplete.hardware,
+                               device: logComplete.device }
+        logConnectedDevice = logComplete.device
+        logExpectedFault = logComplete.fault
+        logDiagnostics = []
+        logFaultSamples = null
+        logRetries = 0
+        logMessage = qsTr("Downloading optional diagnostics for this snapshot.")
+        logRequest(5, 255)
+    }
+
+    function logFinish() {
+        logComplete = logPendingSnapshot
+        logPendingSnapshot = null
+        logDiagnostics = []
+        logExportMessage = ""
+        logRows = []
+        logPending = 0
+        logMessage = logExpectedFault
+                ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Save a CSV and check it outside VESC Tool, or take and check screenshots. A BLE disconnect or reconnect can erase these results.")
+                : qsTr("Complete snapshot in this Results page's RAM only. Save a CSV and check it outside VESC Tool, or take and check screenshots. A BLE disconnect or reconnect can erase these results.")
     }
 
     function logReceive(view) {
@@ -226,7 +295,7 @@ Item {
         if (view.byteLength < 12 || view.getUint8(1) !== 1 || !logPending ||
                 view.getUint8(2) !== logPending || view.getUint16(3) !== logSequence ||
                 view.getUint32(5) !== logToken ||
-                view.getUint8(10) !== (logPending === 3 ? logRow : 255)) return
+                view.getUint8(10) !== (logPending === 3 || logPending === 4 ? logRow : 255)) return
         var status = view.getUint8(9)
         var fault = view.getUint8(11)
         if (fault > 1) {
@@ -235,7 +304,50 @@ Item {
         }
         if (status !== 0) {
             if (view.byteLength !== 12) return
+            if (logPending === 5 && status === 1 && logPendingSnapshot) {
+                logTimeout.stop()
+                logFinish()
+                return
+            }
             logFail(qsTr("Device rejected snapshot request (status %1).").arg(status))
+            return
+        }
+        if (logPending === 5) {
+            if (view.byteLength !== 24 || fault !== logExpectedFault || !logPendingSnapshot) return
+            logFaultSamples = [view.getUint32(12), view.getUint32(16), view.getUint32(20)]
+            if (logFaultSamples[1] > 255 || (!logFaultSamples[0] && logFaultSamples[1])) {
+                logFail(qsTr("Invalid sampled controller fault data."))
+                return
+            }
+            logTimeout.stop()
+            logRetries = 0
+            logRequest(4, 0)
+            return
+        }
+        if (logPending === 4) {
+            if (view.byteLength !== 44 || fault !== logExpectedFault ||
+                    logDiagnostics.length !== logRow || !logPendingSnapshot) return
+            var d = [view.getUint32(12), view.getFloat32(16), view.getFloat32(20),
+                     view.getFloat32(24), view.getUint32(28), view.getFloat32(32),
+                     view.getFloat32(36), view.getUint32(40)]
+            if (d[0] > logPendingSnapshot.rows[logRow][0] || d[4] > logPendingSnapshot.rows[logRow][0] ||
+                    !isFinite(d[1]) || !isFinite(d[2]) || !isFinite(d[3]) ||
+                    !isFinite(d[5]) || !isFinite(d[6]) || d[5] < 0 || d[6] < 0 ||
+                    (!d[0] && (d[1] || d[2] || d[3])) ||
+                    (!d[4] && (d[5] || d[6])) ||
+                    (d[4] && d[6] > d[5] / d[4])) {
+                logFail(qsTr("Invalid diagnostic row."))
+                return
+            }
+            logDiagnostics.push(d)
+            logTimeout.stop()
+            logRetries = 0
+            if (logRow < 9) logRequest(4, logRow + 1)
+            else {
+                logPendingSnapshot.diagnostics = logDiagnostics.slice(0)
+                logPendingSnapshot.faultSamples = logFaultSamples
+                logFinish()
+            }
             return
         }
         if (logPending === 2) {
@@ -308,7 +420,9 @@ Item {
         onTriggered: {
             if (!logPending) return
             if (logRetries >= 2) {
-                logFail(qsTr("Download timed out."))
+                if (logPending === 5 && logPendingSnapshot) {
+                    logFinish() // v1-only device does not implement diagnostic requests.
+                } else logFail(qsTr("Download timed out."))
             } else {
                 logRetries++
                 // Retry the same transaction and row; stale sequences are ignored.
@@ -993,6 +1107,26 @@ Item {
                         text: qsTr("Save snapshot to CSV")
                         enabled: !!logComplete
                         onClicked: logSaveCsv()
+                    }
+                    Button {
+                        text: qsTr("Download optional diagnostics")
+                        visible: !!logComplete && !logComplete.diagnostics
+                        enabled: !logPending && VescIf.isPortConnected()
+                        onClicked: logDownloadDiagnostics()
+                    }
+                    Button {
+                        text: qsTr("Save diagnostics v2 CSV")
+                        visible: !!logComplete && !!logComplete.diagnostics
+                        enabled: !logPending
+                        onClicked: logSaveCsv(true)
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        visible: !!logComplete
+                        text: logComplete && logComplete.diagnostics
+                              ? qsTr("Diagnostics v2: sampled controller command and signed eRPM/error, voltage and sampled controller faults. Fault polls are not an event history; active limit reason is unavailable. Save the original CSV separately.")
+                              : qsTr("This device supplied v1 Results only; diagnostics are unavailable. The original CSV is unchanged.")
                     }
                     Label {
                         Layout.fillWidth: true

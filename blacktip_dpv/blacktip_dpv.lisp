@@ -304,6 +304,10 @@
 ; Only the owner writes these two fixed-size buffers. Requests are one bounded slot.
 (define log_live nil)
 (define log_snapshot_buf nil)
+(define log_diag_live nil)
+(define log_diag_snapshot nil)
+(define log_fault_live nil)
+(define log_fault_snapshot nil)
 (define log_snapshot_token 0)
 (define log_snapshot_valid 0)
 (define log_snapshot_fault 0)
@@ -2052,6 +2056,13 @@
 ; token:u32 status:u8 row:u8 fault:u8 (12 bytes); snapshot adds count:u32
 ; rejected:u32 (20 bytes), row adds eight 32-bit fields (44 bytes).
 ; Status 0=ok, 1=invalid, 2=busy, 3=missing/mismatched snapshot.
+; Additive op 4: 32-byte diagnostic row (44-byte reply); op 5: 12-byte
+; controller fault poll summary (24-byte reply). Both use the v1 snapshot token.
+; Four extra fixed buffers total 664 payload bytes; six buffers total 1304.
+; Diagnostics: count, raw command sum, signed rpm sum, direction-normalised
+; signed error sum, voltage count/sum/min, failed diagnostic operations.
+; Fault summary: nonzero get-fault polls, last nonzero code, failed polls.
+; Neither low duty nor tracking error establishes an active limit reason.
 (defun log_reply (op seq token status row size fault)
 {
     (var b (bufcreate size))
@@ -2069,6 +2080,69 @@
 (defun log_valid (x limit)
     (and (number? x) (= x x) (>= x (- limit)) (<= x limit)))
 
+; Poll at every owner tick, including stops and after logger collection freezes.
+; get-fault returns an integer code, not a latched event stream.
+(defun log_poll_fault ()
+{
+    (var result (trap (get-fault)))
+    (var valid (and (eq (ix result 0) 'exit-ok)
+                    (number? (ix result 1))
+                    (>= (ix result 1) 0) (<= (ix result 1) 255)))
+    (var off (if valid (if (!= (ix result 1) 0) 0 -1) 8))
+    (if (>= off 0) {
+        (var count (bufget-u32 log_fault_live off))
+        (if (< count LOG_MAX_COUNT)
+            (bufset-u32 log_fault_live off (+ count 1)))
+    })
+    (if (and valid (!= (ix result 1) 0))
+        (bufset-u32 log_fault_live 4 (ix result 1)))
+})
+
+; Optional diagnostics never gate or rewrite the legacy row. Offset layout:
+; valid:u32, sum raw target:f32, sum signed rpm:f32, sum signed error:f32,
+; voltage valid:u32, voltage sum:f32, voltage min:f32, diagnostic failures:u32.
+(defun log_diag_failure (off)
+{
+    (var n (bufget-u32 log_diag_live (+ off 28)))
+    (if (< n LOG_MAX_COUNT)
+        (bufset-u32 log_diag_live (+ off 28) (+ n 1)))
+})
+
+(defun log_diag_sample (sp rpm target voltage)
+{
+    (var off (* 32 sp))
+    (var vc (bufget-u32 log_diag_live (+ off 16)))
+    (if (and (log_valid voltage 3.0e38) (>= voltage 0)
+             (< vc LOG_MAX_COUNT)
+             (log_valid (+ (bufget-f32 log_diag_live (+ off 20)) voltage) 3.0e38)) {
+        (bufset-f32 log_diag_live (+ off 20)
+            (+ (bufget-f32 log_diag_live (+ off 20)) voltage))
+        (if (or (= vc 0) (< voltage (bufget-f32 log_diag_live (+ off 24))))
+            (bufset-f32 log_diag_live (+ off 24) voltage))
+        (bufset-u32 log_diag_live (+ off 16) (+ vc 1))
+    } (log_diag_failure off))
+    (var inv (trap (conf-get 'm-invert-direction)))
+    (if (and (eq (ix inv 0) 'exit-ok)
+             (number? (ix inv 1))
+             (or (= (ix inv 1) 0) (= (ix inv 1) 1))
+             (log_valid rpm 3.0e38) (log_valid target 3.0e38)) {
+        (var framed (if (= (ix inv 1) 1) (- target) target))
+        (var err (- framed rpm))
+        (var count (bufget-u32 log_diag_live off))
+        (var ts (+ (bufget-f32 log_diag_live (+ off 4)) target))
+        (var rs (+ (bufget-f32 log_diag_live (+ off 8)) rpm))
+        (var es (+ (bufget-f32 log_diag_live (+ off 12)) err))
+        (if (and (< count LOG_MAX_COUNT) (log_valid err 3.0e38)
+                 (log_valid ts 3.0e38) (log_valid rs 3.0e38)
+                 (log_valid es 3.0e38)) {
+            (bufset-f32 log_diag_live (+ off 4) ts)
+            (bufset-f32 log_diag_live (+ off 8) rs)
+            (bufset-f32 log_diag_live (+ off 12) es)
+            (bufset-u32 log_diag_live off (+ count 1))
+        } (log_diag_failure off))
+    } (log_diag_failure off))
+})
+
 ; The Blacktip/CudaX profiles set eRPM and current limits in ui.qml, but
 ; readback may overshoot those limits and the active configuration can differ.
 ; Do not impose invented voltage/current/RPM ceilings on measured telemetry.
@@ -2076,6 +2150,12 @@
 ; physical duty fraction; check derived sums before writing any row fields.
 (defun log_sample ()
 {
+    (var poll (trap (log_poll_fault)))
+    (if (not (eq (ix poll 0) 'exit-ok)) {
+        (var failed (bufget-u32 log_fault_live 8))
+        (if (< failed LOG_MAX_COUNT)
+            (bufset-u32 log_fault_live 8 (+ failed 1)))
+    })
     (var sp (to-i speed))
     (var ready (and (>= sp 0) (< sp 10) (= soft_start_active 0)
                     (not (eq safe_start_status 'running))))
@@ -2134,6 +2214,12 @@
                     (bufset-f32 log_live (+ off 24) (abs phase)))
             } (setvar 'log_fault 1))
         })
+        ; Diagnostic read failures cannot invalidate a good legacy sample.
+        (if ok {
+            (var diagnostic (trap (log_diag_sample sp rpm target voltage)))
+            (if (not (eq (ix diagnostic 0) 'exit-ok))
+                (log_diag_failure (* 32 sp)))
+        })
     })
 })
 
@@ -2147,8 +2233,8 @@
     (var token (if (>= len 9) (bufget-u32 data 5) 0))
     (var row (if (= len 10) (bufget-u8 data 9) 255))
     (if (or (< len 9) (!= (bufget-u8 data 1) LOG_VERSION)
-            (< op 1) (> op 3) (!= len (if (= op 3) 10 9))
-            (and (= op 3) (> row 9)))
+            (< op 1) (> op 5) (!= len (if (or (= op 3) (= op 4)) 10 9))
+            (and (or (= op 3) (= op 4)) (> row 9)))
         (send-data (log_reply op seq token 1 row 12 log_fault))
         (if (atomic (if (and (>= log_owner 0) (= log_busy 0)) {
                 (setvar 'log_busy 1)
@@ -2170,17 +2256,23 @@
         (if (or (= log_snapshot_valid 0) (!= token log_snapshot_token)) {
             (looprange i 0 320
                 (bufset-u8 log_snapshot_buf i (bufget-u8 log_live i)))
+            (looprange i 0 320
+                (bufset-u8 log_diag_snapshot i (bufget-u8 log_diag_live i)))
+            (looprange i 0 12
+                (bufset-u8 log_fault_snapshot i (bufget-u8 log_fault_live i)))
             (setvar 'log_snapshot_fault log_fault)
             (setvar 'log_snapshot_token token)
             (setvar 'log_snapshot_valid 1)
         })
     })
-    (if (and (= op 3) (or (= log_snapshot_valid 0)
+    (if (and (or (= op 3) (= op 4) (= op 5)) (or (= log_snapshot_valid 0)
                            (!= token log_snapshot_token)))
         (setq status 3))
-    (var size (if (= status 0) (if (= op 2) 20 (if (= op 3) 44 12)) 12))
+    (var size (if (= status 0)
+                  (if (= op 2) 20 (if (or (= op 3) (= op 4)) 44
+                                      (if (= op 5) 24 12))) 12))
     (var reply (log_reply op seq token status row size
-                          (if (and (= status 0) (or (= op 2) (= op 3)))
+                          (if (and (= status 0) (or (= op 2) (= op 3) (= op 4) (= op 5)))
                               log_snapshot_fault log_fault)))
     (if (and (= status 0) (= op 2)) {
         (var count 0) (var rejected 0)
@@ -2198,6 +2290,13 @@
         (looprange i 0 32
             (bufset-u8 reply (+ 12 i)
                 (bufget-u8 log_snapshot_buf (+ (* 32 row) i)))))
+    (if (and (= status 0) (= op 4))
+        (looprange i 0 32
+            (bufset-u8 reply (+ 12 i)
+                (bufget-u8 log_diag_snapshot (+ (* 32 row) i)))))
+    (if (and (= status 0) (= op 5))
+        (looprange i 0 12
+            (bufset-u8 reply (+ 12 i) (bufget-u8 log_fault_snapshot i))))
     (send-data reply)
 })
 
@@ -2205,6 +2304,10 @@
 {
     (setvar 'log_live (bufcreate 320))
     (setvar 'log_snapshot_buf (bufcreate 320))
+    (setvar 'log_diag_live (bufcreate 320))
+    (setvar 'log_diag_snapshot (bufcreate 320))
+    (setvar 'log_fault_live (bufcreate 12))
+    (setvar 'log_fault_snapshot (bufcreate 12))
     (setvar 'log_snapshot_valid 0)
     (setvar 'log_snapshot_fault 0)
     (setvar 'log_fault 0)
