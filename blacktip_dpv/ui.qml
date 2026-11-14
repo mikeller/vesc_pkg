@@ -286,6 +286,17 @@ Item {
                 : qsTr("Complete snapshot in this Results page's RAM only. Save a CSV and check it outside VESC Tool, or take and check screenshots. A BLE disconnect or reconnect can erase these results.")
     }
 
+    function logVoltageMinConsistent(count, sum, minimum) {
+        if (!count) return minimum === 0
+        if (minimum > sum) return false
+        if (count === 1) return minimum === sum
+        // Each float32 addition can round down by at most one unit roundoff.
+        // Every sample is >= minimum, so sum >= count * minimum *
+        // (1 - 2^-24)^(count - 1), even when the count is large.
+        var retention = Math.pow(1 - 1 / 16777216, count - 1)
+        return minimum <= sum / (count * retention)
+    }
+
     function logReceive(view) {
         if (!VescIf.isPortConnected() ||
                 logConnectedDevice !== (VescIf.getConnectedUuid() || VescIf.getConnectedPortName())) {
@@ -334,8 +345,7 @@ Item {
                     !isFinite(d[1]) || !isFinite(d[2]) || !isFinite(d[3]) ||
                     !isFinite(d[5]) || !isFinite(d[6]) || d[5] < 0 || d[6] < 0 ||
                     (!d[0] && (d[1] || d[2] || d[3])) ||
-                    (!d[4] && (d[5] || d[6])) ||
-                    (d[4] && d[6] > d[5] / d[4])) {
+                    !logVoltageMinConsistent(d[4], d[5], d[6])) {
                 logFail(qsTr("Invalid diagnostic row."))
                 return
             }
