@@ -1875,6 +1875,7 @@ def test_strip_lisp_native_reader():
 
 HARNESS_LOOP_OPEN = '(loopwhile-thd THREAD_STACK_DISPLAY t {'
 HARNESS_IMPORT = '(import "generated/display_lut.bin" \'display_lut_bin)'
+HARNESS_SOURCE_END = '; Volatile 320-byte live buffer and 320-byte snapshot, ten 32-byte rows.'
 HARNESS_STUBS = """(define puts (lambda (s) nil))
 (define loop_budget 0)
 (define leds_g -1)
@@ -1912,8 +1913,11 @@ def display_harness_script(source, lut, body):
     """
     assert source.count(HARNESS_IMPORT) == 1 and source.count(HARNESS_LOOP_OPEN) == 1
     assert source.count('(define SLEEP_UI_UPDATE 0.25)') == 1
-    end = source.rindex('\n(init)\n')
-    text = source[:end] + '\n'
+    # The display harness executes only the preceding production display code.
+    # Later logging code is outside its scope and can exceed the native REPL's
+    # const-reader capacity; keep the enclosing const block well-formed.
+    assert source.count(HARNESS_SOURCE_END) == 1
+    text = source[:source.index(HARNESS_SOURCE_END)] + '\n@const-end\n'
     define = '(define display_lut_bin (bufcreate %d))\n' % len(lut)
     define += ''.join('(bufset-u8 display_lut_bin %d %d)\n' % (i, b) for i, b in enumerate(lut) if b)
     text = text.replace(HARNESS_IMPORT, define)
