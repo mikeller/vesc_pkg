@@ -2197,7 +2197,22 @@ mock_rig_result
 
 
 def run_all_tests():
-    """Run all test suites"""
+    """Run all test suites."""
+    global test_passes, test_failures
+    print("\n=== Testing signed telemetry production contracts ===")
+    fixture = subprocess.run(
+        [sys.executable, str(Path(__file__).with_name(
+            "test_signed_telemetry_fixture.py"))],
+        capture_output=True, text=True)
+    if fixture.returncode == 0:
+        test_passes += 1
+        print("✓ signed telemetry: production contract fixture")
+        print(fixture.stdout, end="")
+    else:
+        test_failures += 1
+        print("✗ signed telemetry: production contract fixture")
+        print(fixture.stdout, end="")
+        print(fixture.stderr, end="")
     print("\n╔══════════════════════════════════════════╗")
     print("║  BlackTip DPV Smoke Tests                ║")
     print("╚══════════════════════════════════════════╝")
