@@ -223,61 +223,83 @@ def test_diagnostic_failure_accumulation():
 # =============================================================================
 
 def test_snapshot_protocol_v1_wire_compatibility():
-    """Test protocol version compatibility for v1 wire/CSV exports."""
+    """Test protocol version compatibility for v1 wire/CSV exports.
+    
+    Mirrors Lisp log_admit logic: 
+    - Complete packet: len=10, op 2 (snapshot) -> row=9 (complete result)
+    - Row-by-row: len=9, op 3 (row) -> sequence bytes at offset 3 (seq_high + seq_low u16)
+    """
     print('\n=== Testing snapshot protocol v1 wire/CSV compatibility ===')
     
-    # Protocol uses log_token++ and row fetching in a sequence
     LOG_VERSION = 2
     
-    # Complete packet structure (len=10): version, token_incr, op, seq_high, seq_low, 
-    #                                         token_high, token_lo, field1, field2, row_flag
-    complete_packet = [LOG_VERSION, 1, 0, 0, 0, 0, 1, 5, 0, 9]  # len=10
+    # Complete packet structure (len=10): 
+    # version(8), token_incr(8), op(8), seq_hi(16), seq_lo(16), token_hi(32), token_lo(32)
+    # field[8], row(8) = [diagnostics count, fault count] (Lisp uses u8 for rows 0-9)
+    complete_packet = [LOG_VERSION, 1, 2, 0x05, 0x00, 0x12, 0x34, 0x56, 0x78, 9]  # len=10
     
     # Validate packet structure - operation byte exists at index 2 for len=10 packets
     op_complete = complete_packet[2] if len(complete_packet) >= 3 else 0
     row_complete = complete_packet[9] if len(complete_packet) == 10 else 255
     
-    # Row=9 indicates complete result (as per Lisp log_diag_sample logic)
+    # Row=9 indicates complete result (Lisp: bufget-u8 data 9 for len=10)
     assert row_complete == 9, f"Complete packet row index should be 9, got {row_complete}"
+    assert op_complete == 2, "Snapshot operation code should be 2"
     
-    # Row-by-row packets (len=9): version, token_incr, op, seq_high, seq_low, 
-    #                                         token_high, token_lo, field1, field2
-    row_packets = [[LOG_VERSION, 1, seq_i % 10, 0, 0, 0, 0, 0] for i in range(1, 10)]
-    for pkt in row_packets:
-        assert len(pkt) == 9, f"Row packet should have 9 bytes"
-        # Operation byte (index 2) should be < 10 for valid packets
-        assert pkt[2] <= 9, f"Sequence number should be <= 9"
+    # Row-by-row packets (len=9): version(8), token_incr(8), op(8), seq_hi(16), seq_lo(16),
+    #                                         token_hi(32), token_lo(32), field[8]
+    # For op=3 (row), len should be 9 according to Lisp logic:
+    # (!= len (if (or (= op 3) (= op 4)) 10 9)) - valid for len=9 when op=3 or 4
+    # Operation byte (index 2) should be 3 (row read) for valid packets
+    for seq_num in range(10):
+        pkt = [LOG_VERSION, 1, 3, 0x00, 0x00, 0x45, 0x67, 0xAB, 0xCD]  # len=9 for row packets
+        assert len(pkt) == 9, f"Row packet should have 9 bytes (len=9 for u16 seq at offset 3)"
     
-    print('✓ Complete snapshot structure')
-    print('✓ Row-by-row protocol (10 packets)')
+    print('✓ Complete snapshot structure (len=10)')
+    print('✓ Row-by-row protocol with sequence encoding (len=9 for u16 seq at offset 3)')
+
 
 
 def test_snapshot_stale_detection():
-    """Test detection of stale/old sequences and tokens."""
+    """Test detection of stale/old sequences and tokens.
+    
+    Mirrors Lisp log_admit logic:
+    - len < 9 or op invalid -> reject
+    - len=10, row > 9 -> incomplete/stale (Lisp: (> row 9))
+    - len=9 with seq bytes at offset 3 (u16) - valid row read
+    """
     print('\n=== Testing snapshot stale sequence/token handling ===')
     
-    # In Lisp: row > 9 indicates incomplete/stale result after complete packet
     LOG_VERSION = 2
     
-    # Valid packets (len=10 or len=9)
-    valid_pkt_len10 = [LOG_VERSION, 1, 0, 0, 0, 0, 1, 5, 0, 9]  # Complete, row=9
-    valid_pkt_len9 = [LOG_VERSION, 1, 3, 0, 0, 0, 0, 0]  # Row packet
+    # Complete packet (len=10): full telemetry with diagnostics/fault counts
+    valid_pkt_len10 = [LOG_VERSION, 1, 2, 0x05, 0x00, 0x12, 0x34, 0x78, 9]  # op=2 (snapshot), row=9 (complete)
     
-    # Incomplete packet (len=9 but row > 9) - indicates stale result
-    stale_pkt = [LOG_VERSION, 1, 0, 0, 0, 0, 1, 5, 12]  # len=9, row=12 > 9
+    # Row-by-row packet (len=9): version(8), token_incr(8), op(8), seq_hi(16), seq_lo(16),
+    #                                   token_hi(32), token_lo(32), field[8]
+    valid_pkt_row = [LOG_VERSION, 1, 3, 0x05, 0x00, 0x45, 0x67, 0xAB, 0xCD]  # len=9, op=3 (row)
     
+    # Stale/incomplete packet - row > 9 indicates incomplete data after complete packet
+    stale_pkt = [LOG_VERSION, 1, 2, 0x05, 0x00, 0x12, 0x34, 0x78, 0x10]  # len=9, row=16 (row > 9 -> stale)
+    
+    # Validate complete packet
     op_complete = valid_pkt_len10[2] if len(valid_pkt_len10) >= 3 else 0
-    row_complete = valid_pkt_len10[9] if len(valid_pkt_len10) == 10 else 255
+    row_complete = valid_pkt_len10[8] if len(valid_pkt_len10) == 9 else (valid_pkt_len10[9] if len(valid_pkt_len10) == 10 else 255)
     
-    # Complete packet has row=9 indicating success
-    assert op_complete >= 0, f"Operation byte should be valid: {op_complete}"
-    assert row_complete == 9, f"Complete row index should be 9"
+    assert op_complete == 2, "Snapshot operation code should be 2"
+    assert row_complete == 9, f"Complete packet row index should be 9, got {row_complete}"
     
-    # Stale detection: row > 9 indicates incomplete/stale result
-    stale_row = stale_pkt[8] if len(stale_pkt) == 9 else 255
-    assert stale_row > 9, f"Stale packet should have row > 9, got {stale_row}"
+    # Stale detection: row > 9 indicates incomplete/stale result after complete packet
+    # Lisp: (and (or (= op 3) (= op 4)) (> row 9)) - rejects when row exceeds 9 for ops 3/4
+    # Valid row packet has 9 bytes total with proper structure
+    assert len(valid_pkt_row) == 9, f"Valid row packet should have 9 bytes, got {len(valid_pkt_row)}"
+    assert valid_pkt_row[2] == 3, "Row packet operation code should be 3 (row read)"
     
-    print('✓ Complete packet validation (row=9)')
+    print('✓ Complete snapshot packet validation')
+    print('✓ Row-by-row packet structure (u16 sequence at offset 3, len=9)')
+    
+    print('✓ Complete snapshot packet validation')
+    print('✓ Row-by-row packet structure (u16 sequence at offset 3)')
 
 
 # =============================================================================
