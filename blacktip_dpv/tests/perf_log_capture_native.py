@@ -14,6 +14,8 @@ def check(repl):
     production = production.replace('(systime)', '(mock-systime)')
     production = production.replace('(eeprom-store-i ', '(mock-eeprom-store-i ')
     production = production.replace('(secs-since deadline)', '(mock-secs-since deadline)')
+    production = production.replace('(conf-get ', '(mock-conf-get ')
+    production = production.replace('(get-fault)', '(mock-get-fault)')
     production = production.replace('(loopwhile t {',
         '(loopwhile (< mock_owner_ticks 4) { (setvar \'mock_owner_ticks (+ mock_owner_ticks 1)) '
         '(if (= mock_owner_ticks 3) (setvar \'speed 0))', 1)
@@ -23,7 +25,9 @@ def check(repl):
 (define LOG_PREFIX 177) (define LOG_VERSION 1)
 (define LOG_MAX_COUNT 4294967294u32) (define SPEED_OFF 99)
 (define LOG_SAMPLE_PERIOD 0.2) (define THREAD_STACK_LOG 160)
-(define log_live nil) (define log_snapshot_buf nil)
+(define log_live (bufcreate 320)) (define log_snapshot_buf (bufcreate 320))
+(define log_diag_live (bufcreate 320)) (define log_diag_snapshot (bufcreate 320))
+(define log_fault_live (bufcreate 12)) (define log_fault_snapshot (bufcreate 12))
 (define log_snapshot_valid 0) (define log_snapshot_fault 0)
 (define log_fault 0) (define log_snapshot_token 0)
 (define log_previous_speed SPEED_OFF) (define log_previous_eligible 0)
@@ -31,6 +35,8 @@ def check(repl):
 (define speed SPEED_OFF) (define soft_start_active 0)
 (define safe_start_status 'idle)
 (define mock_owner_ticks 0) (define mock_duty 0.4) (define mock_getter_failure 0)
+(define mock_invert 0) (define mock_conf_failure 0) (define mock_fault_code 0)
+(define mock_fault_failure 0)
 (define mock_current_in 2.0) (define mock_rpm 100.0) (define mock_voltage 30.0)
 (define mock_nonfinite 0) (define mock_nonfinite_buf (bufcreate 4))
 (define last_reply nil) (define reply_count 0)
@@ -47,6 +53,10 @@ def check(repl):
         (if (= mock_nonfinite 1) (bufget-f32 mock_nonfinite_buf 0) mock_current_in)))
 (defun mock-get-current () 3.0)
 (defun mock-get-vin () mock_voltage) (defun mock-get-duty () mock_duty)
+(defun mock-conf-get (key)
+    (if (= mock_conf_failure 1) (car 1) mock_invert))
+(defun mock-get-fault ()
+    (if (= mock_fault_failure 1) (car 1) mock_fault_code))
 (defun mock-send-data (b) {
     (setvar 'last_reply b) (setvar 'reply_count (+ reply_count 1)) t
 })
@@ -83,6 +93,25 @@ def check(repl):
 ''')
     assert result == '(2 0 0 1 3u32 12.500000f32)', result
     print('native production snapshot protocol: immutable rows and captured fault:', result)
+
+    result = run('''
+(setvar 'log_live (bufcreate 320)) (setvar 'log_snapshot_buf (bufcreate 320))
+(setvar 'log_diag_live (bufcreate 320)) (setvar 'log_diag_snapshot (bufcreate 320))
+(setvar 'log_fault_live (bufcreate 12)) (setvar 'log_fault_snapshot (bufcreate 12))
+(bufset-u32 log_diag_live 0 9) (bufset-f32 log_diag_live 4 0.1)
+(bufset-u32 log_fault_live 0 4)
+(log_serve '(2 1 42 255))
+(bufset-u32 log_diag_live 0 99) (bufset-f32 log_diag_live 4 99.0)
+(bufset-u32 log_fault_live 0 99)
+(log_serve '(4 2 42 0))
+(define diag_count (bufget-u32 last_reply 12))
+(define diag_sum (bufget-f32 last_reply 16))
+(log_serve '(5 3 42 255))
+(list diag_count diag_sum (bufget-u32 last_reply 12)
+      (bufget-u32 log_diag_snapshot 4))
+''')
+    assert result == '(9u32 0.100000f32 4u32 1036831949u32)', result
+    print('native production snapshot: diagnostic binary32 and fault buffers are immutable:', result)
 
     result = run('''
 (setvar 'log_live (bufcreate 320))
@@ -158,6 +187,65 @@ def check(repl):
 ''')
     assert result == '(1u32 -2.000000f32 -60.000000f32 0)', result
     print('native production sampler: signed current and power retained:', result)
+
+    result = run('''
+(setvar 'log_diag_live (bufcreate 320))
+(looprange i 0 4 {
+    (setvar 'mock_invert (if (or (= i 2) (= i 3)) 1 0))
+    (var target (if (or (= i 1) (= i 3)) -100.0 100.0))
+    (var rpm (if (or (= i 1) (= i 3)) -80.0 80.0))
+    (log_diag_sample i rpm target 30.0)
+})
+(list (bufget-f32 log_diag_live 12) (bufget-f32 log_diag_live 44)
+      (bufget-f32 log_diag_live 76) (bufget-f32 log_diag_live 108))
+''')
+    assert result == '(20.000000f32 -20.000000f32 -180.000000f32 180.000000f32)', result
+    print('native production diagnostics: four sign/inversion combinations:', result)
+
+    result = run('''
+(setvar 'log_diag_live (bufcreate 320)) (setvar 'mock_invert 0)
+(define unset_min (bufget-u32 log_diag_live 24))
+(log_diag_sample 0 1.0 2.0 30.5)
+(log_diag_sample 0 1.0 2.0 31.0)
+(log_diag_sample 0 1.0 2.0 29.8)
+(list unset_min (bufget-u32 log_diag_live 16)
+      (bufget-f32 log_diag_live 20) (bufget-f32 log_diag_live 24))
+''')
+    assert result == '(0u32 3u32 91.300003f32 29.799999f32)', result
+    print('native production diagnostics: unknown minimum initialises then tracks lower voltage:', result)
+
+    result = run('''
+(setvar 'log_diag_live (bufcreate 320))
+(bufset-u32 log_diag_live 16 LOG_MAX_COUNT)
+(bufset-f32 log_diag_live 24 12.5)
+(log_diag_sample 0 1.0 2.0 10.0)
+(list (bufget-u32 log_diag_live 16) (bufget-f32 log_diag_live 24)
+      (bufget-u32 log_diag_live 28))
+''')
+    assert result == '(4294967294u32 12.500000f32 1u32)', result
+    print('native production diagnostics: saturated voltage count preserves minimum and records failure:', result)
+
+    result = run('''
+(setvar 'log_live (bufcreate 320)) (setvar 'log_diag_live (bufcreate 320))
+(setvar 'log_fault_live (bufcreate 12)) (setvar 'log_fault 0)
+(setvar 'log_previous_speed 5) (setvar 'log_previous_eligible 1) (setvar 'speed 5)
+(setvar 'mock_conf_failure 1) (log_sample)
+(list (bufget-u32 log_live 160) (bufget-u32 log_live 188)
+      (bufget-u32 log_diag_live 188) log_fault)
+''')
+    assert result == '(1u32 0u32 1u32 0)', result
+    print('native production sampler: optional direction getter failure preserves legacy sample:', result)
+
+    result = run('''
+(setvar 'log_fault_live (bufcreate 12)) (setvar 'log_fault 1)
+(setvar 'speed SPEED_OFF) (setvar 'log_previous_eligible 0)
+(setvar 'mock_fault_failure 1) (log_sample)
+(setvar 'mock_fault_failure 0) (setvar 'mock_fault_code 7) (log_sample)
+(list (bufget-u32 log_fault_live 0) (bufget-u32 log_fault_live 4)
+      (bufget-u32 log_fault_live 8))
+''')
+    assert result == '(1u32 7u32 1u32)', result
+    print('native production sampler: stopped-state fault polling and getter-failure count:', result)
 
     result = run('''
 (setvar 'log_live (bufcreate 320)) (setvar 'log_fault 0)

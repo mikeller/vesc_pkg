@@ -28,10 +28,13 @@ def run():
         return None
     qml = (ROOT / 'ui.qml').read_text()
     receive = body_after(qml, 'function logReceive(view)')
+    voltage_consistent = body_after(qml, 'function logVoltageMinConsistent(count, sum, minimum)')
     assert 'function logTokenText(token)' in qml
     token_text = body_after(qml, 'function logTokenText(token)')
     fail = body_after(qml, 'function logFail(message)')
+    finish = body_after(qml, 'function logFinish()')
     request = body_after(qml, 'function logRequest(op, row)')
+    download_diagnostics = body_after(qml, 'function logDownloadDiagnostics()')
     app_signal = body_after(qml, 'function onStateChanged(state)')
     timer_at = qml.index('id: logTimeout')
     timeout = body_after(qml, 'onTriggered:', timer_at)
@@ -39,7 +42,8 @@ def run():
     csv = body_after(qml, 'function logCsv(snapshot)')
     documents_path = body_after(qml, 'function logDocumentsPath()')
     save = body_after(qml, 'function logSaveCsv()')
-    scripts = [receive, fail, request, app_signal, timeout, token_text,
+    scripts = [receive, voltage_consistent, fail, finish, request, download_diagnostics,
+               app_signal, timeout, token_text,
                csv_cell, csv, documents_path, save]
     encoded = [base64.b64encode(part.encode()).decode() for part in scripts]
     fixture = r'''
@@ -69,8 +73,11 @@ for (const [value, expected] of [[1,'0x1'],[0x7fffffff,'0x7fffffff'],
 }
 if(tokenText(0xfffffffe)===tokenText(0xffffffff))throw Error('adjacent tokens collapsed');
 const receive=vm.runInContext('(function(view){'+source('RECEIVE')+'\n})',ctx);
+q.logVoltageMinConsistent=vm.runInContext('(function(count,sum,minimum){'+source('VOLTAGE_CONSISTENT')+'\n})',ctx);
 q.logFail=vm.runInContext('(function(message){'+source('FAIL')+'\n})',ctx);
+q.logFinish=vm.runInContext('(function(){'+source('FINISH')+'\n})',ctx);
 q.logRequest=vm.runInContext('(function(op,row){'+source('REQUEST')+'\n})',ctx);
+q.logDownloadDiagnostics=vm.runInContext('(function(){'+source('DOWNLOAD_DIAGNOSTICS')+'\n})',ctx);
 const suspended=vm.runInContext('(function(state){'+source('SUSPEND')+'\n})',ctx);
 const timeout=vm.runInContext('(function(){'+source('TIMEOUT')+'\n})',ctx);
 const csvCell=vm.runInContext('(function(value){'+source('CSV_CELL')+'\n})',ctx);
@@ -78,10 +85,10 @@ const csv=vm.runInContext('(function(snapshot){'+source('CSV')+'\n})',ctx);
 q.logCsv=csv;q.logCsvCell=csvCell;
 const save=vm.runInContext('(function(){'+source('SAVE')+'\n})',ctx);
 q.logSaveCsv=save;
-function reply(op,row,length,fault=0,sequence=q.logSequence,token=q.logToken){
+function reply(op,row,length,fault=0,sequence=q.logSequence,token=q.logToken,status=0){
  const b=new ArrayBuffer(length),v=new DataView(b);
  v.setUint8(1,1);v.setUint8(2,op);v.setUint16(3,sequence);
- v.setUint32(5,token);v.setUint8(9,0);v.setUint8(10,row);v.setUint8(11,fault);return v;
+ v.setUint32(5,token);v.setUint8(9,status);v.setUint8(10,row);v.setUint8(11,fault);return v;
 }
 const summary=reply(2,255,20);new DataView(summary.buffer).setUint32(12,10);
 receive.call(q,summary);
@@ -94,7 +101,30 @@ for(let row=0;row<10;row++){
  v.setFloat32(36,6);v.setUint32(40,0);receive.call(q,v);
 }
 if(!q.logComplete||q.logComplete.rows.length!==10||q.logPending!==0)
- throw Error('production handler did not commit all ten rows');
+ throw Error('production handler did not commit all ten legacy rows');
+q.logDownloadDiagnostics();
+if(q.logPending!==5)throw Error('optional diagnostics request did not use opcode 5');
+const faultSummary=reply(5,255,24);faultSummary.setUint32(12,0);faultSummary.setUint32(16,0);faultSummary.setUint32(20,0);
+receive.call(q,faultSummary);
+if(q.logPending!==4||q.logRow!==0)throw Error('fault summary did not advance to diagnostic rows');
+for(let row=0;row<10;row++){
+ if(q.logRow!==row)throw Error('production diagnostic request order mismatch at '+row);
+ const v=reply(4,row,44);v.setUint32(12,1);
+ v.setFloat32(16,0.1);v.setFloat32(20,0.2);v.setFloat32(24,0.3);
+ v.setUint32(28,1);v.setFloat32(32,0.1);v.setFloat32(36,0.1);
+ v.setUint32(40,0);receive.call(q,v);
+}
+if(!q.logComplete||q.logComplete.rows.length!==10||q.logComplete.diagnostics.length!==10||
+ q.logComplete.diagnostics[0][1]!==0.10000000149011612||q.logPending!==0)
+ throw Error('production diagnostic transaction or Float32 telemetry decoding failed');
+// Older v1 devices reject the additive fault-summary request. Fallback finishes
+// an otherwise valid snapshot and keeps diagnostics absent rather than invented.
+q.logComplete={token:51,rows:q.logComplete.rows,fault:0,device:'device'};
+q.logPending=0;q.logToken=51;q.logSequence++;
+q.logDownloadDiagnostics();
+receive.call(q,reply(5,255,12,0,q.logSequence,q.logToken,1));
+if(q.logComplete.diagnostics!==undefined||q.logPending!==0)
+ throw Error('v1 fallback did not finish without fabricating diagnostic data');
 const exported={token:0xffffffff,downloaded:'2026-11-08T12:34:56.789Z',firmware:'7.00',
  hardware:'MK5',device:'device, "A"',fault:3,
  rows:Array.from({length:10},(_,i)=>[i+1,1.25+i,2.5,3.75,4.5,5.25,6.5,7])};
@@ -135,6 +165,8 @@ receive.call(q,reply(2,255,20,0,q.logSequence-1,q.logToken));
 if(q.logPending!==2)throw Error('stale sequence mutated the transaction');
 receive.call(q,new DataView(new ArrayBuffer(8)));
 if(q.logPending!==2)throw Error('malformed packet mutated the transaction');
+receive.call(q,reply(2,255,19));
+if(q.logPending!==2)throw Error('malformed v1 response length mutated the transaction');
 receive.call(q,reply(2,255,20,0,q.logSequence,q.logToken+1));
 if(q.logPending!==2)throw Error('stale token mutated the transaction');
 // A fault mismatch fails the transfer but preserves the last complete result.
@@ -158,7 +190,9 @@ if(recreated.logComplete!==null || q.logComplete!==previous)
   sent:q.mCommands.sent.length,timeoutFailures:q.logTimeout.stops}));
 '''
     assert qml.count('.arg(logTokenText(logComplete.token))') == 2
-    for name, value in zip(('RECEIVE', 'FAIL', 'REQUEST', 'SUSPEND', 'TIMEOUT', 'TOKEN_TEXT', 'CSV_CELL', 'CSV', 'DOCUMENTS_PATH', 'SAVE'), encoded):
+    for name, value in zip(('RECEIVE', 'VOLTAGE_CONSISTENT', 'FAIL', 'FINISH', 'REQUEST', 'DOWNLOAD_DIAGNOSTICS',
+                            'SUSPEND', 'TIMEOUT', 'TOKEN_TEXT', 'CSV_CELL',
+                            'CSV', 'DOCUMENTS_PATH', 'SAVE'), encoded):
         fixture = fixture.replace(name, value)
     with tempfile.TemporaryDirectory() as temp:
         path = Path(temp) / 'qml-fixture.js'
