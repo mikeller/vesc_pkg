@@ -256,17 +256,30 @@ def test_performance_log_ram_snapshot_contract():
               'each download uses a fresh snapshot transaction token')
     assert_eq('logRows.length !== logRow' in qml and 'logRows.length !== 9' not in qml, True,
               'QML accepts rows only in ordered snapshot sequence')
-    assert_eq('logComplete = { token: logToken, rows: rows' in qml, True,
-              'complete validated rows replace the prior phone-RAM snapshot')
+    assert_eq('logPendingSnapshot = { token: logToken, rows: rows' in qml, True,
+              'validated base rows stage before extension diagnostics complete')
     results = qml[qml.index('Page {', qml.index('// Results page')):]
     assert_eq('Check device status' not in results and 'Device status' not in results, True,
               'Results page has no separate device-status control or label')
     assert_eq('logExpectedFault = fault' in qml and
-              'logComplete = { token: logToken, rows: rows, fault: logExpectedFault' in qml, True,
-              'snapshot summary fault state is retained with complete results')
+              'logPendingSnapshot.diagnosticStatus = status' in qml and
+              'logComplete = logPendingSnapshot' in qml, True,
+              'base fault state and diagnostic status commit together')
     assert_eq('WARNING: logging fault; collection frozen' in qml and
               'logComplete.fault !== 0' in results, True,
               'a fault-bearing snapshot is visibly warned on the Results page')
+    assert_eq('function logCsv(snapshot)' in qml and
+              'diagnostic_status,' in qml and
+              'diagnosticStatus === "available"' in qml and
+              'logComplete.diagnostics' not in qml, True,
+              'one versioned CSV exports blank diagnostics with explicit status')
+    assert_eq('logRequest(5, 255)' in qml and 'logRequest(4, 0)' in qml and
+              'logToken++' in qml, True,
+              'base and diagnostic reads share the snapshot transaction token')
+    assert_eq('blacktip-results-v2-' in qml and 'Verified CSV readback' in qml, True,
+              'one saved CSV is read back before success is reported')
+    assert_eq('successful readback inside VESC Tool does not prove the file is accessible elsewhere' in qml, True,
+              'mobile file visibility is explicitly distinguished from readback')
 
 
 def test_results_page_swipeview_position():
