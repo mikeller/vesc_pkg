@@ -39,7 +39,10 @@ def run():
     scripts = [body_after(qml, marker) for marker in markers]
     encoded = [base64.b64encode(part.encode()).decode() for part in scripts]
     fixture = r'''
-const vm=require('vm'), q={logComplete:{old:true},logPendingSnapshot:null,
+const vm=require('vm'), q={logComplete:{token:50,rows:Array.from({length:10},()=>[0,0,0,0,0,0,0,0]),
+ diagnostics:Array.from({length:10},()=>[1,98765,0,0,0,0,0,0]),
+ faultSamples:[2,9,1],diagnosticStatus:'available',fault:0,device:'device',
+ downloaded:'old',firmware:'7.00',hardware:'MK5'},logPendingSnapshot:null,
  logRows:[],logDiagnostics:[],logFaultSamples:null,logToken:51,logSequence:8,
  logPending:2,logRow:255,logRetries:0,logExpectedCount:0,logExpectedRejected:0,
  logExpectedFault:0,logConnectedDevice:'device',firmwareVersion:'7.00',
@@ -97,6 +100,7 @@ if(q.logComplete.diagnosticStatus!=='unsupported'||q.logComplete.diagnostics!==u
  throw Error('unsupported diagnostics were fabricated or not labelled');
 const csv=q.logCsv(q.logComplete), lines=csv.trimEnd().split('\n');
 if(!csv.includes('diagnostic_status,unsupported\n')||lines.length!==29||
+ csv.includes('98765')||csv.includes('nonzero_fault_samples,2')||
  !lines.slice(19).every(line=>line.split(',').length===17&&line.split(',').slice(9).every(x=>x==='')))
  throw Error('unified CSV invalid: '+JSON.stringify({length:lines.length,status:csv.includes('diagnostic_status,unsupported\n'),row:lines[19]}));
 q.logSaveCsv();
@@ -117,14 +121,24 @@ if(q.logComplete!==available||available.diagnosticStatus!=='available'||
  throw Error('valid diagnostic rows did not commit with the base snapshot');
 // A diagnostic failure commits the already-complete base with explicit blank
 // extension fields, rather than discarding base rows or carrying old details.
+// Seed a prior diagnostic result again before the failed extension path.
+q.logComplete={token:53,rows:q.logComplete.rows,
+ diagnostics:Array.from({length:10},()=>[1,98765,0,0,0,0,0,0]),
+ faultSamples:[2,9,1],diagnosticStatus:'available',fault:0,device:'device'};
 const base={token:q.logToken,rows:q.logComplete.rows,fault:0,device:'device',
  downloaded:'now',firmware:'7.00',hardware:'MK5'};
 q.logPendingSnapshot=base;q.logPending=4;q.logExpectedFault=0;
 q.logFail('diagnostics failed');
 if(q.logComplete!==base||base.diagnosticStatus!=='failed'||
  !q.logCsv(base).includes('diagnostic_status,failed\n')||
+ q.logCsv(base).includes('98765')||q.logCsv(base).includes('nonzero_fault_samples,2')||
  q.logCsv(base).split('\n')[19].split(',').slice(9).some(x=>x!==''))
  throw Error('failed diagnostics did not retain base with blank labelled values');
+q.logSaveCsv();
+const failedExport=Buffer.from(Object.values(q.files)[Object.values(q.files).length-1]).toString();
+if(!failedExport.includes('diagnostic_status,failed\n')||failedExport.includes('98765')||
+ failedExport.includes('nonzero_fault_samples,2'))
+ throw Error('failed-extension CSV exported diagnostics from the prior snapshot');
 // A later failed transaction must retain the last committed snapshot.
 q.logPending=2;q.logSequence++;receive.call(q,reply(2,255,12,0,q.logSequence-1));
 if(q.logComplete.diagnosticStatus!=='failed')
