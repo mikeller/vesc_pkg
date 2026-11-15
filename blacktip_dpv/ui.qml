@@ -90,64 +90,56 @@ Item {
             return qsTr("VESC Tool cannot determine a local Documents location here. Keep screenshots of all ten speeds as a fallback.")
         var location = qsTr("VESC Tool's Documents location on this device: %1").arg(directory)
         if (Qt.platform.os === "osx")
-            return location + qsTr(" On macOS, open Finder > Go > Go to Folder and paste this directory path; look for blacktip-results-*.csv.")
+            return location + qsTr(" On macOS, open Finder > Go > Go to Folder and paste this directory path; look for blacktip-results-v2-*.csv.")
         if (Qt.platform.os === "windows")
-            return location + qsTr(" On Windows, paste this directory path into File Explorer's address bar; look for blacktip-results-*.csv.")
+            return location + qsTr(" On Windows, paste this directory path into File Explorer's address bar; look for blacktip-results-v2-*.csv.")
         if (Qt.platform.os === "linux")
-            return location + qsTr(" On Linux, paste this directory path into your file manager's location bar; look for blacktip-results-*.csv.")
+            return location + qsTr(" On Linux, paste this directory path into your file manager's location bar; look for blacktip-results-v2-*.csv.")
         if (Qt.platform.os === "android")
             return location + qsTr(" On Android, try Files or a computer connected by USB. This may be an app-specific directory that Files cannot browse; a successful readback inside VESC Tool does not prove the file is accessible elsewhere.")
         if (Qt.platform.os === "ios")
             return location + qsTr(" On iOS, try Files > On My iPhone/iPad > VESC Tool. The app's Documents directory is sandboxed and may not appear in Files; a successful readback inside VESC Tool does not prove it is accessible elsewhere.")
-        return location + qsTr(" Look for blacktip-results-*.csv. The location may not be accessible in a file manager.")
+        return location + qsTr(" Look for blacktip-results-v2-*.csv. The location may not be accessible in a file manager.")
     }
 
     function logCsvCell(value) {
         return "\"" + String(value).replace(/"/g, "\"\"") + "\""
     }
 
+    // One versioned file per completed base snapshot. Diagnostics are optional
+    // and committed only after the fault summary and all ten rows pass validation.
     function logCsv(snapshot) {
-        var lines = ["field,value", "snapshot_token," + logCsvCell(logTokenText(snapshot.token)),
+        var diagnostics = snapshot.diagnosticStatus === "available"
+        var fault = diagnostics ? snapshot.faultSamples : null
+        var lines = ["field,value", "schema,blacktip-results-v2",
+                     "snapshot_token," + logCsvCell(logTokenText(snapshot.token)),
                      "phone_download," + logCsvCell(snapshot.downloaded),
                      "firmware," + logCsvCell(snapshot.firmware),
                      "hardware," + logCsvCell(snapshot.hardware),
                      "device," + logCsvCell(snapshot.device),
                      "logging_fault," + snapshot.fault,
-                     "", "speed,valid_samples,sum_abs_erpm,sum_input_current_A,sum_input_power_W,sum_abs_erpm_error,sum_abs_duty,peak_abs_phase_current_A,rejected_samples"]
-        for (var i = 0; i < 10; i++) {
-            var row = snapshot.rows[i]
-            lines.push([i].concat(row).join(","))
-        }
-        return lines.join("\n") + "\n"
-    }
-
-    // Additive export only: never append columns to the original v1 CSV.
-    // Diagnostic counts are independent of the v1 valid-sample count; an empty
-    // voltage row has an unknown minimum, not a measured zero.
-    function logDiagnosticCsv(snapshot) {
-        if (!snapshot.diagnostics || !snapshot.faultSamples) return ""
-        var fault = snapshot.faultSamples
-        var lines = ["field,value", "schema,blacktip-results-diagnostics-v2",
-                     "snapshot_token," + logCsvCell(logTokenText(snapshot.token)),
-                     "units,erpm;V;sample_counts",
+                     "diagnostic_status," + snapshot.diagnosticStatus,
                      "target_frame,raw_get-rpm-set_controller_command_not_ramped_pid",
                      "rpm_frame,signed_get-rpm",
                      "signed_error,direction_normalised_target_minus_signed_rpm",
                      "limit_reason,unavailable",
                      "fault_scope,controller_get-fault_polled_each_logger_tick_not_event_history",
-                     "nonzero_fault_samples," + fault[0],
-                     "last_nonzero_fault_code," + (fault[0] ? fault[1] : ""),
-                     "fault_read_failures," + fault[2],
-                     "", "speed,command_valid_samples,mean_raw_controller_target_erpm,mean_signed_erpm,mean_signed_error_erpm,voltage_valid_samples,mean_bus_voltage_V,min_bus_voltage_V,diagnostic_failures"]
-        for (var i = 0; i < 10; i++) {
-            var d = snapshot.diagnostics[i]
-            lines.push([i, d[0], d[0] ? d[1] / d[0] : "",
-                        d[0] ? d[2] / d[0] : "", d[0] ? d[3] / d[0] : "",
-                        d[4], d[4] ? d[5] / d[4] : "",
-                        d[4] ? d[6] : "", d[7]].join(","))
-        }
-        return lines.join("\n") + "\n"
-    }
+                     "nonzero_fault_samples," + (fault ? fault[0] : ""),
+                     "last_nonzero_fault_code," + (fault && fault[0] ? fault[1] : ""),
+                     "fault_read_failures," + (fault ? fault[2] : ""),
+                     "", "speed,valid_samples,sum_abs_erpm_eRPM,sum_input_current_A,sum_input_power_W,sum_abs_erpm_error_eRPM,sum_abs_duty_fraction,peak_abs_phase_current_A,rejected_samples,command_valid_samples,mean_raw_controller_target_eRPM,mean_signed_eRPM,mean_signed_error_eRPM,voltage_valid_samples,mean_bus_voltage_V,min_bus_voltage_V,diagnostic_failures"]
+         for (var i = 0; i < 10; i++) {
+             var row = snapshot.rows[i]
+            var d = diagnostics ? snapshot.diagnostics[i] : null
+            lines.push([i].concat(row, d ? [d[0], d[0] ? d[1] / d[0] : "",
+                                             d[0] ? d[2] / d[0] : "",
+                                             d[0] ? d[3] / d[0] : "",
+                                             d[4], d[4] ? d[5] / d[4] : "",
+                                             d[4] ? d[6] : "", d[7]]
+                                       : ["", "", "", "", "", "", "", ""]).join(","))
+         }
+         return lines.join("\n") + "\n"
+     }
 
     function logDocumentsPath() {
         // Qt.labs.platform returns a URL, while LogWriter and Utility use local paths.
@@ -171,18 +163,16 @@ Item {
     }
 
     function logSaveCsv() {
-        var enhanced = arguments[0] === true
         if (!logComplete) return
-        if (enhanced && (!logComplete.diagnostics || !logComplete.faultSamples)) return
         var snapshot = logComplete
         var directory = logDocumentsPath()
         if (!directory) {
             logExportMessage = qsTr("Cannot determine a local Documents directory. Results remain on this page; take screenshots.")
             return
         }
-        var filename = (enhanced ? "blacktip-diagnostics-v2-" : "blacktip-results-") + Date.now() + "-" + logTokenText(snapshot.token) + ".csv"
+        var filename = "blacktip-results-v2-" + Date.now() + "-" + logTokenText(snapshot.token) + ".csv"
         var path = directory.replace(/\/$/, "") + "/" + filename
-        var contents = enhanced ? logDiagnosticCsv(snapshot) : logCsv(snapshot)
+        var contents = logCsv(snapshot)
         try {
             if (!logWriter.openLogFileFullPath(path)) throw new Error("open")
             if (!logWriter.writeToLogFile(contents)) throw new Error("write")
@@ -205,6 +195,11 @@ Item {
 
     function logFail(message) {
         logTimeout.stop()
+        if (logPendingSnapshot && (logPending === 4 || logPending === 5)) {
+            logFinish("failed")
+            logMessage = message + qsTr(" Diagnostics failed; the complete base snapshot remains available with unknown diagnostic values. ") + logMessage
+            return
+        }
         logPending = 0
         logRows = []
         logPendingSnapshot = null
@@ -255,29 +250,13 @@ Item {
         logRequest(2, 255)
     }
 
-    function logDownloadDiagnostics() {
-        // Explicit second request on the same snapshot token. Old firmware can
-        // reject/ignore op 5 without affecting the already downloaded v1 rows.
-        if (logPending || !logComplete || !VescIf.isPortConnected() ||
-                logComplete.device !== (VescIf.getConnectedUuid() || VescIf.getConnectedPortName()) ||
-                logComplete.token !== logToken || logComplete.diagnostics) return
-        logPendingSnapshot = { token: logComplete.token, rows: logComplete.rows,
-                               fault: logComplete.fault, downloaded: logComplete.downloaded,
-                               firmware: logComplete.firmware, hardware: logComplete.hardware,
-                               device: logComplete.device }
-        logConnectedDevice = logComplete.device
-        logExpectedFault = logComplete.fault
-        logDiagnostics = []
-        logFaultSamples = null
-        logRetries = 0
-        logMessage = qsTr("Downloading optional diagnostics for this snapshot.")
-        logRequest(5, 255)
-    }
-
-    function logFinish() {
+    function logFinish(status) {
+        logTimeout.stop()
+        logPendingSnapshot.diagnosticStatus = status
         logComplete = logPendingSnapshot
         logPendingSnapshot = null
         logDiagnostics = []
+        logFaultSamples = null
         logExportMessage = ""
         logRows = []
         logPending = 0
@@ -317,7 +296,7 @@ Item {
             if (view.byteLength !== 12) return
             if (logPending === 5 && status === 1 && logPendingSnapshot) {
                 logTimeout.stop()
-                logFinish()
+                logFinish("unsupported")
                 return
             }
             logFail(qsTr("Device rejected snapshot request (status %1).").arg(status))
@@ -356,7 +335,7 @@ Item {
             else {
                 logPendingSnapshot.diagnostics = logDiagnostics.slice(0)
                 logPendingSnapshot.faultSamples = logFaultSamples
-                logFinish()
+                logFinish("available")
             }
             return
         }
@@ -410,16 +389,14 @@ Item {
                 logFail(qsTr("Snapshot totals do not match the ten rows."))
                 return
             }
-            logComplete = { token: logToken, rows: rows, fault: logExpectedFault,
-                            downloaded: new Date().toLocaleString(),
-                            firmware: firmwareVersion, hardware: detectedHardwareModel,
-                            device: logConnectedDevice }
-            logExportMessage = ""
+            logPendingSnapshot = { token: logToken, rows: rows, fault: logExpectedFault,
+                                   downloaded: new Date().toLocaleString(),
+                                   firmware: firmwareVersion, hardware: detectedHardwareModel,
+                                   device: logConnectedDevice }
             logRows = []
-            logPending = 0
-            logMessage = logExpectedFault
-                    ? qsTr("WARNING: logging fault; collection frozen. This complete snapshot contains only aggregates retained before the fault. Save a CSV and check it outside VESC Tool, or take and check screenshots. A BLE disconnect or reconnect can erase these results.")
-                    : qsTr("Complete snapshot in this Results page's RAM only. Save a CSV and check it outside VESC Tool, or take and check screenshots. A BLE disconnect or reconnect can erase these results.")
+            logRetries = 0
+            logMessage = qsTr("Base snapshot complete; downloading diagnostics for the same token. Previous results remain visible until completion.")
+            logRequest(5, 255)
         }
     }
 
@@ -430,9 +407,7 @@ Item {
         onTriggered: {
             if (!logPending) return
             if (logRetries >= 2) {
-                if (logPending === 5 && logPendingSnapshot) {
-                    logFinish() // v1-only device does not implement diagnostic requests.
-                } else logFail(qsTr("Download timed out."))
+                logFail(qsTr("Download timed out."))
             } else {
                 logRetries++
                 // Retry the same transaction and row; stale sequences are ignored.
@@ -1106,7 +1081,7 @@ Item {
                         text: logMessage
                     }
                     Button {
-                        text: qsTr("Download snapshot / Refresh")
+                        text: qsTr("Download results / Refresh")
                         enabled: !logPending
                         onClicked: {
                             if (logComplete) logReplaceDialog.open()
@@ -1114,29 +1089,15 @@ Item {
                         }
                     }
                     Button {
-                        text: qsTr("Save snapshot to CSV")
+                        text: qsTr("Save results CSV")
                         enabled: !!logComplete
                         onClicked: logSaveCsv()
-                    }
-                    Button {
-                        text: qsTr("Download optional diagnostics")
-                        visible: !!logComplete && !logComplete.diagnostics
-                        enabled: !logPending && VescIf.isPortConnected()
-                        onClicked: logDownloadDiagnostics()
-                    }
-                    Button {
-                        text: qsTr("Save diagnostics v2 CSV")
-                        visible: !!logComplete && !!logComplete.diagnostics
-                        enabled: !logPending
-                        onClicked: logSaveCsv(true)
                     }
                     Label {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
-                        visible: !!logComplete
-                        text: logComplete && logComplete.diagnostics
-                              ? qsTr("Diagnostics v2: sampled controller command and signed eRPM/error, voltage and sampled controller faults. Fault polls are not an event history; active limit reason is unavailable. Save the original CSV separately.")
-                              : qsTr("This device supplied v1 Results only; diagnostics are unavailable. The original CSV is unchanged.")
+                        text: qsTr("Diagnostics: %1. Sampled controller command, signed eRPM/error, voltage and polled controller faults appear in the same CSV when available. Fault polls are not an event history; active limit reason is unavailable. Unknown values remain blank.")
+                              .arg(logComplete ? logComplete.diagnosticStatus : qsTr("not downloaded"))
                     }
                     Label {
                         Layout.fillWidth: true
@@ -1154,7 +1115,7 @@ Item {
                         wrapMode: Text.WrapAnywhere
                         text: {
                             var directory = logDocumentsPath()
-                            return directory ? qsTr("VESC Tool's Documents location on this device: %1. Look for blacktip-results-*.csv; this directory may be app-specific and unavailable in a file manager.").arg(directory)
+                            return directory ? qsTr("VESC Tool's Documents location on this device: %1. Look for blacktip-results-v2-*.csv; this directory may be app-specific and unavailable in a file manager.").arg(directory)
                                              : qsTr("VESC Tool cannot determine a local Documents location here. Keep screenshots of all ten speeds as a fallback.")
                         }
                     }
