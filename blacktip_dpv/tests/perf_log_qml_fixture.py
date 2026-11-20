@@ -39,7 +39,8 @@ def run():
     scripts = [body_after(qml, marker) for marker in markers]
     encoded = [base64.b64encode(part.encode()).decode() for part in scripts]
     fixture = r'''
-const vm=require('vm'), q={logComplete:{token:50,rows:Array.from({length:10},()=>[0,0,0,0,0,0,0,0]),
+const vm=require('vm'), q={const_BLACKTIP_DPV_VERSION:'1.6.2-main-20261120-abcdef1234567',
+ logComplete:{token:50,rows:Array.from({length:10},()=>[0,0,0,0,0,0,0,0]),
  diagnostics:Array.from({length:10},()=>[1,98765,0,0,0,0,0,0]),
  faultSamples:[2,9,1],diagnosticStatus:'available',fault:0,device:'device',
  downloaded:'old',firmware:'7.00',hardware:'MK5'},logPendingSnapshot:null,
@@ -99,10 +100,29 @@ receive.call(q,reply(5,255,12,1));
 if(q.logComplete.diagnosticStatus!=='unsupported'||q.logComplete.diagnostics!==undefined)
  throw Error('unsupported diagnostics were fabricated or not labelled');
 const csv=q.logCsv(q.logComplete), lines=csv.trimEnd().split('\n');
-if(!csv.includes('diagnostic_status,unsupported\n')||lines.length!==29||
+if(!csv.includes('diagnostic_status,unsupported\n')||lines.length!==31||
  csv.includes('98765')||csv.includes('nonzero_fault_samples,2')||
- !lines.slice(19).every(line=>line.split(',').length===17&&line.split(',').slice(9).every(x=>x==='')))
- throw Error('unified CSV invalid: '+JSON.stringify({length:lines.length,status:csv.includes('diagnostic_status,unsupported\n'),row:lines[19]}));
+ !lines.slice(21).every(line=>line.split(',').length===17&&line.split(',').slice(9).every(x=>x==='')))
+ throw Error('unified CSV invalid: '+JSON.stringify({length:lines.length,status:csv.includes('diagnostic_status,unsupported\n'),row:lines[21]}));
+if(!csv.includes('package_version,"1.6.2-main-20261120-abcdef1234567"\n')||
+ !csv.includes('source_revision,"abcdef1234567"\n'))
+ throw Error('CSV lacks package version or source revision');
+ q.const_BLACKTIP_DPV_VERSION='1.6.2-feat-example-abcdef123456';
+ if(!q.logCsv(q.logComplete).includes('source_revision,"abcdef123456"\n'))
+  throw Error('feature build version suffix was not reported');
+ q.const_BLACKTIP_DPV_VERSION='1.6.2-main-20261120-not-a-hash';
+ if(!q.logCsv(q.logComplete).includes('source_revision,"unknown"\n'))
+  throw Error('unrecognised version suffix was not reported as unknown');
+ q.const_BLACKTIP_DPV_VERSION='1.6.2-feat-"quoted"';
+ q.logComplete.device='device, "quoted"';
+ if(!q.logCsv(q.logComplete).includes('device,"device, ""quoted"""\n'))
+  throw Error('CSV field escaping failed');
+ q.const_BLACKTIP_DPV_VERSION='1.6.2-main-20261120-abcdef1234567';q.logComplete.device='device';
+ q.const_BLACKTIP_DPV_VERSION='<unknown>';
+if(!q.logCsv(q.logComplete).includes('package_version,"unknown"\n')||
+ !q.logCsv(q.logComplete).includes('source_revision,"unknown"\n'))
+ throw Error('placeholder build did not report unknown');
+ q.const_BLACKTIP_DPV_VERSION='1.6.2-main-20261120-abcdef1234567';
 q.logSaveCsv();
 const saved=Object.values(q.files)[0];
 if(!saved||Buffer.from(saved).toString()!==csv||!q.logExportMessage.includes('Verified'))
@@ -132,7 +152,7 @@ q.logFail('diagnostics failed');
 if(q.logComplete!==base||base.diagnosticStatus!=='failed'||
  !q.logCsv(base).includes('diagnostic_status,failed\n')||
  q.logCsv(base).includes('98765')||q.logCsv(base).includes('nonzero_fault_samples,2')||
- q.logCsv(base).split('\n')[19].split(',').slice(9).some(x=>x!==''))
+ q.logCsv(base).split('\n')[21].split(',').slice(9).some(x=>x!==''))
  throw Error('failed diagnostics did not retain base with blank labelled values');
 q.logSaveCsv();
 const failedExport=Buffer.from(Object.values(q.files)[Object.values(q.files).length-1]).toString();

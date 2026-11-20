@@ -111,7 +111,14 @@ Item {
     function logCsv(snapshot) {
         var diagnostics = snapshot.diagnosticStatus === "available"
         var fault = diagnostics ? snapshot.faultSamples : null
+        // The version is embedded when the UI is built, not read from the
+        // controller. Its hash suffix is a build-time reference, not proof
+        // that this CSV matches an exact source tree or device runtime.
+        var packageVersion = const_BLACKTIP_DPV_VERSION
+        var revisionMatch = /-([0-9a-f]{7,64})$/.exec(packageVersion)
         var lines = ["field,value", "schema,blacktip-results-v2",
+                     "package_version," + logCsvCell(packageVersion === "<unknown>" ? "unknown" : packageVersion),
+                     "source_revision," + logCsvCell(revisionMatch ? revisionMatch[1] : "unknown"),
                      "snapshot_token," + logCsvCell(logTokenText(snapshot.token)),
                      "phone_download," + logCsvCell(snapshot.downloaded),
                      "firmware," + logCsvCell(snapshot.firmware),

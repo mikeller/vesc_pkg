@@ -545,6 +545,30 @@ The `pixbuf` variable is a 16-byte working buffer that is essential to the displ
 * VESC Tool (for building .vescpkg files)
 * Standard Unix tools (make, grep, etc.)
 
+## Results CSV Schema
+
+The Results page exports a versioned unified CSV containing diagnostic information. The schema includes the following metadata fields:
+
+* **`schema`** - CSV format version: `blacktip-results-v2`
+* **`package_version`** - The BlackTip DPV package version embedded in QML (e.g., `1.6.2-feat-blacktip-unified-results-review-ad6b643`)
+  * On `main`: `<version>-<yyyymmdd>-<git-hash>` format
+  * On other branches: `<version>-<branch-name>-<git-hash>` format
+  * CSV escaping applies: values are quoted per RFC 4180
+* **`source_revision`** - The abbreviated hexadecimal suffix from `package_version` when it matches `-[0-9a-f]{7,64}$`; otherwise `unknown`. This is a build-time reference, not proof that the CSV matches an exact source tree or device runtime.
+  * CSV escaping applies: values are quoted per RFC 4180
+* **`snapshot_token`** - Hex-encoded unsigned 32-bit value identifying the diagnostic snapshot
+* **`phone_download`** - Localised timestamp recorded when Results were downloaded
+* **`firmware`** - VESC firmware version string
+* **`hardware`** - Hardware model identifier
+* **`device`** - Connected device UUID, or port name when no UUID is available
+* **`logging_fault`** - Numeric fault state (0 or 1); 2 is a reply status, not a logging fault value
+* **`diagnostic_status`** - Diagnostic capture status: `available`, `unsupported`, or `failed`
+* **`target_frame,raw_get-rpm-set_controller_command_not_ramped_pid`** - Raw telemetry and command samples (ten rows)
+
+When the build-time package version is `<unknown>`, the CSV reports `unknown` for both fields. A version without a recognised hexadecimal suffix still appears as `package_version`, while `source_revision` is `unknown`. The suffix is not a live source-tree identity, and a dirty working tree does not independently change either field.
+
+The QML fixture generator uses `logCsvCell(value)` to escape values per RFC 4180: quoted with double quotes and internal quotes escaped as `""`. The `<unknown>` placeholder is used when version/revision cannot be determined from the source state.
+
 ## Repository
 
 <https://github.com/vedderb/vesc_pkg>
